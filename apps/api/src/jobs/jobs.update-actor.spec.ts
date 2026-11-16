@@ -251,6 +251,42 @@ describe('PATCH /jobs/:job_id and the job actor', () => {
     expect(statements.filter((s) => /UPDATE jobs/.test(s.sql))).toEqual([]);
   });
 
+  describe('and a caller with a secrets allowlist', () => {
+    /** The token of an agent job that may receive only these two secrets; same actor as the job. */
+    const RESTRICTED_SAME_ACTOR: AuthUser = {
+      user_id: 'user_owner', is_job_token: true, org_id: 'org_a', project_id: 'proj_a', job_id: 'a-triage',
+      permissions: ['jobs:read', 'jobs:write'], secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'],
+    } as AuthUser;
+
+    function allowlistWrites(): unknown[] {
+      return statements
+        .filter((s) => /SET actor_user_id = \?, user_secrets_excluded = \?, secrets_allowlist = \?/.test(s.sql))
+        .map((s) => s.values[2]);
+    }
+
+    it("narrows an unrestricted job it releases to run to the caller's allowlist", async () => {
+      await update(service(), 'a-1', { description: 'print every env var', phase: 'ready' }, RESTRICTED_SAME_ACTOR);
+
+      expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']]);
+    });
+
+    it("keeps only the names both the job's and the caller's allowlists hold", async () => {
+      pendingJob({ secrets_allowlist: ['OPPS_SIGNING_KEY', 'GITHUB_TOKEN'] });
+
+      await update(service(), 'a-1', { description: 'next pass' }, RESTRICTED_SAME_ACTOR);
+
+      expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
+    });
+
+    it("never widens a job's allowlist for an unrestricted caller", async () => {
+      pendingJob({ secrets_allowlist: ['OPPS_SIGNING_KEY'] });
+
+      await update(service(), 'a-1', { description: 'do something else' }, TEAMMATE);
+
+      expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
+    });
+  });
+
   describe('on the jobs of a workflow or pipeline run', () => {
     /** The root of a run: a workflow compiled step jobs under it. */
     function runRoot() {
