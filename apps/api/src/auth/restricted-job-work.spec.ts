@@ -88,7 +88,7 @@ const m = vi.hoisted(() => {
       findById: vi.fn(async (id: string) => jobs.find((j) => j.id === id) ?? null),
     },
     appLinks: { listByConsumer: vi.fn(async () => []) },
-    agents: { findByProjectAndId: vi.fn(async () => null as unknown) },
+    agents: { findByProjectAndId: vi.fn(async () => null as unknown), findByOrgAndSlug: vi.fn(async () => null as unknown) },
     apiSources: { list: vi.fn(async () => []) },
     accessRoles: {
       listApplicableBindings: vi.fn(async () => []),
@@ -161,6 +161,7 @@ describe('work started by a job with a secrets allowlist', () => {
     vi.clearAllMocks();
     m.jobs.length = 0;
     m.agents.findByProjectAndId.mockResolvedValue(null);
+    m.agents.findByOrgAndSlug.mockResolvedValue(null);
     m.manifests.findLatestByProject.mockResolvedValue({ manifest_yaml: MANIFEST, manifest_hash: 'h', parsed_defaults: null });
     process.env.DATABASE_URL = 'postgres://eve:eve@localhost:5432/eve';
     process.env.EVE_AUTH_ENABLED = 'true';
@@ -185,6 +186,21 @@ describe('work started by a job with a secrets allowlist', () => {
     const token = createJwtRs256({ ...claims, iat: now, exp: now + 600 }, { kid: 'key-1', privateKey, publicKey });
     const resolved = await authService.verifyAuthorizationHeader(`Bearer ${token}`);
     expect((resolved as Record<string, unknown>).secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+  });
+
+  it('carries the allowlist of an agent in another project the job was routed to by slug', async () => {
+    const controller = new AuthInternalController(buildAuthService(), rawSql, access());
+    m.jobs.push({
+      id: 'a-routed', project_id: 'proj_a', actor_user_id: 'user_owner', user_secrets_excluded: false,
+      assignee: 'triage', secrets_allowlist: null, target: { agent_slug: 'triage' },
+    });
+    m.agents.findByProjectAndId.mockResolvedValue(null);
+    m.agents.findByOrgAndSlug.mockResolvedValue({ id: 'triage', access_json: { secrets: ['OPPS_SIGNING_KEY'] } });
+
+    const minted = await controller.mintJobToken({ job_id: 'a-routed', permissions: ['jobs:read'] });
+    const claims = JSON.parse(Buffer.from(minted.access_token.split('.')[1], 'base64url').toString());
+    expect(m.agents.findByOrgAndSlug).toHaveBeenCalledWith('org_a', 'triage');
+    expect(claims.secrets_allowlist).toEqual(['OPPS_SIGNING_KEY']);
   });
 
   it('carries no allowlist claim for an unrestricted job', async () => {

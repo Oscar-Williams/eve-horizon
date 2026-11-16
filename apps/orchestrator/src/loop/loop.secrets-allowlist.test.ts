@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  agents: { findByProjectAndId: vi.fn() },
+  agents: { findByProjectAndId: vi.fn(), findByOrgAndSlug: vi.fn() },
 }));
 
 vi.mock('@eve/db', async (importOriginal) => ({
@@ -78,5 +78,28 @@ describe('secrets allowlist on the harness invocation', () => {
     );
 
     expect(invocation.secrets_allowlist).toEqual([]);
+  });
+
+  it('carries the allowlist of an agent in another project that the job was routed to by slug', async () => {
+    mocks.agents.findByProjectAndId.mockResolvedValue(null);
+    mocks.agents.findByOrgAndSlug.mockResolvedValue({ id: 'triage', slug: 'triage', access_json: { secrets: ['OPPS_SIGNING_KEY'] } });
+
+    const invocation = await buildInvocation()(
+      job({ target: { agent_slug: 'triage' } }), attempt, project, 'proj_opps', '/ws', '', routing,
+    );
+
+    expect(mocks.agents.findByOrgAndSlug).toHaveBeenCalledWith('org_vdb', 'triage');
+    expect(invocation.secrets_allowlist).toEqual(['OPPS_SIGNING_KEY']);
+  });
+
+  it('ignores a slug that now names a different agent than the one the job was assigned', async () => {
+    mocks.agents.findByProjectAndId.mockResolvedValue(null);
+    mocks.agents.findByOrgAndSlug.mockResolvedValue({ id: 'someone-else', slug: 'triage', access_json: { secrets: [] } });
+
+    const invocation = await buildInvocation()(
+      job({ target: { agent_slug: 'triage' } }), attempt, project, 'proj_opps', '/ws', '', routing,
+    );
+
+    expect(invocation.secrets_allowlist).toBeUndefined();
   });
 });
