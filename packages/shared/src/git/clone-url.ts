@@ -30,6 +30,15 @@
  * @param token - the GitHub token value
  * @returns the authenticated clone URL, or `repoUrl` when auth cannot be applied
  */
+/**
+ * github.com or one of its subdomains. A substring match would also send the
+ * token to `github.com.attacker.example`.
+ */
+export function isGitHubHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'github.com' || host.endsWith('.github.com');
+}
+
 export function buildAuthenticatedHttpsUrl(repoUrl: string, token: string): string {
   if (!repoUrl.startsWith('http')) return repoUrl;
 
@@ -38,7 +47,7 @@ export function buildAuthenticatedHttpsUrl(repoUrl: string, token: string): stri
 
   try {
     const url = new URL(repoUrl);
-    if (!url.hostname.includes('github.com')) return repoUrl;
+    if (!isGitHubHost(url.hostname)) return repoUrl;
     url.username = 'x-access-token';
     url.password = trimmed;
     return url.toString();

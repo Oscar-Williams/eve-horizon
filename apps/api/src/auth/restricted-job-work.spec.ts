@@ -86,6 +86,10 @@ const m = vi.hoisted(() => {
       addDependency: vi.fn(async () => 'rel'),
       updatePhase: vi.fn(async () => ({ success: true })),
       findById: vi.fn(async (id: string) => jobs.find((j) => j.id === id) ?? null),
+      getTokenLiveness: vi.fn(async (id: string) => {
+        const job = jobs.find((j) => j.id === id);
+        return job ? { phase: (job.phase as string | undefined) ?? 'active', running_attempt_id: null } : null;
+      }),
     },
     appLinks: { listByConsumer: vi.fn(async () => []) },
     agents: { findByProjectAndId: vi.fn(async () => null as unknown), findByOrgAndSlug: vi.fn(async () => null as unknown) },

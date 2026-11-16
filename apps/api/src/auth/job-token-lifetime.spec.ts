@@ -27,6 +27,8 @@ const m = vi.hoisted(() => {
       findById: vi.fn(async (id: string) => (state.job && state.job.id === id ? { ...state.job } : null)),
       getCurrentAttempt: vi.fn(async (jobId: string) =>
         state.job && state.job.id === jobId && state.runningAttemptId ? { id: state.runningAttemptId, job_id: jobId, status: 'running' } : null),
+      getTokenLiveness: vi.fn(async (jobId: string) =>
+        state.job && state.job.id === jobId ? { phase: state.job.phase as string, running_attempt_id: state.runningAttemptId } : null),
     },
     projects: {
       findById: vi.fn(async (id: string) => ({ proj_opps: { id: 'proj_opps', org_id: 'org_vdb' }, proj_engine: { id: 'proj_engine', org_id: 'org_vdb' } } as Record<string, unknown>)[id] ?? null),

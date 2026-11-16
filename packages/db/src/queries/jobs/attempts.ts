@@ -1,5 +1,5 @@
 import type { Db } from '../../client.js';
-import type { AttemptResultData, CompleteAttemptResult, JobAttempt } from './types.js';
+import type { AttemptResultData, CompleteAttemptResult, Job, JobAttempt } from './types.js';
 
 // ============================================================================
 // Job Attempts
@@ -13,6 +13,23 @@ export function jobAttemptQueries(db: Db) {
      * @param jobId - Job ID
      * @returns Current attempt if found, null otherwise
      */
+    async getTokenLiveness(jobId: string): Promise<{ phase: Job['phase']; running_attempt_id: string | null } | null> {
+      // What a job-token check needs, and no more: the job's phase and its running attempt.
+      const [row] = await db<{ phase: Job['phase']; running_attempt_id: string | null }[]>`
+        SELECT
+          j.phase,
+          (
+            SELECT a.id FROM job_attempts a
+            WHERE a.job_id = j.id AND a.status = 'running'
+            ORDER BY a.attempt_number DESC
+            LIMIT 1
+          ) AS running_attempt_id
+        FROM jobs j
+        WHERE j.id = ${jobId}
+      `;
+      return row ?? null;
+    },
+
     async getCurrentAttempt(jobId: string): Promise<JobAttempt | null> {
       const [attempt] = await db<JobAttempt[]>`
         SELECT * FROM job_attempts

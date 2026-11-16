@@ -185,7 +185,14 @@ export class ProjectSecretsController {
   async exportSecrets(
     @Param('project_id') projectId: string,
     @Body(new ZodValidationPipe(SecretExportRequestSchema)) body: SecretExportRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<SecretExportResponse> {
+    // A restricted job's token exports only the secrets the job itself may receive.
+    const allowlist = caller?.secrets_allowlist;
+    const withheld = allowlist ? body.keys.filter((key) => !allowlist.includes(key)) : [];
+    if (withheld.length > 0) {
+      throw new ForbiddenException(`Secret(s) ${withheld.join(', ')} are outside this job's secrets allowlist`);
+    }
     const data = await this.secretsService.exportSafeSecrets(projectId, body.keys);
     return { data };
   }

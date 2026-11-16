@@ -12,7 +12,7 @@ import * as os from 'os';
 import type { SecretResolveItem } from '../schemas/secret.js';
 import type { HarnessInvocation } from '../types/harness.js';
 import { resolveProjectSecrets } from '../api-client/secret-client.js';
-import { buildAuthenticatedHttpsUrl } from '../git/clone-url.js';
+import { buildAuthenticatedHttpsUrl, isGitHubHost } from '../git/clone-url.js';
 import type { LifecycleLogger, GitAuth } from './types.js';
 import { sanitizeSecretFilename } from '../harnesses/invoke-utils.js';
 import { cleanupJobUserHome } from './job-user-home.js';
@@ -211,7 +211,7 @@ function githubAuthHeaderEnv(repoUrl: string, token: string): Record<string, str
   let origin: string;
   try {
     const url = new URL(repoUrl);
-    if (!url.hostname.includes('github.com')) return undefined;
+    if (!isGitHubHost(url.hostname)) return undefined;
     origin = `${url.protocol}//${url.host}/`;
   } catch {
     return undefined;

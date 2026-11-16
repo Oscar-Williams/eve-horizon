@@ -1,7 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import type { jobQueries } from '@eve/db';
 
-type JobLookup = Pick<ReturnType<typeof jobQueries>, 'findById' | 'getCurrentAttempt'>;
+type JobLookup = Pick<ReturnType<typeof jobQueries>, 'getTokenLiveness'>;
 
 /**
  * Tokens minted for a job (its job token, and app-link tokens with a
@@ -16,7 +16,7 @@ type JobLookup = Pick<ReturnType<typeof jobQueries>, 'findById' | 'getCurrentAtt
  * without this check either would outlive the job that held it.
  */
 export async function assertJobRunning(jobs: JobLookup, jobId: string, attemptId?: string): Promise<void> {
-  const job = await jobs.findById(jobId);
+  const job = await jobs.getTokenLiveness(jobId);
   if (!job) {
     throw new UnauthorizedException('Token job not found');
   }
@@ -24,8 +24,7 @@ export async function assertJobRunning(jobs: JobLookup, jobId: string, attemptId
     throw new UnauthorizedException('Token job was cancelled');
   }
   if (attemptId) {
-    const running = await jobs.getCurrentAttempt(jobId);
-    if (running?.id !== attemptId) {
+    if (job.running_attempt_id !== attemptId) {
       throw new UnauthorizedException('Token job attempt has ended');
     }
     return;
@@ -37,6 +36,6 @@ export async function assertJobRunning(jobs: JobLookup, jobId: string, attemptId
 
 /** Whether `attemptId` is the job's running attempt (for binding a token to it at mint). */
 export async function isRunningAttempt(jobs: JobLookup, jobId: string, attemptId: string): Promise<boolean> {
-  const running = await jobs.getCurrentAttempt(jobId);
-  return running?.id === attemptId;
+  const job = await jobs.getTokenLiveness(jobId);
+  return Boolean(job) && job!.running_attempt_id === attemptId;
 }
