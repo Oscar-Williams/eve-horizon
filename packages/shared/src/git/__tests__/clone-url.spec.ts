@@ -57,3 +57,20 @@ describe('buildAuthenticatedHttpsUrl', () => {
     expect(url.replace(/\/\/[^@]+@/, '//***@')).toBe('https://***@github.com/org/repo.git');
   });
 });
+
+describe('GitHub host matching', () => {
+  it('sends no token to a host that only contains "github.com"', () => {
+    for (const repo of [
+      'https://github.com.attacker.example/org/repo.git',
+      'https://evilgithub.com/org/repo.git',
+      'https://attacker.example/github.com/org/repo.git',
+    ]) {
+      expect(buildAuthenticatedHttpsUrl(repo, 'ghs_secret')).toBe(repo);
+    }
+  });
+
+  it('still authenticates github.com and its subdomains', () => {
+    expect(buildAuthenticatedHttpsUrl('https://github.com/o/r.git', 't')).toContain('x-access-token:t@github.com');
+    expect(buildAuthenticatedHttpsUrl('https://api.github.com/o/r.git', 't')).toContain('x-access-token:t@api.github.com');
+  });
+});

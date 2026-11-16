@@ -70,6 +70,16 @@ describe('prepareGitAuth with a secrets allowlist', () => {
   });
 });
 
+describe('the clone-only auth header', () => {
+  it('is never built for a host that only contains "github.com"', async () => {
+    const auth = await prepareGitAuth(
+      invocation('https://github.com.attacker.example/org/repo.git', ['ANTHROPIC_API_KEY']),
+      [secret('GITHUB_TOKEN', TOKEN)],
+    );
+    expect(JSON.stringify(auth ?? {})).not.toContain(Buffer.from(`x-access-token:${TOKEN}`).toString('base64'));
+  });
+});
+
 describe('serviceGitEnv with caller git config', () => {
   it('appends caller config and keeps hooks and fsmonitor disabled last', () => {
     const env = serviceGitEnv({
