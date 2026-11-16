@@ -172,6 +172,9 @@ export {
   CODEX_AUTH_SOURCES,
   selectedCodexAuth,
   writeBackCodexAuth,
+  jobCodexAuthDirs,
+  preexistingCodexAuthPaths,
+  removeStaleServiceHomeCodexAuth,
   type CodexAuthSource,
   type CodexAuthSelection,
 } from './codex-auth.js';

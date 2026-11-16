@@ -1,5 +1,5 @@
 import { watchJobCancellation, bindProcessCancellation, cleanupAttemptWorkspace, JOB_CANCELLED, type JobCancellationMonitor } from '@eve/shared';
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, type OnModuleInit } from '@nestjs/common';
 import { execFile } from 'child_process';
 import * as readline from 'readline';
 import { promisify } from 'util';
@@ -81,6 +81,10 @@ import {
   materializeSecrets,
   releaseCloneOnlyGitKey,
   assertCloneOnlyGitCredentialSafe,
+  writeBackCodexAuth,
+  jobCodexAuthDirs,
+  preexistingCodexAuthPaths,
+  removeStaleServiceHomeCodexAuth,
   selectJobSecrets,
   applyEnvOverrides,
   materializeWorkspaceSkills,
@@ -144,7 +148,7 @@ type GitAuth = {
 };
 
 @Injectable()
-export class InvokeService {
+export class InvokeService implements OnModuleInit {
   private logs: ReturnType<typeof executionLogQueries>;
   private jobs: ReturnType<typeof jobQueries>;
   private orgs: ReturnType<typeof orgQueries>;
@@ -153,6 +157,11 @@ export class InvokeService {
   private attachments: ReturnType<typeof jobAttachmentQueries>;
   private events: ReturnType<typeof eventQueries>;
   private _storageClient: ObjectStorageClient | null = null;
+
+  /** Earlier versions wrote jobs' Codex auth into this service's HOME; remove what is left (k8s only). */
+  async onModuleInit(): Promise<void> {
+    await removeStaleServiceHomeCodexAuth();
+  }
 
   constructor(@Inject('DB') private db: Db) {
     this.logs = executionLogQueries(this.db);
@@ -1479,7 +1488,7 @@ export class InvokeService {
             };
           },
           resolveCodeAuth: (options?: { configDir?: string }) =>
-            this.resolveCodeAuth(effectiveInvocation, harness, resolvedSecrets, { ...options, env: baseEnv }),
+            this.resolveCodeAuth(effectiveInvocation, harness, resolvedSecrets, { ...options, env: baseEnv, jobUserHome }),
         };
 
         const options = await adapter.buildOptions({
@@ -1559,7 +1568,7 @@ export class InvokeService {
 
         // Write back refreshed Codex auth.json if the token was refreshed during execution
         if (originalCodexB64 && codexScopeType && codexScopeId) {
-          await this.writeBackCodexAuth(originalCodexB64, codexScopeType, codexScopeId);
+          await writeBackCodexAuth(originalCodexB64, codexScopeType, codexScopeId, options.env?.CODEX_HOME);
         }
 
         if (cancellation.signal.aborted) return result;
@@ -1878,15 +1887,17 @@ export class InvokeService {
     options?: {
       configDir?: string;
       env?: NodeJS.ProcessEnv;
+      /** The per-job HOME the harness runs with; auth files go here, never to the worker's own HOME. */
+      jobUserHome?: string;
     },
   ): Promise<{
     env: Record<string, string | undefined>;
   }> {
-    const homeDir = process.env.HOME || os.homedir();
     const env = options?.env ?? process.env;
+    const authTargets = jobCodexAuthDirs(options?.configDir, options?.jobUserHome);
     const secretFor = (key: string) => secrets.find(s => s.key === key) ?? { key };
 
-    console.log(`[codex-auth] resolveCodeAuth called: configDir=${options?.configDir ?? '(none)'} HOME=${homeDir} OPENAI_API_KEY=${!!env.OPENAI_API_KEY} CODEX_AUTH_JSON_B64=${!!env.CODEX_AUTH_JSON_B64} CODEX_OAUTH_ACCESS_TOKEN=${!!env.CODEX_OAUTH_ACCESS_TOKEN}`);
+    console.log(`[codex-auth] resolveCodeAuth called: configDir=${options?.configDir ?? '(none)'} OPENAI_API_KEY=${!!env.OPENAI_API_KEY} CODEX_AUTH_JSON_B64=${!!env.CODEX_AUTH_JSON_B64} CODEX_OAUTH_ACCESS_TOKEN=${!!env.CODEX_OAUTH_ACCESS_TOKEN}`);
 
     // Priority 1: OPENAI_API_KEY env var
     const apiKey = env.OPENAI_API_KEY;
@@ -1917,13 +1928,7 @@ export class InvokeService {
         console.warn('[codex-auth] Failed to parse CODEX_AUTH_JSON_B64 — writing raw');
       }
 
-      // Write auth.json to CODEX_HOME (inside workspace, readable by codex binary)
-      // and to standard fallback locations.
-      const authTargets = [
-        ...(options?.configDir ? [options.configDir] : []),
-        path.join(homeDir, '.codex'),
-        path.join(homeDir, '.code'),
-      ];
+      // Write auth.json to CODEX_HOME and the per-job HOME (never the worker's own HOME).
       for (const dir of authTargets) {
         const authPath = path.join(dir, 'auth.json');
         try {
@@ -1949,12 +1954,7 @@ export class InvokeService {
         last_refresh: new Date().toISOString(),
       };
       const authJsonStr = JSON.stringify(authPayload, null, 2);
-      const authDirs = [
-        ...(options?.configDir ? [options.configDir] : []),
-        path.join(homeDir, '.codex'),
-        path.join(homeDir, '.code'),
-      ];
-      for (const dir of authDirs) {
+      for (const dir of authTargets) {
         const authPath = path.join(dir, 'auth.json');
         try {
           await fs.mkdir(dir, { recursive: true });
@@ -1968,13 +1968,8 @@ export class InvokeService {
       return { env: { OPENAI_API_KEY: oauthToken } };
     }
 
-    // Priority 4: Read from host auth.json files (mounted or pre-existing)
-    const authPaths = [
-      ...(options?.configDir ? [path.join(options.configDir, 'auth.json')] : []),
-      path.join(homeDir, '.codex', 'auth.json'),
-      path.join(homeDir, '.code', 'auth.json'),
-    ];
-    for (const authPath of authPaths) {
+    // Priority 4: an auth.json already in the harness config dir (no allowlist only)
+    for (const authPath of preexistingCodexAuthPaths(options?.configDir, invocation)) {
       try {
         const content = await fs.readFile(authPath, 'utf-8');
         const data = JSON.parse(content) as {
@@ -1983,16 +1978,6 @@ export class InvokeService {
         };
         if (data.tokens?.access_token || data.OPENAI_API_KEY) {
           console.log(`[codex-auth] Found pre-existing auth at ${authPath}`);
-          // Copy to configDir if different from source
-          if (options?.configDir && !authPath.startsWith(options.configDir)) {
-            const targetPath = path.join(options.configDir, 'auth.json');
-            try {
-              await fs.mkdir(options.configDir, { recursive: true });
-              await fs.writeFile(targetPath, content);
-            } catch {
-              // non-fatal
-            }
-          }
           await this.logCodexAuthSelected(invocation, harness, selectedCodexAuth('preexisting'));
           return { env: {} };
         }
@@ -2004,53 +1989,6 @@ export class InvokeService {
     throw new Error(
       'Missing code auth: set OPENAI_API_KEY or CODEX_AUTH_JSON_B64. Run: eve auth sync --codex',
     );
-  }
-
-  /**
-   * After harness execution, read back auth.json from the paths the worker wrote to,
-   * pick the freshest, compare to the original base64, and update the secret if changed.
-   * Failures are non-fatal — logged at warn level and swallowed.
-   */
-  private async writeBackCodexAuth(
-    originalB64: string,
-    scopeType: 'user' | 'org' | 'project',
-    scopeId: string,
-    configDir?: string,
-  ): Promise<void> {
-    try {
-      const homeDir = process.env.HOME || os.homedir();
-      const authPaths = configDir
-        ? [path.join(configDir, 'auth.json')]
-        : [path.join(homeDir, '.code', 'auth.json'), path.join(homeDir, '.codex', 'auth.json')];
-
-      let freshestContent: string | null = null;
-      let freshestExpiry = -1;
-
-      for (const authPath of authPaths) {
-        try {
-          const content = await fs.readFile(authPath, 'utf-8');
-          const parsed = JSON.parse(content) as Record<string, unknown>;
-          const tokens = parsed.tokens as Record<string, unknown> | undefined;
-          const expiresAt = typeof tokens?.expires_at === 'number' ? tokens.expires_at : 0;
-          if (freshestContent === null || expiresAt > freshestExpiry) {
-            freshestContent = content;
-            freshestExpiry = expiresAt;
-          }
-        } catch {
-          // File missing or invalid — skip
-        }
-      }
-
-      if (!freshestContent) return;
-
-      const newB64 = Buffer.from(freshestContent, 'utf-8').toString('base64');
-      if (newB64 === originalB64) return;
-
-      console.log(`[codex-writeback] Token refreshed — updating secret ${scopeType}/${scopeId}/CODEX_AUTH_JSON_B64`);
-      await updateSecret(scopeType, scopeId, 'CODEX_AUTH_JSON_B64', newB64);
-    } catch (err) {
-      console.warn(`[codex-writeback] Failed to write back Codex auth: ${err instanceof Error ? err.message : String(err)}`);
-    }
   }
 
   private async resolveEveAgentCliCommand(): Promise<{

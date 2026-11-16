@@ -53,10 +53,9 @@ export async function writeBackCodexAuth(
   codexHome?: string,
 ): Promise<void> {
   try {
-    const homeDir = process.env.HOME || os.homedir();
-    const authPaths = codexHome
-      ? [path.join(codexHome, 'auth.json')]
-      : [path.join(homeDir, '.code', 'auth.json'), path.join(homeDir, '.codex', 'auth.json')];
+    // Only the job's own CODEX_HOME: the runtime's HOME is shared by every job on it.
+    if (!codexHome) return;
+    const authPaths = [path.join(codexHome, 'auth.json')];
 
     let freshestContent: string | null = null;
     let freshestExpiry = -1;
@@ -86,4 +85,53 @@ export async function writeBackCodexAuth(
   } catch (err) {
     console.warn(`[codex-writeback] Failed to write back Codex auth: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * Where a job's Codex auth.json is written: the harness config dir
+ * (CODEX_HOME) and the per-job HOME, which the harness runs with. Never the
+ * runtime's own HOME: every job on the runtime shares it, so a file there
+ * would outlive the job and reach the next one.
+ */
+export function jobCodexAuthDirs(configDir: string | undefined, jobUserHome: string | undefined): string[] {
+  const dirs = [
+    configDir,
+    jobUserHome ? path.join(jobUserHome, '.codex') : undefined,
+    jobUserHome ? path.join(jobUserHome, '.code') : undefined,
+  ].filter((dir): dir is string => Boolean(dir));
+  return [...new Set(dirs)];
+}
+
+/**
+ * Pre-existing auth.json a job may fall back to when no Codex credential
+ * secret applies: only one already in the harness config dir (from the repo
+ * or an operator-set CODEX_HOME), and never for a job with a secrets
+ * allowlist, which uses only the credentials it names.
+ */
+export function preexistingCodexAuthPaths(
+  configDir: string | undefined,
+  invocation: { secrets_allowlist?: string[] },
+): string[] {
+  if (invocation.secrets_allowlist || !configDir) return [];
+  return [path.join(configDir, 'auth.json')];
+}
+
+/**
+ * Remove the Codex auth.json files earlier versions wrote into the runtime's
+ * own HOME, where every later job could read them. Only in k8s, where HOME is
+ * the service's: a runtime started locally runs as a developer, whose own
+ * login must stay.
+ */
+export async function removeStaleServiceHomeCodexAuth(options: {
+  home?: string;
+  runtime?: string;
+} = {}): Promise<void> {
+  const runtime = options.runtime ?? process.env.EVE_RUNTIME;
+  if (runtime !== 'k8s') return;
+  const home = options.home ?? (process.env.HOME || os.homedir());
+  await Promise.all(['.codex', '.code'].map((dir) =>
+    fs.rm(path.join(home, dir, 'auth.json'), { force: true }).catch((error) => {
+      console.warn(`[codex-auth] Failed to remove stale ${dir}/auth.json: ${error instanceof Error ? error.message : String(error)}`);
+    }),
+  ));
 }

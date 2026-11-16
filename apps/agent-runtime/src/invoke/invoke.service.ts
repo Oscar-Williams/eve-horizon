@@ -1,5 +1,5 @@
 import { watchJobCancellation, bindProcessCancellation, cleanupAttemptWorkspace, JOB_CANCELLED, type JobCancellationMonitor } from '@eve/shared';
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, type OnModuleInit } from '@nestjs/common';
 import * as readline from 'readline';
 import { createHash } from 'crypto';
 import * as fsSync from 'fs';
@@ -109,6 +109,9 @@ import {
   deliverProvisioningError,
   // Codex auth write-back
   writeBackCodexAuth,
+  jobCodexAuthDirs,
+  preexistingCodexAuthPaths,
+  removeStaleServiceHomeCodexAuth,
   // Resource hydration events
   emitResourceHydrationEvent,
   // Budget enforcement
@@ -214,7 +217,7 @@ type HarnessProcessSetup = {
  * Agent Runtime executor — orchestrates harness invocation with shared invoke module.
  */
 @Injectable()
-export class InvokeService {
+export class InvokeService implements OnModuleInit {
   private logs: ReturnType<typeof executionLogQueries>;
   private jobs: ReturnType<typeof jobQueries>;
   private orgs: ReturnType<typeof orgQueries>;
@@ -224,6 +227,11 @@ export class InvokeService {
   private events: ReturnType<typeof eventQueries>;
   private agents: ReturnType<typeof agentQueries>;
   private _storageClient: ObjectStorageClient | null = null;
+
+  /** Earlier versions wrote jobs' Codex auth into this service's HOME; remove what is left (k8s only). */
+  async onModuleInit(): Promise<void> {
+    await removeStaleServiceHomeCodexAuth();
+  }
 
   constructor(@Inject('DB') private readonly db: Db) {
     this.logs = executionLogQueries(db);
@@ -1465,10 +1473,10 @@ export class InvokeService {
     invocation: HarnessInvocation,
     harness: HarnessName,
     secrets: SecretResolveItem[],
-    options?: { configDir?: string },
+    options?: { configDir?: string; jobUserHome?: string },
   ): Promise<{ env: Record<string, string | undefined> }> {
-    const homeDir = process.env.HOME || os.homedir();
-    const configDir = options?.configDir ?? path.join(homeDir, '.codex');
+    const configDir = options?.configDir ?? (options?.jobUserHome ? path.join(options.jobUserHome, '.codex') : undefined);
+    const authTargets = jobCodexAuthDirs(configDir, options?.jobUserHome);
 
     // Priority 1: OPENAI_API_KEY from secrets
     const apiKeySecret = secrets.find(s => s.key === 'OPENAI_API_KEY');
@@ -1493,8 +1501,7 @@ export class InvokeService {
         console.warn('[codex-auth] Failed to parse CODEX_AUTH_JSON_B64');
       }
 
-      // Write auth.json to CODEX_HOME (inside workspace) and fallback locations
-      const authTargets = [configDir, path.join(homeDir, '.codex'), path.join(homeDir, '.code')];
+      // Write auth.json to CODEX_HOME and the per-job HOME (never the runtime's own HOME)
       for (const dir of authTargets) {
         const authPath = path.join(dir, 'auth.json');
         try {
@@ -1519,7 +1526,6 @@ export class InvokeService {
         last_refresh: new Date().toISOString(),
       };
       const authJsonStr = JSON.stringify(authPayload, null, 2);
-      const authTargets = [configDir, path.join(homeDir, '.codex'), path.join(homeDir, '.code')];
       for (const dir of authTargets) {
         try {
           await fs.mkdir(dir, { recursive: true });
@@ -1532,24 +1538,13 @@ export class InvokeService {
       return { env: { OPENAI_API_KEY: oauthSecret.value } };
     }
 
-    // Priority 4: Pre-existing auth files
-    const authPaths = [
-      path.join(configDir, 'auth.json'),
-      path.join(homeDir, '.codex', 'auth.json'),
-      path.join(homeDir, '.code', 'auth.json'),
-    ];
-    for (const authPath of authPaths) {
+    // Priority 4: an auth.json already in the harness config dir (no allowlist only)
+    for (const authPath of preexistingCodexAuthPaths(configDir, invocation)) {
       try {
         const content = await fs.readFile(authPath, 'utf-8');
         const data = JSON.parse(content) as { tokens?: { access_token?: string }; OPENAI_API_KEY?: string };
         if (data.tokens?.access_token || data.OPENAI_API_KEY) {
           console.log(`[codex-auth] Found pre-existing auth at ${authPath}`);
-          if (configDir && !authPath.startsWith(configDir)) {
-            try {
-              await fs.mkdir(configDir, { recursive: true });
-              await fs.writeFile(path.join(configDir, 'auth.json'), content);
-            } catch { /* non-fatal */ }
-          }
           await this.logCodexAuthSelected(invocation, harness, selectedCodexAuth('preexisting'));
           return { env: {} };
         }
@@ -1613,7 +1608,7 @@ export class InvokeService {
           configDir: runtimeConfig.configDir,
         };
       },
-      resolveCodeAuth: (options) => this.resolveCodeAuth(invocationWithOptions, harnessName, resolvedSecrets, options),
+      resolveCodeAuth: (options) => this.resolveCodeAuth(invocationWithOptions, harnessName, resolvedSecrets, { ...options, jobUserHome }),
     };
 
     // baseEnv is a read context for adapter resolution.

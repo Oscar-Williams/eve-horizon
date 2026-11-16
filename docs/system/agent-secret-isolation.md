@@ -56,8 +56,14 @@ The adapter-provided env is the key subtlety. Harness adapters (zai, claude, cod
 (success, failure, exception, cancellation), both execution paths delete what
 they wrote for it: file-type secrets (`$TMPDIR/eve/job-secrets/<attempt>`), git
 SSH keys (`$TMPDIR/eve/git-keys/<attempt>`)
-and the per-job HOME with its Eve, Claude and `gh` credentials
+and the per-job HOME with its Eve, Claude, Codex and `gh` credentials
 (`cleanupJobSecretArtifacts`). A pod restart is not needed to clear them.
+Codex `auth.json` goes only to the harness config dir (`CODEX_HOME`) and the
+per-job HOME, never the runtime's own HOME, and no job falls back to an
+`auth.json` found there. A pre-existing `auth.json` in the harness config dir
+is used only by jobs without a secrets allowlist. A k8s runtime removes
+`~/.codex/auth.json` and `~/.code/auth.json` from its own HOME when it starts
+(left by earlier versions).
 
 **Per-agent secrets allowlist**: an agent's `access.secrets` (and a workflow
 agent step's `secrets:`) limits the secrets its jobs receive to the names
