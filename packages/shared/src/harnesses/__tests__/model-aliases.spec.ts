@@ -47,6 +47,7 @@ describe('Claude Code model aliases', () => {
   });
 
   it('preserves non-Opus model names', () => {
+    expect(normalizeClaudeCodeModelAlias('claude-sonnet-5-5')).toBe('claude-sonnet-5-5');
     expect(normalizeClaudeCodeModelAlias('sonnet')).toBe('sonnet');
     expect(normalizeClaudeCodeModelAlias('claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
   });

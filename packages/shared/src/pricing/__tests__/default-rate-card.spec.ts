@@ -84,6 +84,28 @@ const CURRENT_GENERATION: RateCase[] = [
     expected_llm_usd: '36.750000',
   },
   {
+    name: 'Claude Code reporting Sonnet 5.5',
+    provider: 'anthropic',
+    reported_model: 'claude-sonnet-5-5',
+    normalized_model: 'claude-sonnet-5-5',
+    // 2.00 input + 10.00 output + 0.10 cache read + 2.50 cache write
+    expected_llm_usd: '14.600000',
+  },
+  {
+    name: 'Claude Code reporting a dated Sonnet 5.5 id',
+    provider: 'anthropic',
+    reported_model: 'claude-sonnet-5-5-20261001',
+    normalized_model: 'claude-sonnet-5-5',
+    expected_llm_usd: '14.600000',
+  },
+  {
+    name: 'a provider-prefixed Sonnet 5.5 id',
+    provider: 'anthropic',
+    reported_model: 'anthropic/claude-sonnet-5-5',
+    normalized_model: 'claude-sonnet-5-5',
+    expected_llm_usd: '14.600000',
+  },
+  {
     name: 'Claude Code reporting Sonnet 5',
     provider: 'anthropic',
     reported_model: 'claude-sonnet-5',

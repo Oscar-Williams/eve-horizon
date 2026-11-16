@@ -244,6 +244,37 @@ describe('BudgetEnforcer cache-aware token accounting', () => {
     });
   });
 
+  it('trips max_cost for Claude Sonnet 5.5 usage priced from the default rate card', async () => {
+    const { enforcer, logs, killProcess } = makeEnforcer(makeConfig({
+      maxTokens: 10_000_000,
+      maxCost: { currency: 'usd', amount: 1 },
+    }));
+
+    // 500k input ($1.00) + 1k output ($0.01) at Sonnet 5.5 list prices.
+    await enforcer.processLlmCall(llmCall({
+      provider: 'anthropic',
+      model: 'claude-sonnet-5-5',
+      usage: { input_tokens: 500_000, output_tokens: 1_000 },
+    }));
+
+    expect(killProcess).toHaveBeenCalledOnce();
+    expect(logs.last('budget.exceeded')).toMatchObject({
+      reason: 'max_cost exceeded',
+      estimated_total: '1.010000',
+    });
+  });
+
+  it('discounts Claude Sonnet 5.5 cache reads by its 0.05 rate-card weight', () => {
+    const breakdown = calculateBudgetTokenBreakdown(DEFAULT_RATE_CARD_V1, [{
+      provider: 'anthropic',
+      model: 'claude-sonnet-5-5',
+      usage: { input_tokens: 0, cache_read_tokens: 1_000_000 },
+    }]);
+
+    expect(breakdown.cache_read_token_weight).toBe(0.05);
+    expect(breakdown.weighted_tokens).toBe(50_000);
+  });
+
   it('includes the new token fields on budget.exceeded logs', async () => {
     const { enforcer, logs } = makeEnforcer(makeConfig({ maxTokens: 100_000 }));
 
