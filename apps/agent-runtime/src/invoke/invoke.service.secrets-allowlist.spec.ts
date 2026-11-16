@@ -1,0 +1,57 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HarnessInvocation, SecretResolveItem } from '@eve/shared';
+
+const resolved = vi.hoisted(() => ({ secrets: [] as unknown[] }));
+
+vi.mock('@eve/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/shared')>()),
+  resolveSecrets: vi.fn(async () => resolved.secrets),
+}));
+
+import { InvokeService } from './invoke.service.js';
+
+const TOKEN = 'ghs_exampleInstallationToken123';
+
+function secret(key: string, value = `${key}-value`): SecretResolveItem {
+  return { key, value, type: 'env_var', scope_type: 'project', scope_id: 'proj_1' } as SecretResolveItem;
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+async function contextFor(secrets_allowlist?: string[]) {
+  resolved.secrets = [secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD')];
+  const invocation = {
+    jobId: 'opps-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'triage',
+    workspacePath: '/tmp/eve-allowlist-test', repoUrl: 'https://github.com/org/repo.git',
+    ...(secrets_allowlist ? { secrets_allowlist } : {}),
+  } as unknown as HarnessInvocation;
+  const service = new InvokeService(null as never);
+  (service as any).jobs = { markExecutionStarted: vi.fn(), updateRuntimeMeta: vi.fn() };
+  vi.spyOn(service as any, 'applyManifestDefaults').mockImplementation(async (inv) => inv);
+  let captured: any;
+  vi.spyOn(service as any, 'prepareRepo').mockImplementation(async (ctx) => { captured = ctx; throw new Error('stop'); });
+  const cancellation = { signal: new AbortController().signal, check: vi.fn(), stop: vi.fn() };
+  // The inline path's workspace cleanup reads service config, absent here; the context is captured first.
+  await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
+  return captured;
+}
+
+describe('agent runtime secrets allowlist', () => {
+  it('hands the job every resolved secret when no allowlist is declared (unchanged)', async () => {
+    const ctx = await contextFor();
+    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'OPPS_SIGNING_KEY', 'SMTP_PASSWORD']);
+    expect(ctx.gitAuth?.cloneUrl).toContain(TOKEN);
+  });
+
+  it('hands the job only the allowlisted secrets', async () => {
+    const ctx = await contextFor(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+  });
+
+  it('still clones with a git token the allowlist leaves out, without putting it in the clone URL', async () => {
+    const ctx = await contextFor(['ANTHROPIC_API_KEY']);
+    expect(ctx.gitAuth?.cloneUrl).toBeUndefined();
+    expect(JSON.stringify(ctx.gitAuth?.env ?? {})).toContain(Buffer.from(`x-access-token:${TOKEN}`).toString('base64'));
+    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).not.toContain('GITHUB_TOKEN');
+  });
+});

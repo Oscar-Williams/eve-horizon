@@ -911,6 +911,39 @@ workflows:
     });
   });
 
+  describe('invoke - secrets allowlist', () => {
+    const manifest = `
+name: test
+services:
+  api:
+    image: test:latest
+workflows:
+  triage:
+    steps:
+      - name: score
+        agent:
+          prompt: "Score today's notices"
+        secrets: [ANTHROPIC_API_KEY, OPPS_SIGNING_KEY]
+      - name: summarise
+        depends_on: [score]
+        agent:
+          prompt: "Summarise"
+`;
+
+    it("stores a step's secrets allowlist on its job, and none on steps without one", async () => {
+      const service = createService(manifest);
+
+      await service.invoke('proj_test123', 'triage');
+
+      const score = allCreatedJobs.find((job) => job.step_name === 'score');
+      const summarise = allCreatedJobs.find((job) => job.step_name === 'summarise');
+      const root = allCreatedJobs.find((job) => job.parent_id === null);
+      expect(score?.secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+      expect(summarise?.secrets_allowlist ?? null).toBeNull();
+      expect(root?.secrets_allowlist ?? null).toBeNull();
+    });
+  });
+
   describe('invoke - workflow resource refs', () => {
     it('passes invocation resource_refs to dependent steps by default', async () => {
       const service = createService(`
