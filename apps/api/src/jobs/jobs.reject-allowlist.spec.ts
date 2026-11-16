@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
   jobQ: {
     findById: vi.fn(),
     rejectReview: vi.fn(),
+    release: vi.fn(),
   },
 }));
 
@@ -20,8 +21,10 @@ type Statement = { sql: string; values: unknown[] };
 const statements: Statement[] = [];
 const recorder = Object.assign(
   async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    statements.push({ sql: strings.join('?'), values });
-    return [];
+    const sql = strings.join('?');
+    statements.push({ sql, values });
+    // A row lock returns the job as stored.
+    return /FOR UPDATE/.test(sql) && m.job ? [{ ...m.job }] : [];
   },
   { json: (v: unknown) => v },
 );
@@ -46,6 +49,7 @@ beforeEach(() => {
   m.job = { id: 'a-1', project_id: 'proj_a', phase: 'review', secrets_allowlist: null, created_at: new Date(), updated_at: new Date() };
   m.jobQ.findById.mockImplementation(async () => (m.job ? { ...m.job } : null));
   m.jobQ.rejectReview.mockImplementation(async () => ({ ...m.job, phase: 'active', created_at: new Date(), updated_at: new Date() }));
+  m.jobQ.release.mockImplementation(async () => ({ success: true, job: { ...m.job, phase: 'ready', created_at: new Date(), updated_at: new Date() } }));
 });
 
 describe('POST /jobs/:job_id/reject, which runs the job again', () => {
@@ -54,11 +58,30 @@ describe('POST /jobs/:job_id/reject, which runs the job again', () => {
 
     expect(m.jobQ.rejectReview).toHaveBeenCalled();
     expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']]);
+    // The narrowing reads the stored list under a row lock.
+    const lock = statements.findIndex((s) => /SELECT secrets_allowlist FROM jobs/.test(s.sql) && /FOR UPDATE/.test(s.sql));
+    const write = statements.findIndex((s) => /UPDATE jobs SET secrets_allowlist = \?/.test(s.sql));
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(lock).toBeLessThan(write);
   });
 
   it('leaves the job as it is for an unrestricted rejecter', async () => {
     await service().reject('a-1', { reviewer_id: 'user_owner', reason: 'redo' } as never, { user_id: 'user_owner' } as AuthUser);
 
     expect(allowlistWrites()).toEqual([]);
+  });
+
+});
+
+describe('POST /jobs/:job_id/release, which re-queues the job', () => {
+  it("narrows the job to a restricted releaser's allowlist", async () => {
+    m.job = { ...m.job!, phase: 'active', secrets_allowlist: ['OPPS_SIGNING_KEY', 'GITHUB_TOKEN'] };
+    const svc = service();
+    (svc as any).gates = { releaseGates: vi.fn() };
+
+    await svc.release('a-1', { agent_id: 'opps-1', reason: 'retry' } as never, RESTRICTED);
+
+    expect(m.jobQ.release).toHaveBeenCalled();
+    expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
   });
 });

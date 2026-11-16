@@ -80,6 +80,20 @@ describe('the clone-only auth header', () => {
   });
 });
 
+describe('the SSH command for the clone', () => {
+  it("ignores the service user's ~/.ssh config and known_hosts, which a job can write", async () => {
+    const inv = invocation('git@github.com:org/repo.git');
+    const auth = await prepareGitAuth(inv, [secret('DEPLOY_KEY', 'ssh-key-material', 'ssh_key')]);
+    const command = auth?.env?.GIT_SSH_COMMAND ?? '';
+
+    expect(command).toContain('-F /dev/null');
+    const knownHosts = /UserKnownHostsFile=(\S+)/.exec(command)?.[1] ?? '';
+    const keyPath = /-i (\S+)/.exec(command)?.[1] ?? '';
+    expect(path.dirname(knownHosts)).toBe(path.dirname(keyPath));
+    expect(command).toContain('StrictHostKeyChecking=accept-new');
+  });
+});
+
 describe('serviceGitEnv with caller git config', () => {
   it('appends caller config and keeps hooks and fsmonitor disabled last', () => {
     const env = serviceGitEnv({

@@ -59,4 +59,10 @@ describe('a git credential the job may not hold', () => {
       await invocation({ repoUrl: 'git@github.com:org/repo.git', git: { push: 'on_success' } as never }), [SSH],
     )).rejects.toThrow(/secrets allowlist/);
   });
+
+  it('places no limit for a non-GitHub HTTPS repo, where the GitHub token is never used', async () => {
+    await expect(assertCloneOnlyGitCredentialSafe(
+      await invocation({ repoUrl: 'https://gitlab.example.com/org/repo.git', git: { push: 'on_success' } as never }), [TOKEN],
+    )).resolves.toBeUndefined();
+  });
 });

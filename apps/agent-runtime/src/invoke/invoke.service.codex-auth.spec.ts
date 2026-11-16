@@ -72,6 +72,7 @@ describe('agent-runtime codex auth provenance', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     process.env.HOME = originalHome;
     await fs.rm(home, { recursive: true, force: true });
   });
@@ -191,7 +192,8 @@ describe('agent-runtime codex auth provenance', () => {
       await expect(fs.readFile(path.join(configDir, 'auth.json'), 'utf-8')).resolves.toBe(authJson);
     });
 
-    it("is never read: an auth.json another job left there is not this job's credential", async () => {
+    it("is never read in k8s: an auth.json another job left there is not this job's credential", async () => {
+      vi.stubEnv('EVE_RUNTIME', 'k8s');
       const { resolveCodeAuth } = makeService();
       for (const dir of ['.codex', '.code']) {
         await fs.mkdir(path.join(home, dir), { recursive: true });
@@ -212,6 +214,41 @@ describe('agent-runtime codex auth provenance', () => {
         [],
         { configDir, jobUserHome } as never,
       )).rejects.toThrow(/Missing code auth/);
+    });
+  });
+
+  describe('operator Codex auth', () => {
+    const operatorJson = JSON.stringify({ tokens: { access_token: 'operator-token' } });
+    let jobUserHome: string;
+
+    beforeEach(async () => {
+      jobUserHome = path.join(home, 'job-home');
+      await fs.mkdir(jobUserHome, { recursive: true });
+    });
+
+    it("serves a job without an allowlist from the runtime's own env", async () => {
+      vi.stubEnv('EVE_RUNTIME', 'k8s');
+      vi.stubEnv('CODEX_AUTH_JSON', Buffer.from(operatorJson).toString('base64'));
+      const { resolveCodeAuth } = makeService();
+
+      await expect(resolveCodeAuth([], { configDir, jobUserHome } as never)).resolves.toEqual({ env: {} });
+      await expect(fs.readFile(path.join(jobUserHome, '.codex', 'auth.json'), 'utf-8')).resolves.toBe(operatorJson);
+    });
+
+    it("serves a job without an allowlist from a developer's codex login outside k8s", async () => {
+      vi.stubEnv('EVE_RUNTIME', '');
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+      await fs.writeFile(path.join(home, '.codex', 'auth.json'), operatorJson);
+      const { resolveCodeAuth } = makeService();
+
+      await expect(resolveCodeAuth([], { configDir, jobUserHome } as never)).resolves.toEqual({ env: {} });
+    });
+
+    it('never serves a job with an allowlist', async () => {
+      vi.stubEnv('CODEX_AUTH_JSON', Buffer.from(operatorJson).toString('base64'));
+      const { resolveCodeAuthFor } = makeService();
+
+      await expect(resolveCodeAuthFor({ ...invocation, secrets_allowlist: ['ANTHROPIC_API_KEY'] } as HarnessInvocation, [], { configDir, jobUserHome } as never)).rejects.toThrow(/Missing code auth/);
     });
   });
 });

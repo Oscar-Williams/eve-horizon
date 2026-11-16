@@ -102,4 +102,15 @@ describe('secrets allowlist on the harness invocation', () => {
 
     expect(invocation.secrets_allowlist).toBeUndefined();
   });
+
+  it('prefers the slug-routed agent over a same-id agent in the job\'s project with another slug', async () => {
+    mocks.agents.findByProjectAndId.mockResolvedValue({ id: 'triage', slug: 'local-triage', access_json: null });
+    mocks.agents.findByOrgAndSlug.mockResolvedValue({ id: 'triage', slug: 'triage', access_json: { secrets: ['OPPS_SIGNING_KEY'] } });
+
+    const invocation = await buildInvocation()(
+      job({ target: { agent_slug: 'triage' } }), attempt, project, 'proj_opps', '/ws', '', routing,
+    );
+
+    expect(invocation.secrets_allowlist).toEqual(['OPPS_SIGNING_KEY']);
+  });
 });
