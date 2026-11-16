@@ -32,6 +32,21 @@ GET /models
 
 - Rate cards are immutable versions (name + version + effective_at).
 - Exchange-rate snapshots are stored for auditable conversions.
+- A model missing from the active card prices at $0, so `max_cost` never trips
+  for it. Keep every model the harnesses run listed.
+
+Where the active rates come from:
+
+- With no stored `default` card in `pricing_rate_cards`, receipts and budget
+  enforcement use the built-in card
+  (`packages/shared/src/pricing/default-rate-card.ts`). New rows there reach an
+  instance with the platform upgrade; nothing else to run.
+- Once a stored `default` card exists (written by `eve admin pricing
+  seed-defaults` or `refresh-openrouter`), the highest version effective now
+  wins and an upgrade changes nothing. An admin must publish the next version
+  carrying the new rows: `POST /admin/pricing/rate-cards` with `version` one
+  above the current one. `refresh-openrouter` writes null cache rates, so it
+  does not replace the built-in Claude cache prices.
 
 Endpoints (admin):
 
