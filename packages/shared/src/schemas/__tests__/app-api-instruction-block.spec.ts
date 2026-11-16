@@ -94,6 +94,14 @@ describe('buildAppApiInstructionBlock', () => {
     expect(result).toContain('EVE_APP_LINK_ANALYTICS_TOKEN');
     expect(result).not.toContain('EVE_JOB_TOKEN');
   });
+
+  it('tells the agent how to refresh an app link token before it expires', () => {
+    const result = buildAppApiInstructionBlock([
+      { name: 'opps', type: 'openapi', origin: 'app_link', alias: 'opps', base_url: 'http://opps:3000' },
+    ]);
+
+    expect(result).toContain('export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)');
+  });
 });
 
 describe('buildAppApiEnvVars', () => {

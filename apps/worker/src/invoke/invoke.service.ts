@@ -112,7 +112,7 @@ import {
 import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type HarnessHelpers } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
 import { runInvocationInK8s } from './k8s-runner';
-import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintAppLinkToken } from '@eve/shared';
+import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintJobAppLinkTokens } from '@eve/shared';
 import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { resolveProjectSecrets, mintJobToken, updateSecret } from '@eve/shared';
 import { extractPrefixedEnv, writeEveCredentials } from '@eve/shared';
@@ -2165,21 +2165,7 @@ export class InvokeService {
       `;
       const resolvedApis = hintsRow[0]?.hints?.resolved_app_apis as Array<{ name: string; type?: string; base_url: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
       const resolvedLinks = hintsRow[0]?.hints?.resolved_app_links as Array<{ name: string; alias: string; subscription_id: string; type?: string; base_url: string; scopes?: string[]; producer_project_id?: string; producer_env?: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
-      const resolvedLinksWithTokens = [];
-      for (const link of resolvedLinks ?? []) {
-        const token = await mintAppLinkToken({
-          subscriptionId: link.subscription_id,
-          consumerPrincipal: `job:${invocation.jobId}`,
-          producerEnv: link.producer_env,
-          ttlSeconds: 60 * 60,
-        });
-        resolvedLinksWithTokens.push({
-          ...link,
-          origin: 'app_link' as const,
-          type: link.type ?? 'openapi',
-          token: token?.access_token,
-        });
-      }
+      const resolvedLinksWithTokens = await mintJobAppLinkTokens(invocation, resolvedLinks ?? []);
       if (resolvedApis?.length || resolvedLinksWithTokens.length > 0) {
         Object.assign(adapterEnv, buildAppApiEnvVars([
           ...(resolvedApis ?? []).map((api) => ({ ...api, type: api.type ?? 'openapi' })),

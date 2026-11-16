@@ -142,6 +142,13 @@ export {
   logHarnessEnd,
 } from './harness-lifecycle.js';
 
+// App-link tokens for a running job (bound to its attempt)
+export {
+  mintJobAppLinkTokens,
+  JOB_APP_LINK_TOKEN_TTL_SECONDS,
+  type ResolvedAppLink,
+} from './app-link-tokens.js';
+
 // Harness launch (prompt on stdin, never argv)
 export {
   buildEveAgentCliArgs,

@@ -178,6 +178,9 @@ export async function handleJob(
     case 'current':
       return handleCurrent(positionals, flags, context, json);
 
+    case 'app-link-token':
+      return handleAppLinkToken(positionals, flags, context, json);
+
     case 'diagnose':
       return handleDiagnose(positionals, context, json);
 
@@ -255,7 +258,7 @@ export async function handleJob(
 
     default:
       throw new Error(
-        'Usage: eve jobs <create|list|ready|blocked|show|current|diagnose|tree|update|close|cancel|dep|claim|release|attempts|logs|submit|approve|reject|result|receipt|compare|follow|wait|watch|runner-logs|attach|attachments|attachment|batch|batch-validate>',
+        'Usage: eve jobs <create|list|ready|blocked|show|current|app-link-token|diagnose|tree|update|close|cancel|dep|claim|release|attempts|logs|submit|approve|reject|result|receipt|compare|follow|wait|watch|runner-logs|attach|attachments|attachment|batch|batch-validate>',
       );
   }
 }
@@ -981,6 +984,61 @@ async function handleCurrent(
 
   const response = await requestJobContext(context, jobId);
   outputJson(response, true);
+}
+
+/** A fresh app-link token for a running job (POST /jobs/{job_id}/app-link-tokens). */
+export interface JobAppLinkToken {
+  alias: string;
+  name: string;
+  env_var: string;
+  access_token: string;
+  expires_at: number;
+}
+
+/**
+ * Plain output of `eve job app-link-token`: the bare token for one link (for
+ * `$(...)`), `NAME=token` lines for several, or `export` lines with --env
+ * (for `eval`).
+ */
+export function formatAppLinkTokens(tokens: JobAppLinkToken[], options: { env: boolean }): string {
+  if (options.env) {
+    return tokens.map((t) => `export ${t.env_var}='${t.access_token.replace(/'/g, `'\\''`)}'`).join('\n');
+  }
+  if (tokens.length === 1) {
+    return tokens[0].access_token;
+  }
+  return tokens.map((t) => `${t.env_var}=${t.access_token}`).join('\n');
+}
+
+/**
+ * eve job app-link-token [<alias>] [--job <id>] [--env] [--json]
+ *
+ * Inside a running job (EVE_JOB_ID and the job's own token are set by the
+ * runtime), mints fresh app-link tokens for the job's app links. They last an
+ * hour, like the ones the job started with, and are refused once the job ends.
+ */
+async function handleAppLinkToken(
+  positionals: string[],
+  flags: Record<string, FlagValue>,
+  context: ResolvedContext,
+  json: boolean,
+): Promise<void> {
+  const alias = positionals[0];
+  const jobId = getStringFlag(flags, ['job']) ?? process.env.EVE_JOB_ID;
+  if (!jobId) {
+    throw new Error('Usage: eve job app-link-token [<alias>] [--job <id>] [--env] [--json] (run inside a job, which sets EVE_JOB_ID)');
+  }
+
+  const response = await requestJson<{ data: JobAppLinkToken[] }>(
+    context,
+    `/jobs/${encodeURIComponent(jobId)}/app-link-tokens`,
+    { method: 'POST', body: alias ? { alias } : {} },
+  );
+  if (json) {
+    outputJson(response, true);
+    return;
+  }
+  console.log(formatAppLinkTokens(response.data, { env: getBooleanFlag(flags, ['env']) ?? false }));
 }
 
 /**

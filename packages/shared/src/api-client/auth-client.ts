@@ -106,6 +106,8 @@ export async function mintJobToken(
     permissions?: string[];
     scope?: AccessBindingScope;
     ttlSeconds?: number;
+    /** The running attempt to bind the token to; it stops working when that attempt ends. */
+    attemptId?: string;
   },
 ): Promise<JobTokenResult | null> {
   const config = loadConfig();
@@ -129,6 +131,7 @@ export async function mintJobToken(
         permissions: options?.permissions ?? DEFAULT_AGENT_PERMISSIONS,
         scope: options?.scope,
         ttl_seconds: options?.ttlSeconds ?? DEFAULT_TTL_SECONDS,
+        ...(options?.attemptId ? { attempt_id: options.attemptId } : {}),
       }),
     });
 
@@ -154,6 +157,8 @@ export async function mintAppLinkToken(
     consumerEnv?: string | null;
     producerEnv?: string | null;
     ttlSeconds?: number;
+    /** For a `job:<id>` principal: the running attempt to bind the token to. */
+    attemptId?: string;
   },
 ): Promise<AppLinkTokenResult | null> {
   let config: ReturnType<typeof loadConfig>;
@@ -184,6 +189,7 @@ export async function mintAppLinkToken(
         consumer_env: params.consumerEnv ?? null,
         producer_env: params.producerEnv ?? null,
         ttl_seconds: params.ttlSeconds ?? DEFAULT_APP_LINK_TTL_SECONDS,
+        ...(params.attemptId ? { attempt_id: params.attemptId } : {}),
       }),
     });
 

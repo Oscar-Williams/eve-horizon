@@ -25,9 +25,11 @@ import {
   orgInviteQueries,
   identityQueries,
   secretQueries,
+  jobQueries,
   type MembershipRole,
 } from '@eve/db';
 import { AppAuthPolicyService } from './app-auth-policy.service.js';
+import { assertJobRunning } from './job-liveness.js';
 import { MagicLinkService } from './magic-link.service.js';
 import { ROLE_RANK } from './rbac.service.js';
 import {
@@ -54,6 +56,7 @@ export class AppAuthService {
   private readonly memberships: ReturnType<typeof membershipQueries>;
   private readonly projects: ReturnType<typeof projectQueries>;
   private readonly appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
+  private jobQueriesCache?: ReturnType<typeof jobQueries>;
   private readonly orgInvites: ReturnType<typeof orgInviteQueries>;
   private readonly identities: ReturnType<typeof identityQueries>;
   private readonly secrets: ReturnType<typeof secretQueries>;
@@ -61,7 +64,7 @@ export class AppAuthService {
   private readonly orgsClaimLimit: number;
 
   constructor(
-    @Inject('DB') db: Db,
+    @Inject('DB') private readonly db: Db,
     private readonly magicLink: MagicLinkService,
     private readonly appAuthPolicy?: AppAuthPolicyService,
   ) {
@@ -489,6 +492,12 @@ export class AppAuthService {
     return orgRole;
   }
 
+  /** Job lookups for token liveness, created on first use. */
+  private get jobs(): ReturnType<typeof jobQueries> {
+    this.jobQueriesCache ??= jobQueries(this.db);
+    return this.jobQueriesCache;
+  }
+
   async verifyAppLinkToken(token: string): Promise<AppLinkTokenPayload> {
     if (!this.signerKey) {
       throw new UnauthorizedException('Auth is not configured');
@@ -564,6 +573,14 @@ export class AppAuthService {
     if (grant.envs.length > 0 && !grant.envs.includes(payload.producer_env as string)) {
       throw new UnauthorizedException('App-link producer environment is not granted');
     }
+    if (payload.attempt_id !== undefined && typeof payload.attempt_id !== 'string') {
+      throw new UnauthorizedException('Invalid app-link attempt_id');
+    }
+    const principal = payload.consumer_principal as string;
+    if (principal.startsWith('job:')) {
+      // A job's link token works only while the job (and the attempt it was minted for) runs.
+      await assertJobRunning(this.jobs, principal.slice('job:'.length), payload.attempt_id as string | undefined);
+    }
 
     return {
       sub,
@@ -576,6 +593,7 @@ export class AppAuthService {
       producer_env: payload.producer_env as string,
       api_name: payload.api_name as string,
       scopes: scopes as string[],
+      ...(typeof payload.attempt_id === 'string' ? { attempt_id: payload.attempt_id } : {}),
       aud: payload.aud as string,
       exp: payload.exp,
       iat: payload.iat,

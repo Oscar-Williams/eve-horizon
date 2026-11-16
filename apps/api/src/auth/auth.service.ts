@@ -287,6 +287,8 @@ export class AuthService {
     userSecretsExcluded?: boolean;
     /** The job's effective secrets allowlist; work the token starts inherits it. */
     secretsAllowlist?: string[] | null;
+    /** The running attempt the token is bound to; it stops working when that attempt ends. */
+    attemptId?: string;
   }): string {
     if (!this.signerKey?.privateKey) {
       throw new Error('Signing key not configured');
@@ -321,6 +323,10 @@ export class AuthService {
       payload.secrets_allowlist = params.secretsAllowlist;
     }
 
+    if (params.attemptId) {
+      payload.attempt_id = params.attemptId;
+    }
+
     // Include agent identity when available — gives apps a stable agent identifier
     if (params.agentSlug) {
       payload.agent_slug = params.agentSlug;
@@ -332,6 +338,11 @@ export class AuthService {
 
   verifyJobToken(token: string): JobTokenPayload {
     return this.tokenVerifier.verifyJobToken(token);
+  }
+
+  /** verifyJobToken, and the token's job (and attempt) must still be running. */
+  verifyLiveJobToken(token: string): Promise<JobTokenPayload> {
+    return this.tokenVerifier.verifyLiveJobToken(token);
   }
 
   mintServiceToken(params: {
@@ -381,6 +392,8 @@ export class AuthService {
     apiName: string;
     scopes: string[];
     ttlSeconds?: number;
+    /** For a `job:<id>` principal: the running attempt the token is bound to. */
+    attemptId?: string;
   }): string {
     if (!this.signerKey?.privateKey) {
       throw new Error('Signing key not configured');
@@ -403,6 +416,7 @@ export class AuthService {
       producer_env: params.producerEnv,
       api_name: params.apiName,
       scopes: params.scopes,
+      ...(params.attemptId ? { attempt_id: params.attemptId } : {}),
       aud: audience,
       exp,
       iat: now,

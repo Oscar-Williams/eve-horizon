@@ -226,6 +226,8 @@ describe('job-token permissions when no user started the work', () => {
 
   it('a job token signed with platform permissions is held to the same rule when presented', async () => {
     const authService = buildAuthService();
+    // A presented job token is accepted only while its job is running.
+    m.jobs.push({ id: 'a-1', project_id: 'proj_a', phase: 'active' });
     const now = Math.floor(Date.now() / 1000);
     const sign = (userId: string) => createJwtRs256(
       {

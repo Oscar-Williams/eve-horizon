@@ -953,6 +953,17 @@ user's org memberships at mint time (limited to 50 most-recent,
 
 Scoped tokens issued to running jobs. Limited permissions.
 
+A job token works only while its job runs. The runtimes mint it for the
+running attempt (`attempt_id` claim); the API refuses it once that attempt is
+no longer the job's running attempt, and refuses any job token once its job
+is cancelled. A token minted without an attempt is refused once its job is
+done. The check is a database read on every request with a job token
+(including the `eve-job-token` header on env DB routes). Apps that verify job
+tokens locally against JWKS see only `exp` (up to 24 hours).
+
+A job with a secrets allowlist also carries `secrets_allowlist`; work its
+token starts inherits it (see [secrets.md](./secrets.md#agent-secrets-allowlist)).
+
 ```json
 {
   "user_id": "user_abc123",

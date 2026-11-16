@@ -5,6 +5,7 @@ import { replayStoreQueries } from '@eve/db';
 import { AuthController } from './auth.controller.js';
 import { AuthGuard } from './auth.guard.js';
 import { AuthInternalController } from './auth.internal.controller.js';
+import { JobAppLinkTokensController } from './job-app-link-tokens.controller.js';
 import { AuthInvitesController } from './auth.invites.controller.js';
 import { AuthAccessRequestsController } from './auth.access-requests.controller.js';
 import { ServicePrincipalsController } from './auth.service-principals.controller.js';
@@ -37,7 +38,7 @@ const MAGIC_LINK_WRAP_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 @Module({
   imports: [MailerModule, EventsModule],
-  controllers: [AuthController, AuthInternalController, AuthKeysController, AuthInvitesController, AuthAccessRequestsController, ServicePrincipalsController, AccessController, AccessRolesController, AccessGroupsController],
+  controllers: [AuthController, AuthInternalController, JobAppLinkTokensController, AuthKeysController, AuthInvitesController, AuthAccessRequestsController, ServicePrincipalsController, AccessController, AccessRolesController, AccessGroupsController],
   providers: [
     AuthService,
     MagicLinkService,

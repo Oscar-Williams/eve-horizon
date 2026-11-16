@@ -11,12 +11,14 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DEFAULT_SERVICE_PERMISSIONS, AccessBindingScopeSchema, agentSecretsAllowlist, narrowSecretsAllowlist, type AccessBindingScope } from '@eve/shared';
-import { type Db, agentQueries, appLinkSubscriptionQueries, jobQueries, projectQueries } from '@eve/db';
+import { type Db, agentQueries, jobQueries, projectQueries } from '@eve/db';
 import { Public } from './auth.decorator.js';
 import { InternalTokenGuard } from '../common/internal-token.guard.js';
 import { AuthService } from './auth.service.js';
 import { AccessService } from './access.service.js';
 import { jobTokenPermissionsFor } from './token-scope.js';
+import { AppLinkTokenMinter, type AppLinkMintRequest } from './app-link-token-minter.js';
+import { isRunningAttempt } from './job-liveness.js';
 
 @ApiTags('internal')
 @Controller('internal/auth')
@@ -24,7 +26,7 @@ import { jobTokenPermissionsFor } from './token-scope.js';
 export class AuthInternalController {
   private jobs: ReturnType<typeof jobQueries>;
   private projects: ReturnType<typeof projectQueries>;
-  private appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
+  private appLinkMinter: AppLinkTokenMinter;
 
   constructor(
     private readonly authService: AuthService,
@@ -33,7 +35,7 @@ export class AuthInternalController {
   ) {
     this.jobs = jobQueries(db);
     this.projects = projectQueries(db);
-    this.appLinkSubscriptions = appLinkSubscriptionQueries(db);
+    this.appLinkMinter = new AppLinkTokenMinter(authService, db);
   }
 
   @Public()
@@ -41,7 +43,7 @@ export class AuthInternalController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mint a job token with explicit permissions for agent CLI access (internal only)' })
   async mintJobToken(
-    @Body() body: { job_id: string; permissions?: string[]; scopes?: string[]; scope?: unknown; ttl_seconds?: number },
+    @Body() body: { job_id: string; permissions?: string[]; scopes?: string[]; scope?: unknown; ttl_seconds?: number; attempt_id?: string },
   ): Promise<{ access_token: string; token_type: string; expires_at: number }> {
     const job = await this.jobs.findById(body.job_id);
     if (!job) {
@@ -73,6 +75,11 @@ export class AuthInternalController {
 
     const agentSlug = (job.target as { agent_slug?: string } | null)?.agent_slug;
 
+    // A token bound to the running attempt stops working when that attempt ends.
+    if (body.attempt_id && !await isRunningAttempt(this.jobs, job.id, body.attempt_id)) {
+      throw new UnauthorizedException(`Attempt ${body.attempt_id} is not job ${job.id}'s running attempt`);
+    }
+
     // The job's effective secrets allowlist rides on its token, so work the
     // job starts or changes cannot receive secrets the job itself may not.
     const agent = job.assignee ? await agentQueries(this.db).findByProjectAndId(job.project_id, job.assignee) : null;
@@ -89,6 +96,7 @@ export class AuthInternalController {
       agentSlug: agentSlug ?? undefined,
       userSecretsExcluded: job.user_secrets_excluded,
       secretsAllowlist,
+      ...(body.attempt_id ? { attemptId: body.attempt_id } : {}),
     });
 
     // Decode the exp claim for the response
@@ -216,96 +224,8 @@ export class AuthInternalController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mint an app-link token for cross-project API access (internal only)' })
   async mintAppLinkToken(
-    @Body() body: {
-      subscription_id: string;
-      consumer_principal: string;
-      consumer_env?: string | null;
-      producer_env?: string | null;
-      ttl_seconds?: number;
-      /** Required for a non-job principal (a deployed service): its project. */
-      consumer_project_id?: string | null;
-    },
+    @Body() body: AppLinkMintRequest,
   ): Promise<{ access_token: string; token_type: string; expires_at: number }> {
-    const subscription = await this.appLinkSubscriptions.findWithGrantsById(body.subscription_id);
-    // The subscription id comes from job hints or a deploy: mint only when the
-    // subscription's consumer is the principal's own project.
-    const principalProjectId = await this.principalProjectId(body);
-    if (
-      !subscription
-      || !subscription.api_grant
-      || !principalProjectId
-      || subscription.consumer_project_id !== principalProjectId
-    ) {
-      throw new NotFoundException(`App-link subscription ${body.subscription_id} not found`);
-    }
-    const grant = subscription.api_grant;
-    if (grant.revoked_at) {
-      throw new UnauthorizedException('App-link grant is revoked');
-    }
-
-    const consumerProject = await this.projects.findById(subscription.consumer_project_id);
-    if (!consumerProject) {
-      throw new NotFoundException(`Project ${subscription.consumer_project_id} not found`);
-    }
-
-    const producerEnv = body.producer_env
-      ?? subscription.producer_env_name
-      ?? body.consumer_env
-      ?? null;
-    if (!producerEnv) {
-      throw new UnauthorizedException('producer_env is required for app-link token minting');
-    }
-    if (grant.envs.length > 0 && !grant.envs.includes(producerEnv)) {
-      throw new UnauthorizedException(`Producer env ${producerEnv} is not allowed by this app-link grant`);
-    }
-
-    const accessToken = this.authService.mintAppLinkToken({
-      subscriptionId: subscription.id,
-      consumerProjectId: subscription.consumer_project_id,
-      consumerOrgId: consumerProject.org_id,
-      consumerPrincipal: body.consumer_principal,
-      consumerEnv: body.consumer_env ?? null,
-      producerProjectId: grant.producer_project_id,
-      producerEnv,
-      apiName: grant.export_name,
-      scopes: subscription.requested_scopes,
-      ttlSeconds: body.ttl_seconds,
-    });
-
-    const parts = accessToken.split('.');
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-    await this.appLinkSubscriptions.recordTokenMint({
-      subscription_id: subscription.id,
-      principal: body.consumer_principal,
-      audience: `project:${grant.producer_project_id}`,
-    });
-
-    return {
-      access_token: accessToken,
-      token_type: 'bearer',
-      expires_at: payload.exp,
-    };
-  }
-
-  /**
-   * The project an app-link token is minted for: the job's own project for a
-   * `job:<id>` principal (a stated consumer_project_id must agree), otherwise
-   * the stated consumer_project_id. Null when it cannot be established.
-   */
-  private async principalProjectId(body: {
-    consumer_principal: string;
-    consumer_project_id?: string | null;
-  }): Promise<string | null> {
-    const stated = typeof body.consumer_project_id === 'string' && body.consumer_project_id
-      ? body.consumer_project_id
-      : null;
-    const principal = typeof body.consumer_principal === 'string' ? body.consumer_principal : '';
-    if (principal.startsWith('job:')) {
-      const job = await this.jobs.findById(principal.slice('job:'.length));
-      if (!job) return null;
-      if (stated && stated !== job.project_id) return null;
-      return job.project_id;
-    }
-    return stated;
+    return this.appLinkMinter.mint(body);
   }
 }

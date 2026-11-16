@@ -514,6 +514,19 @@ Jobs default to 'ready' phase, making them immediately schedulable.`,
         ],
         examples: ['eve job current', 'eve job current MyProj-abc123 --tree'],
       },
+      'app-link-token': {
+        description: "Mint fresh app-link tokens for the running job (its own job token only; they last an hour and stop when the job ends)",
+        usage: 'eve job app-link-token [<alias>] [--job <id>] [--env] [--json]',
+        options: [
+          '--job <id>           Job to refresh (defaults to EVE_JOB_ID)',
+          '--env                Print export lines for eval',
+          '--json               Print the API response',
+        ],
+        examples: [
+          'export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)',
+          'eval "$(eve job app-link-token --env)"',
+        ],
+      },
       diagnose: {
         description: 'Comprehensive job debugging (state, attempts, timeline, logs, recommendations)',
         usage: 'eve job diagnose <job-id>',

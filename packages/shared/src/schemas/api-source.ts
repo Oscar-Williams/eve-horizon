@@ -80,6 +80,10 @@ export function buildAppApiInstructionBlock(apis: AppApiInfo[]): string {
       ? `EVE_APP_LINK_${envName}_TOKEN`
       : 'EVE_JOB_TOKEN';
     const headingName = api.origin === 'app_link' ? api.alias ?? name : name;
+    // App-link tokens last an hour and stop when the job ends; a running job refreshes its own.
+    const refreshLine = api.origin === 'app_link'
+      ? `  - Token lasts an hour. On a 401, refresh it: \`export ${authEnv}=$(eve job app-link-token ${headingName})\`\n`
+      : '';
     const headingDetail = api.origin === 'app_link'
       ? `cross-project app link to ${api.producer_project_id ?? 'producer'}`
       : type;
@@ -91,6 +95,7 @@ export function buildAppApiInstructionBlock(apis: AppApiInfo[]): string {
         `  - CLI: \`${cli.name}\` (on PATH — run \`${cli.name} --help\` to see all commands)\n` +
         `  - Fallback env var: \`$${urlEnv}\`\n` +
         `  - Fallback auth: \`Authorization: Bearer $${authEnv}\`\n` +
+        refreshLine +
         '  - Example:\n' +
         '    ```bash\n' +
         `    ${cli.name} --help\n` +
@@ -102,6 +107,7 @@ export function buildAppApiInstructionBlock(apis: AppApiInfo[]): string {
       `- **${headingName}** (${headingDetail}): \`${baseUrl}\`\n` +
       `  - Env var: \`$${urlEnv}\`\n` +
       `  - Auth: \`Authorization: Bearer $${authEnv}\`\n` +
+      refreshLine +
       '  - Example:\n' +
       '    ```bash\n' +
       `    curl -s "$${urlEnv}/health" \\\n` +

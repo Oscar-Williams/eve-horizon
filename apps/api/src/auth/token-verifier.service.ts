@@ -20,9 +20,11 @@ import {
   identityQueries,
   membershipQueries,
   orgInviteQueries,
+  jobQueries,
   type MembershipRole,
 } from '@eve/db';
 import { AppAuthService } from './app-auth.service.js';
+import { assertJobRunning } from './job-liveness.js';
 import { MagicLinkService } from './magic-link.service.js';
 import {
   type JwtPayload,
@@ -89,6 +91,7 @@ export class TokenVerifierService {
   private readonly identities: ReturnType<typeof identityQueries>;
   private readonly memberships: ReturnType<typeof membershipQueries>;
   private readonly orgInvites: ReturnType<typeof orgInviteQueries>;
+  private jobQueriesCache?: ReturnType<typeof jobQueries>;
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -105,6 +108,12 @@ export class TokenVerifierService {
     this.identities = identityQueries(db);
     this.memberships = membershipQueries(db);
     this.orgInvites = orgInviteQueries(db);
+  }
+
+  /** Job lookups for token liveness, created on first use. */
+  private get jobs(): ReturnType<typeof jobQueries> {
+    this.jobQueriesCache ??= jobQueries(this.db);
+    return this.jobQueriesCache;
   }
 
   async verifyAuthorizationHeader(header: string): Promise<AuthUser> {
@@ -396,8 +405,8 @@ export class TokenVerifierService {
     return this.resolveSupabaseToken(token);
   }
 
-  private resolveJobTokenAuth(token: string): AuthUser {
-    const payload = this.verifyJobToken(token);
+  private async resolveJobTokenAuth(token: string): Promise<AuthUser> {
+    const payload = await this.verifyLiveJobToken(token);
     return {
       user_id: payload.user_id,
       role: 'member',
@@ -405,6 +414,7 @@ export class TokenVerifierService {
       org_id: payload.org_id ?? undefined,
       is_job_token: true,
       job_id: payload.job_id,
+      ...(payload.attempt_id ? { attempt_id: payload.attempt_id } : {}),
       project_id: payload.project_id,
       permissions: payload.permissions,
       ...(payload.scope ? { scope: payload.scope } : {}),
@@ -492,6 +502,13 @@ export class TokenVerifierService {
     };
   }
 
+  /** A verified job token whose job is still running (see assertJobRunning). */
+  async verifyLiveJobToken(token: string): Promise<JobTokenPayload> {
+    const payload = this.verifyJobToken(token);
+    await assertJobRunning(this.jobs, payload.job_id, payload.attempt_id);
+    return payload;
+  }
+
   verifyJobToken(token: string): JobTokenPayload {
     if (!this.signerKey) {
       throw new UnauthorizedException('Auth is not configured');
@@ -530,6 +547,10 @@ export class TokenVerifierService {
       throw new UnauthorizedException('Invalid token timestamps');
     }
 
+    if (payload.attempt_id !== undefined && typeof payload.attempt_id !== 'string') {
+      throw new UnauthorizedException('Invalid token attempt_id');
+    }
+
     const secretsAllowlist = payload.secrets_allowlist as unknown;
     if (secretsAllowlist !== undefined
       && (!Array.isArray(secretsAllowlist) || !secretsAllowlist.every((key) => typeof key === 'string'))) {
@@ -561,6 +582,7 @@ export class TokenVerifierService {
       ...(typeof payload.email === 'string' ? { email: payload.email } : {}),
       ...(payload.user_secrets_excluded === true ? { user_secrets_excluded: true } : {}),
       ...(Array.isArray(secretsAllowlist) ? { secrets_allowlist: secretsAllowlist as string[] } : {}),
+      ...(typeof payload.attempt_id === 'string' ? { attempt_id: payload.attempt_id } : {}),
       exp: payload.exp,
       iat: payload.iat,
       type: 'job',

@@ -170,6 +170,8 @@ describe('work started with an org-bound token never carries account-level permi
       { kid: 'key-1', privateKey, publicKey },
     );
 
+    // A presented job token is accepted only while its job is running.
+    m.jobs.push({ id: 'a-bot', project_id: 'proj_a', phase: 'active' });
     const user = await buildAuthService().verifyAuthorizationHeader(`Bearer ${token}`);
 
     expect(user.permissions).toEqual(['jobs:read']);

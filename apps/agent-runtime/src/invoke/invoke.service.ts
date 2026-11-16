@@ -57,7 +57,7 @@ import {
 } from '@eve/shared';
 import { runInvocationInK8s } from './k8s-runner';
 import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
-import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintAppLinkToken } from '@eve/shared';
+import { buildSanitizedHarnessEnv, buildAppApiEnvVars } from '@eve/shared';
 import { extractPrefixedEnv, writeEveCredentials } from '@eve/shared';
 import { materializeScopedOrgFsMount, normalizeOrgFsMountSpec } from '@eve/shared';
 
@@ -102,6 +102,7 @@ import {
   // Harness launch (prompt on stdin)
   buildEveAgentCliArgs,
   spawnHarnessProcess,
+  mintJobAppLinkTokens,
   // Eve message relay
   EveMessageRelay,
   deliverProvisioningError,
@@ -1758,21 +1759,7 @@ export class InvokeService {
       `;
       const resolvedApis = hintsRow[0]?.hints?.resolved_app_apis as Array<{ name: string; type?: string; base_url: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
       const resolvedLinks = hintsRow[0]?.hints?.resolved_app_links as Array<{ name: string; alias: string; subscription_id: string; type?: string; base_url: string; scopes?: string[]; producer_project_id?: string; producer_env?: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
-      const resolvedLinksWithTokens = [];
-      for (const link of resolvedLinks ?? []) {
-        const token = await mintAppLinkToken({
-          subscriptionId: link.subscription_id,
-          consumerPrincipal: `job:${invocationWithOptions.jobId}`,
-          producerEnv: link.producer_env,
-          ttlSeconds: 60 * 60,
-        });
-        resolvedLinksWithTokens.push({
-          ...link,
-          origin: 'app_link' as const,
-          type: link.type ?? 'openapi',
-          token: token?.access_token,
-        });
-      }
+      const resolvedLinksWithTokens = await mintJobAppLinkTokens(invocationWithOptions, resolvedLinks ?? []);
       if (resolvedApis?.length || resolvedLinksWithTokens.length > 0) {
         Object.assign(adapterEnv, buildAppApiEnvVars([
           ...(resolvedApis ?? []).map((api) => ({ ...api, type: api.type ?? 'openapi' })),

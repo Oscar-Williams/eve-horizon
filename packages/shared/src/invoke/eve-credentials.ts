@@ -87,6 +87,8 @@ export async function resolveInvocationJobToken(
   const minted = await mintJobToken(invocation.jobId, {
     permissions: tokenPermissions,
     scope: tokenScope,
+    // Bound to the attempt, the token stops working when the attempt ends.
+    ...(invocation.attemptId ? { attemptId: invocation.attemptId } : {}),
   });
   return minted?.access_token;
 }

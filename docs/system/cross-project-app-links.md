@@ -61,6 +61,30 @@ Injected service and job surfaces receive:
 
 Tokens are Eve-signed RS256 JWTs with `type: "app_link"` and `aud: "project:<producer_project_id>"`. Verification re-reads the active grant/subscription so producer revocation is effective without waiting for token expiry.
 
+### Job tokens: lifetime and refresh
+
+A job's link tokens (principal `job:<id>`) last an hour and carry the job's
+`attempt_id`. Eve refuses them as soon as that attempt is no longer the job's
+running attempt, or the job is cancelled; a token minted without an attempt is
+refused once the job is done. This holds wherever Eve verifies the token
+(`/auth/me`, `/auth/token/verify`, the auth SDK's default `remote` strategy).
+A producer that verifies locally against JWKS (`strategy: 'local'`) sees only
+`exp`, so it should verify job principals remotely.
+
+A job that runs longer than an hour refreshes its own tokens with its job token:
+
+```bash
+export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)   # one link
+eval "$(eve job app-link-token --env)"                           # every link
+```
+
+`POST /jobs/{job_id}/app-link-tokens` (body `{ "alias"?: string }`) answers
+`{ data: [{ alias, name, env_var, access_token, expires_at }] }`. Only the
+job's own job token may call it, and only while the job runs. The harness's
+original `EVE_APP_LINK_<ALIAS>_TOKEN` cannot be changed from outside the
+process, so a refreshed token is used from the shell that fetched it. The
+app-API instructions in a job's description tell the agent to refresh on a 401.
+
 ## Events
 
 Producer events fan out through `app_link_event_deliveries`. Consumer events are inserted with `source: app_link`, the original event type, and a dedupe key of `app_link:<subscription_id>:<source_event_id>`.

@@ -10,6 +10,8 @@ export type AuthUser = {
   is_job_token?: boolean;
   /** The job ID from the token (only set for job tokens) */
   job_id?: string;
+  /** The attempt a job token is bound to (set when the runtime minted it for a running attempt). */
+  attempt_id?: string;
   /** The project ID from the token (only set for job/service tokens) */
   project_id?: string;
   /** The agent slug from the token (only set for agent job tokens) */
@@ -74,6 +76,8 @@ export interface JobTokenPayload {
   email?: string;
   user_secrets_excluded?: boolean;
   secrets_allowlist?: string[];
+  /** The attempt the token is bound to; the token stops working when that attempt ends. */
+  attempt_id?: string;
   exp: number;
   iat: number;
   type: 'job';
@@ -102,6 +106,8 @@ export interface AppLinkTokenPayload {
   producer_env: string;
   api_name: string;
   scopes: string[];
+  /** For a `job:<id>` principal: the attempt the token is bound to. */
+  attempt_id?: string;
   aud: string;
   exp: number;
   iat: number;

@@ -15,7 +15,7 @@ type EnvDbServiceMock = {
 
 type AuthServiceMock = {
   isEnabled: ReturnType<typeof vi.fn<() => boolean>>;
-  verifyJobToken: ReturnType<typeof vi.fn<(token: string) => JobTokenPayload>>;
+  verifyLiveJobToken: ReturnType<typeof vi.fn<(token: string) => Promise<JobTokenPayload>>>;
 };
 
 type ScopedAccessMock = {
@@ -50,7 +50,7 @@ describe('EnvDbController', () => {
     };
     authService = {
       isEnabled: vi.fn(() => true),
-      verifyJobToken: vi.fn(),
+      verifyLiveJobToken: vi.fn(),
     };
     scopedAccess = {
       assert: vi.fn(async () => {}),
@@ -95,7 +95,7 @@ describe('EnvDbController', () => {
   });
 
   it('prefers eve-job-token permissions over request user permissions', async () => {
-    authService.verifyJobToken.mockReturnValue({
+    authService.verifyLiveJobToken.mockResolvedValue({
       sub: 'job',
       user_id: 'user_123',
       org_id: 'org_test',
@@ -121,7 +121,7 @@ describe('EnvDbController', () => {
       'job-token-value',
     );
 
-    expect(authService.verifyJobToken).toHaveBeenCalledWith('job-token-value');
+    expect(authService.verifyLiveJobToken).toHaveBeenCalledWith('job-token-value');
     expect(envDbService.executeSql).toHaveBeenCalledWith(
       'proj_test',
       'test',
@@ -155,28 +155,28 @@ describe('EnvDbController', () => {
       controller.sql('proj_test', 'test', { sql: 'DELETE FROM notes', allow_write: true }, member, 'req_3', 'job-token-value');
 
     it('does not unlock writes with a job token from another project in the same org', async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('proj_sibling', 'org_test'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('proj_sibling', 'org_test'));
 
       await expect(runWrite()).rejects.toBeInstanceOf(ForbiddenException);
       expect(envDbService.executeSql).not.toHaveBeenCalled();
     });
 
     it('does not unlock writes with a job token from another org', async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('proj_other', 'org_other'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('proj_other', 'org_other'));
 
       await expect(runWrite()).rejects.toBeInstanceOf(ForbiddenException);
       expect(envDbService.executeSql).not.toHaveBeenCalled();
     });
 
     it('refuses a job token that names no project', async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('', 'org_test'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('', 'org_test'));
 
       await expect(runWrite()).rejects.toBeInstanceOf(ForbiddenException);
       expect(envDbService.executeSql).not.toHaveBeenCalled();
     });
 
     it('does not run a reset with a job token from another project', async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('proj_sibling', 'org_test'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('proj_sibling', 'org_test'));
 
       await expect(
         controller.reset('proj_test', 'test', { force: true }, member, 'req_4', 'job-token-value'),
@@ -185,7 +185,7 @@ describe('EnvDbController', () => {
     });
 
     it('does not lend its permissions to read routes of another project', async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('proj_sibling', 'org_test'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('proj_sibling', 'org_test'));
 
       await expect(
         controller.rls('proj_test', 'test', member, 'req_5', 'job-token-value'),
@@ -194,7 +194,7 @@ describe('EnvDbController', () => {
     });
 
     it("still unlocks writes with a job token from the path's own project", async () => {
-      authService.verifyJobToken.mockReturnValue(headerToken('proj_test', 'org_test'));
+      authService.verifyLiveJobToken.mockResolvedValue(headerToken('proj_test', 'org_test'));
 
       await runWrite();
 
