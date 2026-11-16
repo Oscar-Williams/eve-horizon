@@ -30,7 +30,8 @@ export function buildPiCommand(ctx: CliContext): { command: HarnessCommand; warn
     warnings.push('pi has no built-in permission gates; running autonomously');
   }
 
-  // Prompt is the last positional argument
+  // Prompt is the last positional argument. pi has no stdin prompt mode, so
+  // unlike the other harnesses its prompt is visible on the command line.
   args.push(ctx.prompt);
 
   return {

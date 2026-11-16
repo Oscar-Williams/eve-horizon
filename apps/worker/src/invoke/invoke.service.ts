@@ -1,6 +1,6 @@
 import { watchJobCancellation, bindProcessCancellation, cleanupAttemptWorkspace, JOB_CANCELLED, type JobCancellationMonitor } from '@eve/shared';
 import { Injectable, Inject } from '@nestjs/common';
-import { spawn, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import * as readline from 'readline';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
@@ -112,7 +112,7 @@ import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintAppLinkToken } from '
 import { GitWorkspace, buildAuthenticatedHttpsUrl, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { resolveProjectSecrets, mintJobToken, updateSecret } from '@eve/shared';
 import { extractPrefixedEnv, sanitizeSecretFilename, writeEveCredentials } from '@eve/shared';
-import { createJobUserHome, cleanupJobUserHome } from '@eve/shared';
+import { createJobUserHome, cleanupJobSecretArtifacts, buildEveAgentCliArgs, spawnHarnessProcess } from '@eve/shared';
 import { materializeScopedOrgFsMount, type OrgFsMountSpec } from '@eve/shared';
 import { serviceHelperEnv } from '@eve/shared';
 
@@ -1274,6 +1274,8 @@ export class InvokeService {
         : result;
     } finally {
       cancellation.stop();
+      // Whatever the outcome, no secret written for this attempt outlives it.
+      await cleanupJobSecretArtifacts(invocation);
     }
   }
 
@@ -1650,9 +1652,8 @@ export class InvokeService {
         executionSucceeded = result.success;
         return result;
       } finally {
+        // The per-job HOME and secret files are removed by execute() once this returns.
         await serviceProvisioning.cleanup();
-        // Phase 2 secret isolation: clean up per-job user home
-        await cleanupJobUserHome(effectiveInvocation.attemptId);
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -2274,30 +2275,15 @@ export class InvokeService {
       const securityPreamble = buildSecurityPolicyPreamble(repoPath);
       const fullPromptText = securityPreamble + '\n\n' + invocation.text;
 
-      const args = [
-        '--harness',
-        options.harness,
-        '--permission',
-        options.permission,
-        '--output-format',
-        'stream-json',
-        '--workspace',
-        repoPath,
-        '--prompt',
-        fullPromptText,
-      ];
-
-      if (options.variant) {
-        args.push('--variant', options.variant);
-      }
-
-      if (options.model) {
-        args.push('--model', options.model);
-      }
-
-      if (options.reasoning) {
-        args.push('--reasoning', options.reasoning);
-      }
+      // The prompt goes to eve-agent-cli on stdin, never on its command line.
+      const args = buildEveAgentCliArgs({
+        harness: options.harness,
+        permission: options.permission,
+        workspace: repoPath,
+        variant: options.variant,
+        model: options.model,
+        reasoning: options.reasoning,
+      });
 
       const requestedToolchains = [...new Set(invocation.toolchains ?? [])];
       const provisionedToolchains = requestedToolchains.length > 0
@@ -2343,10 +2329,10 @@ export class InvokeService {
       console.log(`[harness] Executing: ${binary} ${fullArgs.join(' ')}`);
       console.log(`[harness-env] CODEX_HOME=${processEnv.CODEX_HOME ?? '(unset)'} OPENAI_API_KEY=${processEnv.OPENAI_API_KEY ? 'present' : '(unset)'}`);
 
-      const harnessProcess = spawn(binary, fullArgs, {
+      const harnessProcess = spawnHarnessProcess(binary, fullArgs, {
         cwd: repoPath,
         env: processEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        prompt: fullPromptText,
         detached: process.platform !== 'win32',
       });
       const finishCancellation = bindProcessCancellation(harnessProcess, cancellation?.signal);

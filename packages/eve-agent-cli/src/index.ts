@@ -57,7 +57,8 @@ Options:
   --harness <name>         Harness to run (mclaude, zai, gemini, codex, code, coder)
   --variant <name>         Adapter-defined preset
   --permission <policy>    default | auto_edit | never | yolo (default: default)
-  --prompt <text>          Prompt text (otherwise use positional or stdin)
+  --prompt <text>          Prompt text (otherwise positional or stdin; prefer stdin,
+                           since arguments are visible to every process on the host)
   --workspace <path>       Working directory for harness execution
   --output-format <fmt>    Ignored by proxy; always emits JSONL (default: stream-json)
   --model <name>           Optional model override passed to harness
@@ -479,8 +480,11 @@ async function main(): Promise<void> {
   const child = spawn(command.binary, command.args, {
     cwd: workspace,
     env: command.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+  // A harness that exits before reading its prompt closes the pipe; its exit code reports that.
+  child.stdin.on('error', () => {});
+  child.stdin.end(command.stdin ?? '');
 
   let seq = 0;
   const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });

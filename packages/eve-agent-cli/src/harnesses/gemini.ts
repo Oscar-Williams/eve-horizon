@@ -109,10 +109,9 @@ export const geminiAdapter: CliHarnessAdapter = {
       args.push('--yolo');
     }
 
-    args.push(ctx.prompt);
-
+    // With no positional query and stdin not a TTY, gemini runs one-shot on stdin.
     return {
-      command: { binary: 'gemini', args, env },
+      command: { binary: 'gemini', args, env, stdin: ctx.prompt },
       warnings,
     };
   },

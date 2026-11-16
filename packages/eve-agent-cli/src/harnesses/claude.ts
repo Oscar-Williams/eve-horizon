@@ -52,13 +52,13 @@ function buildClaudeFamilyCommand(
     args.push('--dangerously-skip-permissions');
   }
 
-  args.push(ctx.prompt);
-
+  // In --print mode Claude Code reads the prompt from stdin.
   return {
     command: {
       binary: opts.name,
       args,
       env,
+      stdin: ctx.prompt,
     },
     warnings: [],
   };

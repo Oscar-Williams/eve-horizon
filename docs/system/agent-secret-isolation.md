@@ -52,6 +52,16 @@ The adapter-provided env is the key subtlety. Harness adapters (zai, claude, cod
 
 **Secrets no longer written to workspace**: Previously, `materializeSecrets()` wrote all resolved secrets to `.eve/secrets.env` and file-type secrets to `.eve/secrets/` inside the repo checkout — both accessible to the agent. The secrets file is no longer written. File-type secrets (SSH keys, etc.) are written outside the repo tree and referenced only by hooks running in the worker context, not by the agent.
 
+**Nothing outlives the attempt**: when an attempt ends, whatever the outcome
+(success, failure, exception, cancellation), both execution paths delete what
+they wrote for it: file-type secrets (`$TMPDIR/eve/job-secrets/<attempt>`), git
+SSH keys (`$TMPDIR/eve/worker-secrets/<attempt>`, `<workspace>/.eve/git_ssh_key`)
+and the per-job HOME with its Eve, Claude and `gh` credentials
+(`cleanupJobSecretArtifacts`). A pod restart is not needed to clear them.
+
+**Prompt off the command line**: the prompt reaches the harness on stdin, not as
+an argument that `ps` would show to other jobs on the same pod.
+
 **Job-scoped Eve credentials**: The worker writes a job-scoped Eve CLI credential
 file to `~/.eve/credentials.json` before the harness spawns. This lets agents
 invoke `eve` CLI commands against the public API without exposing system-wide
@@ -138,7 +148,7 @@ See [agent-sandbox-security.md](./agent-sandbox-security.md) for full sandbox de
 
 A security policy is injected into every agent job through two parallel paths, ensuring coverage regardless of harness type:
 
-**Path A — Prompt preamble** (all harnesses): An XML `<security-policy>` block is prepended to the job prompt before it reaches `eve-agent-cli`. This works universally because all harnesses receive the prompt via `--prompt`.
+**Path A — Prompt preamble** (all harnesses): An XML `<security-policy>` block is prepended to the job prompt before it reaches `eve-agent-cli`. This works universally because every harness receives the full prompt (on stdin; see [harness-execution.md](./harness-execution.md#eve-agent-cli-arguments)).
 
 ```xml
 <security-policy>

@@ -527,7 +527,8 @@ Each harness maps the abstract permission policy to harness-specific flags:
 
 ## eve-agent-cli Arguments
 
-The worker invokes eve-agent-cli with these arguments:
+The agent runtime and the worker invoke eve-agent-cli with these arguments and
+write the prompt (security preamble plus job description) to its stdin:
 
 ```
 eve-agent-cli \
@@ -535,10 +536,17 @@ eve-agent-cli \
   --permission <policy>     # default, auto_edit, never, yolo
   --output-format stream-json
   --workspace <workspacePath>
-  --prompt "<text>"         # Job description passed through as the prompt
   [--variant <variant>]     # Optional harness variant
   [--model <model>]         # Optional model override
+  < prompt on stdin
 ```
+
+The prompt never goes on a command line, where `ps` and `/proc/<pid>/cmdline`
+show it to every job on the pod. eve-agent-cli passes it on to the harness on
+stdin too: `claude`/`mclaude`/`zai` in `--print` mode, `codex`/`code` through
+`exec -`, and `gemini` with no positional query. `pi` has no stdin prompt mode
+and still takes the prompt as its last argument. `--prompt <text>` remains for
+manual runs.
 
 ## Environment Variables Reference
 

@@ -1,6 +1,5 @@
 import { watchJobCancellation, bindProcessCancellation, cleanupAttemptWorkspace, JOB_CANCELLED, type JobCancellationMonitor } from '@eve/shared';
 import { Injectable, Inject } from '@nestjs/common';
-import { spawn } from 'child_process';
 import * as readline from 'readline';
 import { createHash } from 'crypto';
 import * as fsSync from 'fs';
@@ -93,10 +92,14 @@ import {
   prepareGitAuth,
   materializeSecrets,
   cleanupWorkspaceSecretArtifacts,
+  cleanupJobSecretArtifacts,
   applyEnvOverrides,
   // Harness lifecycle events
   logHarnessStart,
   logHarnessEnd,
+  // Harness launch (prompt on stdin)
+  buildEveAgentCliArgs,
+  spawnHarnessProcess,
   // Eve message relay
   EveMessageRelay,
   deliverProvisioningError,
@@ -109,7 +112,6 @@ import {
   BudgetEnforcer,
   // Per-job user home (Phase 2 secret isolation)
   createJobUserHome,
-  cleanupJobUserHome,
   selectClaudeAuth,
   scrubClaudeAuthEnv,
   prepareClaudeRuntimeConfig,
@@ -194,6 +196,8 @@ type HarnessExecutionPlan = {
   harnessOptionsResolved: EveAgentCliOptions;
   harnessBinary: { binary: string; prefixArgs: string[] };
   harnessArgs: string[];
+  /** Written to the harness's stdin; never part of harnessArgs. */
+  prompt: string;
 };
 
 type HarnessProcessSetup = {
@@ -965,6 +969,8 @@ export class InvokeService {
         : result;
     } finally {
       cancellation.stop();
+      // Whatever the outcome, no secret written for this attempt outlives it.
+      await cleanupJobSecretArtifacts(invocation);
     }
   }
 
@@ -1105,8 +1111,7 @@ export class InvokeService {
         error: errMessage,
       };
     } finally {
-      // Phase 2 secret isolation: clean up per-job user home
-      await cleanupJobUserHome(invocation.attemptId);
+      // The per-job HOME and secret files are removed by execute() once this returns.
       if (inlineExecution) await cleanupAttemptWorkspace(invocation, executionSucceeded, loadConfig());
     }
   }
@@ -1635,7 +1640,6 @@ export class InvokeService {
       model: harnessOptionsResolved.model,
       reasoning: harnessOptionsResolved.reasoning,
       workspace: repoPath,
-      prompt: fullPromptText,
     });
 
     // Emit setup timing summary before harness launch
@@ -1654,6 +1658,7 @@ export class InvokeService {
       harnessOptionsResolved,
       harnessBinary,
       harnessArgs,
+      prompt: fullPromptText,
     };
   }
 
@@ -1878,7 +1883,7 @@ export class InvokeService {
     cancellation: JobCancellationMonitor,
   ): Promise<HarnessResult> {
     const { invocationWithOptions, lifecycleLogger } = ctx;
-    const { isClaudeHarness, claudeAuthDecision, harnessOptionsResolved, harnessBinary, harnessArgs } = plan;
+    const { isClaudeHarness, claudeAuthDecision, harnessOptionsResolved, harnessBinary, harnessArgs, prompt } = plan;
     const { startTime, logs, processEnv } = setup;
 
     // Gap #1: Resolve budget enforcement config
@@ -1918,10 +1923,10 @@ export class InvokeService {
     await cancellation.check();
     cancellation.signal.throwIfAborted();
     return await new Promise<HarnessResult>((resolve) => {
-      const child = spawn(harnessBinary.binary, [...harnessBinary.prefixArgs, ...harnessArgs], {
+      const child = spawnHarnessProcess(harnessBinary.binary, [...harnessBinary.prefixArgs, ...harnessArgs], {
         cwd: repoPath,
         env: processEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        prompt,
         detached: process.platform !== 'win32',
       });
       const finishCancellation = bindProcessCancellation(child, cancellation.signal);
@@ -2167,24 +2172,8 @@ export class InvokeService {
     model?: string;
     reasoning?: string;
     workspace: string;
-    prompt: string;
   }): string[] {
-    const args: string[] = [
-      '--harness',
-      options.harness,
-      '--permission',
-      options.permission,
-      '--output-format',
-      'stream-json',
-      '--workspace',
-      options.workspace,
-      '--prompt',
-      options.prompt,
-    ];
-    if (options.variant) args.push('--variant', options.variant);
-    if (options.model) args.push('--model', options.model);
-    if (options.reasoning) args.push('--reasoning', options.reasoning);
-    return args;
+    return buildEveAgentCliArgs(options);
   }
 
   // ---------------------------------------------------------------------------

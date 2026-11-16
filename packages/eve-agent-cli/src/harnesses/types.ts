@@ -16,6 +16,12 @@ export type HarnessCommand = {
   binary: string;
   args: string[];
   env: Record<string, string | undefined>;
+  /**
+   * Written to the harness's stdin. Harnesses that read their prompt from
+   * stdin get it here, off the command line that `ps` shows to every process
+   * on the pod.
+   */
+  stdin?: string;
 };
 
 export type CliHarnessAdapter = {

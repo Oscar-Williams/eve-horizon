@@ -1,11 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { resolveCodeConfigDir } from '@eve/shared';
-import type { CliHarnessAdapter, CliContext } from './types';
+import type { CliHarnessAdapter, CliContext, HarnessCommand } from './types';
 
 export function buildCodeCommand(
   ctx: CliContext,
-): { command: { binary: string; args: string[]; env: Record<string, string | undefined> }; warnings: string[] } {
+): { command: HarnessCommand; warnings: string[] } {
   const env = { ...ctx.env };
   const warnings: string[] = [];
   const configDir = resolveCodeConfigDir(
@@ -77,13 +77,14 @@ export function buildCodeCommand(
   }
 
   args.push('exec', '--json', '--skip-git-repo-check');
-  args.push(ctx.prompt);
+  // `-` makes `exec` read its instructions from stdin.
+  args.push('-');
 
   // @just-every/code installs as 'coder' binary, not 'code'
   const binary = ctx.harness === 'code' || ctx.harness === 'coder' ? 'coder' : ctx.harness;
 
   return {
-    command: { binary, args, env },
+    command: { binary, args, env, stdin: ctx.prompt },
     warnings,
   };
 }

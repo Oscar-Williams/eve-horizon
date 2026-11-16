@@ -15,6 +15,21 @@ import { resolveProjectSecrets } from '../api-client/secret-client.js';
 import { buildAuthenticatedHttpsUrl } from '../git/clone-url.js';
 import type { LifecycleLogger, GitAuth } from './types.js';
 import { sanitizeSecretFilename } from '../harnesses/invoke-utils.js';
+import { cleanupJobUserHome } from './job-user-home.js';
+
+/**
+ * Per-attempt folders that hold secret files outside the workspace:
+ * `job-secrets` for file-type secrets, `worker-secrets` for the worker's git
+ * SSH key. Both are keyed by attempt id and removed when the attempt ends.
+ */
+const JOB_SECRET_ROOTS = [
+  path.join(os.tmpdir(), 'eve', 'job-secrets'),
+  path.join(os.tmpdir(), 'eve', 'worker-secrets'),
+];
+
+function attemptKey(attemptId: string | undefined): string {
+  return attemptId || 'unknown-attempt';
+}
 
 /**
  * Resolve all secrets for a project via the Eve API.
@@ -144,7 +159,7 @@ export async function materializeSecrets(
 
   // File-type secrets are written outside the workspace so hooks can reference
   // them by path. Plain secrets are passed as env vars.
-  const secretFilesDir = path.join(os.tmpdir(), 'eve', 'job-secrets', invocation.attemptId || 'unknown-attempt');
+  const secretFilesDir = path.join(JOB_SECRET_ROOTS[0], attemptKey(invocation.attemptId));
 
   for (const secret of secrets) {
     if (secret.type === 'file' || secret.type === 'ssh_key') {
@@ -255,4 +270,36 @@ export async function cleanupWorkspaceSecretArtifacts(repoPath: string): Promise
       }),
     ),
   );
+}
+
+/**
+ * Delete every secret an attempt wrote to disk: file-type secrets, git SSH
+ * keys, and the per-job HOME holding the Eve, Claude and gh credentials.
+ *
+ * Both execution paths call this when an attempt ends, whatever the outcome,
+ * so nothing outlives the job on a pod shared with other jobs. Best-effort:
+ * a failure is logged, never thrown over the job's result.
+ */
+export async function cleanupJobSecretArtifacts(
+  invocation: Pick<HarnessInvocation, 'attemptId' | 'workspacePath'>,
+): Promise<void> {
+  const key = attemptKey(invocation.attemptId);
+  const targets: string[] = [];
+  for (const root of JOB_SECRET_ROOTS) {
+    const dir = path.resolve(root, key);
+    // An attempt id is a single path segment; refuse anything that escapes its root.
+    if (path.dirname(dir) === path.resolve(root)) targets.push(dir);
+  }
+  if (invocation.workspacePath) {
+    targets.push(path.join(invocation.workspacePath, '.eve', 'git_ssh_key'));
+  }
+
+  await Promise.all(targets.map((target) =>
+    fs.rm(target, { recursive: true, force: true }).catch((error) => {
+      console.warn(`[secrets] Failed to remove ${target}: ${error instanceof Error ? error.message : String(error)}`);
+    }),
+  ));
+  if (invocation.attemptId && path.basename(invocation.attemptId) === invocation.attemptId) {
+    await cleanupJobUserHome(invocation.attemptId);
+  }
 }

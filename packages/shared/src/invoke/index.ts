@@ -95,6 +95,7 @@ export {
   prepareGitAuth,
   materializeSecrets,
   cleanupWorkspaceSecretArtifacts,
+  cleanupJobSecretArtifacts,
   extractSecretRefs,
   interpolateEnvOverrides,
 } from './workspace-secrets.js';
@@ -131,6 +132,13 @@ export {
   logHarnessStart,
   logHarnessEnd,
 } from './harness-lifecycle.js';
+
+// Harness launch (prompt on stdin, never argv)
+export {
+  buildEveAgentCliArgs,
+  spawnHarnessProcess,
+  type EveAgentCliArgsOptions,
+} from './harness-process.js';
 
 // Eve message relay
 export {
