@@ -1791,10 +1791,26 @@ export class JobsService {
   /**
    * Reject a job in review
    */
-  async reject(jobId: string, data: RejectRequest): Promise<JobResponse> {
+  /**
+   * Reject a job in review, which runs it again. The job keeps its actor, but
+   * a rejecter with a secrets allowlist (a restricted job's token) narrows the
+   * job to it, so rejecting cannot re-run work that receives more secrets.
+   */
+  async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
+    const callerAllowlist = workStartOptions(caller).secretsAllowlist ?? null;
     try {
-      const job = await this.jobs.rejectReview(jobId, data.reviewer_id, data.reason);
-      return this.toJobResponse(job);
+      const job = await this.db.begin(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        if (callerAllowlist) {
+          const current = await jobQueries(tx).findById(jobId);
+          if (current) {
+            const narrowed = narrowSecretsAllowlist(current.secrets_allowlist ?? null, callerAllowlist);
+            await tx`UPDATE jobs SET secrets_allowlist = ${narrowed}, updated_at = NOW() WHERE id = ${jobId}`;
+          }
+        }
+        return jobQueries(tx).rejectReview(jobId, data.reviewer_id, data.reason);
+      });
+      return this.toJobResponse(job as Job);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : String(error));
     }

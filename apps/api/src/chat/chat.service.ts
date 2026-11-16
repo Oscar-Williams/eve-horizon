@@ -317,7 +317,7 @@ export class ChatService {
         };
       }
     }
-    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints);
+    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
 
     return {
       thread_id: thread.id,
@@ -388,7 +388,7 @@ export class ChatService {
       }
     }
 
-    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints);
+    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
     return {
       thread_id: thread.id,
       thread_key: thread.key,
@@ -504,7 +504,7 @@ export class ChatService {
       }
     }
 
-    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints);
+    const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
     return {
       thread_id: thread.id,
       thread_key: thread.key,
@@ -561,7 +561,7 @@ export class ChatService {
 
     const resolved = await this.resolveHarnessProfile(projectId, agent.harness_profile, overrideHints);
     const chatFiles = Array.isArray(data.metadata?.files) ? data.metadata.files : undefined;
-    const job = await this.jobsService.create(projectId, {
+    const job = await this.createChatJob(ctx, projectId, {
       description: this.buildDirectJobDescription(data, thread.id, agent.id, options.agent_slug),
       assignee: agent.id,
       harness: resolved.harness,
@@ -667,7 +667,7 @@ export class ChatService {
     const jobIds: string[] = [];
 
     const leadAppApis = leadId ? this.getAgentAppApisHint(config, leadAgent?.slug ?? null) : {};
-    const parent = await this.jobsService.create(projectId, {
+    const parent = await this.createChatJob(ctx, projectId, {
       description: this.buildTeamJobDescription(data, thread.id, teamId, dispatchMode),
       assignee: leadId,
       harness: leadResolved.harness,
@@ -707,7 +707,7 @@ export class ChatService {
           : this.buildTeamJobDescription(data, thread.id, teamId, dispatchMode);
         const memberResolved = await this.resolveHarnessProfile(projectId, agent?.harness_profile, overrideHints);
 
-        const child = await this.jobsService.create(projectId, {
+        const child = await this.createChatJob(ctx, projectId, {
           parent_id: parent.id,
           description: childDescription,
           assignee: memberId,
@@ -738,7 +738,7 @@ export class ChatService {
       for (const memberId of effectiveMemberIds) {
         const agent = agents.find((entry) => entry.id === memberId);
         const memberResolved = await this.resolveHarnessProfile(projectId, agent?.harness_profile, overrideHints);
-        const child = await this.jobsService.create(projectId, {
+        const child = await this.createChatJob(ctx, projectId, {
           parent_id: parent.id,
           description: this.buildTeamJobDescription(data, thread.id, teamId, dispatchMode),
           assignee: memberId,
@@ -1014,7 +1014,7 @@ export class ChatService {
           entry.harness_profile,
           overrideHints,
         );
-        const job = await this.jobsService.create(projectId, {
+        const job = await this.createChatJob(undefined, projectId, {
           description: this.buildListenerJobDescription(
             data,
             thread.id,
@@ -1044,6 +1044,20 @@ export class ChatService {
     return { job_ids: jobIds };
   }
 
+  /**
+   * Every job chat starts goes through here, so a caller with a secrets
+   * allowlist (a restricted job's token) passes it on, as on every other
+   * route that starts work. Gateway dispatches have no caller.
+   */
+  private createChatJob(
+    ctx: ChatDispatchContext | undefined,
+    projectId: string,
+    data: Parameters<JobsService['create']>[1],
+  ): ReturnType<JobsService['create']> {
+    const secretsAllowlist = ctx?.user?.secrets_allowlist;
+    return this.jobsService.create(projectId, data, undefined, undefined, secretsAllowlist ? { secretsAllowlist } : {});
+  }
+
   private async dispatchRouteTarget(
     projectId: string,
     config: NonNullable<Awaited<ReturnType<typeof this.agentConfigs.findLatestByProject>>>,
@@ -1051,6 +1065,7 @@ export class ChatService {
     data: ChatRouteRequest,
     route: RouteEntry,
     overrideHints: ResolvedChatHints,
+    ctx?: ChatDispatchContext,
   ): Promise<string[]> {
     const threadContext = await this.buildThreadContext(threadId);
     const threadHints = threadContext
@@ -1077,7 +1092,7 @@ export class ChatService {
       const resolved = await this.resolveHarnessProfile(projectId, agent.harness_profile, overrideHints);
 
       const chatFiles = Array.isArray(data.metadata?.files) ? data.metadata.files : undefined;
-      const job = await this.jobsService.create(projectId, {
+      const job = await this.createChatJob(ctx, projectId, {
         description: this.buildJobDescription(data, route, threadId),
         assignee: agent.id,
         harness: resolved.harness,
@@ -1140,7 +1155,7 @@ export class ChatService {
       const chatFiles = Array.isArray(data.metadata?.files) ? data.metadata.files : undefined;
       const leadAppApis = leadId ? this.getAgentAppApisHint(config, leadAgent?.slug ?? null) : {};
 
-      const parent = await this.jobsService.create(projectId, {
+      const parent = await this.createChatJob(ctx, projectId, {
         description: this.buildJobDescription(data, route, threadId),
         assignee: leadId,
         harness: leadResolved.harness,
@@ -1180,7 +1195,7 @@ export class ChatService {
             : this.buildJobDescription(data, route, threadId);
           const memberResolved = await this.resolveHarnessProfile(projectId, agent?.harness_profile, overrideHints);
 
-          const child = await this.jobsService.create(projectId, {
+          const child = await this.createChatJob(ctx, projectId, {
             parent_id: parent.id,
             description: childDescription,
             assignee: memberId,
@@ -1211,7 +1226,7 @@ export class ChatService {
         for (const memberId of effectiveMemberIds) {
           const agent = agents.find((entry) => entry.id === memberId);
           const memberResolved = await this.resolveHarnessProfile(projectId, agent?.harness_profile, overrideHints);
-          const child = await this.jobsService.create(projectId, {
+          const child = await this.createChatJob(ctx, projectId, {
             parent_id: parent.id,
             description: this.buildJobDescription(data, route, threadId),
             assignee: memberId,
@@ -1237,7 +1252,7 @@ export class ChatService {
     }
 
     if (targetType === 'workflow' || targetType === 'pipeline') {
-      const job = await this.jobsService.create(projectId, {
+      const job = await this.createChatJob(ctx, projectId, {
         description: this.buildJobDescription(data, route, threadId),
         labels: ['chat', `route:${route.id}`, `target:${route.target}`],
         hints: { ...threadHints },

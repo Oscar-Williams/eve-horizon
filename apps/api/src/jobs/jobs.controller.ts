@@ -709,8 +709,9 @@ export class JobsController {
   })
   async reject(
     @Param('job_id') jobId: string,
-    @Body() body: RejectRequest
+    @Body() body: RejectRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<JobResponse> {
-    return this.jobsService.reject(jobId, body);
+    return this.jobsService.reject(jobId, body, caller);
   }
 }

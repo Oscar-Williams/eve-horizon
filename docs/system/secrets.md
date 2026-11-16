@@ -194,13 +194,28 @@ The orchestrator resolves the effective list into the invocation; the attempt
 log records the names kept, any named but missing, and how many were withheld
 (lifecycle `secrets` / `secrets_allowlist`).
 
-**Work a restricted job starts stays restricted.** The job token minted for a
-job with an effective allowlist carries it as a `secrets_allowlist` claim.
-Jobs that token creates (`POST /jobs`, batches, workflow runs and retries,
-pipeline runs, environment deploys) are stamped with it, narrowed by any
-step list, and a job it edits or releases to run is narrowed to it. A list
-only ever narrows; no route widens it. The job's `secrets_allowlist` is shown
-on job responses and is never set by clients.
+**Work a restricted job starts directly stays restricted.** The job token
+minted for a job with an effective allowlist carries it as a
+`secrets_allowlist` claim. Jobs that token creates (`POST /jobs`, batches,
+workflow runs and retries, pipeline runs, environment deploys, chat routes and
+thread continuations) are stamped with it, narrowed by any step list; a job it
+edits, releases to run, or rejects in review is narrowed to it. On these
+routes a list only ever narrows. The job's `secrets_allowlist` is shown on job
+responses and is never set by clients.
+
+**Not covered: work started by events.** An event a restricted job causes is
+not stamped, so workflows and pipelines its triggers start are not
+restricted. A default agent token can cause such events: posting a thread
+message (`threads:write`) emits `chat.message.received`; with more
+permissions, `POST /events`, org docs, agent memory and ingest writes emit
+others. In a project with a restricted agent, do not declare triggers on
+events that agent can cause, or give every agent those triggers run an
+allowlist of its own.
+
+**Not covered: what a restricted step hands on.** A restricted workflow step's
+output (its result, attachments, thread messages) feeds later steps, which
+may be unrestricted. Treat that output as untrusted input in later steps, or
+restrict them too.
 
 ## Git Auth Injection
 
