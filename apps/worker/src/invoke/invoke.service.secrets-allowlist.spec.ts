@@ -20,7 +20,10 @@ function secret(key: string, value = `${key}-value`): SecretResolveItem {
   return { key, value, type: 'env_var', scope_type: 'project', scope_id: 'proj_1' } as SecretResolveItem;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 async function runUntilSecretsMaterialize(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
   const invocation = {
@@ -67,6 +70,8 @@ describe('worker secrets allowlist', () => {
   });
 
   it('refuses, before cloning, a job that would push with a git token its allowlist leaves out', async () => {
+    // The inline path's workspace cleanup loads service config, which needs a database URL.
+    vi.stubEnv('DATABASE_URL', 'postgres://eve:eve@localhost:5432/eve');
     const seen = await runUntilSecretsMaterialize(['ANTHROPIC_API_KEY'], { git: { push: 'required' } });
     expect(seen.cloned).toBeUndefined();
     expect(seen.result).toMatchObject({ success: false, error: expect.stringContaining('secrets allowlist') });

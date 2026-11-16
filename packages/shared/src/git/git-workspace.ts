@@ -16,6 +16,14 @@ const execFileAsync = promisify(execFile);
 type ExecResult = { stdout: string; stderr: string };
 
 /**
+ * The git subcommands that talk to the remote, and so the only ones that get
+ * the credential env (`gitAuth.env`). Every other command runs under the
+ * repository's own config, which the job can write (filter drivers,
+ * `gpg.program`, ...), so it must not carry a credential.
+ */
+const REMOTE_GIT_COMMANDS = new Set(['clone', 'fetch', 'push', 'pull', 'ls-remote']);
+
+/**
  * Git authentication configuration.
  * Supports SSH keys, GitHub tokens, or URL-embedded credentials.
  */
@@ -149,9 +157,10 @@ export class GitWorkspace {
     options?: { cwd?: string; env?: NodeJS.ProcessEnv },
   ): Promise<ExecResult> {
     const cwd = options?.cwd ?? this.repoPath;
-    // Allowlisted env (no service credentials), trusted PATH, no global config or hooks.
+    // Allowlisted env (no service credentials), trusted PATH, no global config or hooks;
+    // the credential env only for commands that talk to the remote.
     const env = serviceGitEnv({
-      ...this.gitAuth?.env,
+      ...(REMOTE_GIT_COMMANDS.has(args[0]) ? this.gitAuth?.env : {}),
       ...options?.env,
     });
 

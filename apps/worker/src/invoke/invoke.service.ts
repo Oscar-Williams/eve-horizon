@@ -80,6 +80,7 @@ import {
   prepareGitAuth,
   materializeSecrets,
   releaseCloneOnlyGitKey,
+  assertCloneOnlyGitCredentialSafe,
   selectJobSecrets,
   applyEnvOverrides,
   materializeWorkspaceSkills,
@@ -1277,6 +1278,7 @@ export class InvokeService {
       const userId = typeof effectiveInvocation.data?.user_id === 'string' ? effectiveInvocation.data.user_id : undefined;
       const allSecrets = await this.resolveSecrets(effectiveInvocation.projectId, userId, effectiveInvocation.attemptId);
       // The workspace clone may use a git credential the job itself does not receive.
+      await assertCloneOnlyGitCredentialSafe(effectiveInvocation, allSecrets);
       const gitAuth = await prepareGitAuth(effectiveInvocation, allSecrets);
       // Everything from here on, harness included, sees only the job's own secrets.
       const resolvedSecrets = await selectJobSecrets(effectiveInvocation, allSecrets, this.buildLifecycleLogger());

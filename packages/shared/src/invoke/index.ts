@@ -97,6 +97,7 @@ export {
   cleanupWorkspaceSecretArtifacts,
   cleanupJobSecretArtifacts,
   releaseCloneOnlyGitKey,
+  assertCloneOnlyGitCredentialSafe,
   extractSecretRefs,
   interpolateEnvOverrides,
 } from './workspace-secrets.js';

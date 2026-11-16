@@ -204,8 +204,10 @@ on job responses and is never set by clients.
 
 ## Git Auth Injection
 
-- HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access. When a secrets allowlist applies and leaves the token out, the token is not put in the clone URL (where it would persist in `.git/config`); the platform's own git calls send it as an auth header from their environment instead.
-- SSH clone: `ssh_key` secrets are written to a per-attempt key outside the workspace and wired via `GIT_SSH_COMMAND`. Under an allowlist that leaves the key out, the key is deleted once the workspace is prepared unless the job's git policy pushes. Keys are always deleted when the attempt ends.
+- HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access. When a secrets allowlist applies and leaves the token out, the token is not put in the clone URL (where it would persist in `.git/config`); the clone sends it as an auth header from its environment instead.
+- SSH clone: `ssh_key` secrets are written to a per-attempt key outside the workspace and wired via `GIT_SSH_COMMAND`. Under an allowlist that leaves the key out, the key is deleted once the workspace is prepared. Keys are always deleted when the attempt ends.
+- Only git commands that talk to the remote (`clone`, `fetch`, `push`, `pull`, `ls-remote`) get the credential environment; `checkout`, `add`, `commit`, `status` and the rest run without it, since they read repository config the job can write.
+- A job whose allowlist leaves the git credential out may not push (`git.push` other than `never`) or reuse a workspace (session mode, or a repo already on disk): both would run a credentialed git command under config the job wrote (a filter driver, `gpg.program`, or `http.proxy` with `sslVerify=false`). They fail fast with `git_credential_not_allowlisted`. The credential "stays out of the job" only on that basis.
 - Missing auth now surfaces explicit errors with remediation hints (use `eve secrets set`).
 
 ## OAuth Token Management

@@ -100,12 +100,9 @@ export async function prepareGitAuth(
   const repoUrl = invocation.repoUrl;
   if (!repoUrl) return undefined;
 
-  const sshSecret = secrets.find((secret) => secret.type === 'ssh_key');
-  const githubToken =
-    secrets.find((secret) => secret.type === 'github_token') ??
-    secrets.find((secret) => ['GITHUB_TOKEN', 'GH_TOKEN'].includes(secret.key));
+  const { sshSecret, githubToken } = gitCredentials(secrets);
 
-  if (sshSecret && (repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://'))) {
+  if (sshSecret && isSshRepoUrl(repoUrl)) {
     const keyDir = path.join(GIT_KEYS_ROOT, attemptKey(invocation.attemptId));
     await fs.mkdir(keyDir, { recursive: true, mode: 0o700 });
     const keyPath = path.join(keyDir, 'git_ssh_key');
@@ -143,12 +140,64 @@ export async function releaseCloneOnlyGitKey(
   invocation: HarnessInvocation,
   secrets: SecretResolveItem[],
 ): Promise<void> {
-  const allowlist = invocation.secrets_allowlist;
-  const sshSecret = secrets.find((secret) => secret.type === 'ssh_key');
-  const push = (invocation.git as { push?: string } | undefined)?.push;
-  const willPush = push === 'on_success' || push === 'required';
-  if (!allowlist || !sshSecret || allowlist.includes(sshSecret.key) || willPush) return;
+  if (!cloneOnlyGitCredential(invocation, secrets)) return;
   await fs.rm(path.join(GIT_KEYS_ROOT, attemptKey(invocation.attemptId)), { recursive: true, force: true });
+}
+
+/**
+ * Refuse a job that would need a clone-only git credential (one its secrets
+ * allowlist leaves out) anywhere but a fresh clone. Once the harness has run,
+ * or in a workspace an earlier attempt used, the repository's config is the
+ * job's to write: a filter driver, `gpg.program` or an `http.proxy` with
+ * `sslVerify=false` would see the credential of any git command that carried
+ * it. So such a job may not push (`git.push` other than `never`) and may not
+ * reuse a workspace (session mode, or a repo already on disk). Call it before
+ * preparing the workspace.
+ */
+export async function assertCloneOnlyGitCredentialSafe(
+  invocation: HarnessInvocation,
+  secrets: SecretResolveItem[],
+): Promise<void> {
+  const credential = cloneOnlyGitCredential(invocation, secrets);
+  if (!credential) return;
+  const why = `the job's secrets allowlist leaves out ${credential}, which the platform holds only to clone the workspace`;
+  const push = (invocation.git as { push?: string } | undefined)?.push;
+  if (push && push !== 'never') {
+    throw new Error(`git_credential_not_allowlisted: git.push=${push} is refused because ${why}; add ${credential} to the allowlist or set git.push: never`);
+  }
+  const reused = invocation.workspace?.mode === 'session'
+    || await fs.stat(path.join(invocation.workspacePath, 'repo')).then(() => true, () => false);
+  if (reused) {
+    throw new Error(`git_credential_not_allowlisted: a reused workspace is refused because ${why}; add ${credential} to the allowlist or run in a fresh workspace`);
+  }
+}
+
+/** The key of the git credential the platform would use for this repo but the job may not hold, if any. */
+function cloneOnlyGitCredential(invocation: HarnessInvocation, secrets: SecretResolveItem[]): string | null {
+  const allowlist = invocation.secrets_allowlist;
+  const repoUrl = invocation.repoUrl;
+  if (!allowlist || !repoUrl) return null;
+  const { sshSecret, githubToken } = gitCredentials(secrets);
+  const credential = isSshRepoUrl(repoUrl)
+    ? sshSecret
+    : repoUrl.startsWith('http') ? githubToken : undefined;
+  return credential && !allowlist.includes(credential.key) ? credential.key : null;
+}
+
+function gitCredentials(secrets: SecretResolveItem[]): {
+  sshSecret?: SecretResolveItem;
+  githubToken?: SecretResolveItem;
+} {
+  return {
+    sshSecret: secrets.find((secret) => secret.type === 'ssh_key'),
+    githubToken:
+      secrets.find((secret) => secret.type === 'github_token') ??
+      secrets.find((secret) => ['GITHUB_TOKEN', 'GH_TOKEN'].includes(secret.key)),
+  };
+}
+
+function isSshRepoUrl(repoUrl: string): boolean {
+  return repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://');
 }
 
 /**

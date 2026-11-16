@@ -16,7 +16,10 @@ function secret(key: string, value = `${key}-value`): SecretResolveItem {
   return { key, value, type: 'env_var', scope_type: 'project', scope_id: 'proj_1' } as SecretResolveItem;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 async function contextFor(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
   resolved.secrets = [secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD')];
@@ -57,6 +60,8 @@ describe('agent runtime secrets allowlist', () => {
   });
 
   it('refuses, before cloning, a job that would push with a git token its allowlist leaves out', async () => {
+    // The inline path's workspace cleanup loads service config, which needs a database URL.
+    vi.stubEnv('DATABASE_URL', 'postgres://eve:eve@localhost:5432/eve');
     const ctx = await contextFor(['ANTHROPIC_API_KEY'], { git: { push: 'on_success' } });
     expect(ctx.cloned).toBe(false);
     expect(ctx.result).toMatchObject({ success: false, error: expect.stringContaining('secrets allowlist') });

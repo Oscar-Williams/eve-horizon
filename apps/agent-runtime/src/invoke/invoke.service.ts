@@ -94,6 +94,7 @@ import {
   cleanupWorkspaceSecretArtifacts,
   cleanupJobSecretArtifacts,
   releaseCloneOnlyGitKey,
+  assertCloneOnlyGitCredentialSafe,
   selectJobSecrets,
   applyEnvOverrides,
   // Harness lifecycle events
@@ -1037,6 +1038,7 @@ export class InvokeService {
         effectiveInvocation.attemptId,
       ));
       // The workspace clone may use a git credential the job itself does not receive.
+      await assertCloneOnlyGitCredentialSafe(effectiveInvocation, allSecrets);
       const gitAuth = await prepareGitAuth(effectiveInvocation, allSecrets);
       // Everything from here on, harness included, sees only the job's own secrets.
       const resolvedSecrets = await selectJobSecrets(effectiveInvocation, allSecrets, lifecycleLogger);
@@ -2225,7 +2227,8 @@ export class InvokeService {
 
     // Only attempt git operations for non-file URLs.
     if (invocation.repoBranch && !getLocalRepoPath(invocation.repoUrl ?? '')) {
-      await runGit(['checkout', invocation.repoBranch], { cwd: repoPath, env: gitAuth?.env });
+      // A local checkout needs no credential; the repo's config is the job's to write.
+      await runGit(['checkout', invocation.repoBranch], { cwd: repoPath });
     }
 
     return { repoPath, hadRepoPath };

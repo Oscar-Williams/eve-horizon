@@ -108,9 +108,14 @@ agents:
   and app-link variables (`EVE_APP_LINK_<ALIAS>_URL` / `_TOKEN`) are not
   secrets and still reach the job.
 - A git credential the list leaves out (`GITHUB_TOKEN`, `GH_TOKEN`, an
-  `ssh_key` secret) is still used to clone the workspace, but stays out of the
-  clone URL and `.git/config`, and the SSH key is deleted after the clone
-  unless the job's git policy pushes.
+  `ssh_key` secret) is used only to clone a fresh workspace before the harness
+  runs: it is kept out of the clone URL and `.git/config`, and the SSH key is
+  deleted once the workspace is prepared. Such a job may not push
+  (`git.push` must be `never`) and may not reuse a workspace (session mode),
+  because after the harness runs the repository's config is the job's to
+  write and any git command carrying the credential could leak it. Either is
+  refused with `git_credential_not_allowlisted`; list the credential to allow
+  them.
 - `env_overrides` can only reference allowlisted secrets.
 - A workflow agent step can narrow it further with its own `secrets:`.
 
