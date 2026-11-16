@@ -78,6 +78,12 @@ export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)   # one link
 eval "$(eve job app-link-token --env)"                           # every link
 ```
 
+App links are project-scoped: a job's links come from
+`hints.resolved_app_links`, which any `jobs:write` holder in the consumer
+project can edit, so the refresh (like the first mint) covers any of the
+project's subscriptions a job names there. A secrets allowlist does not limit
+app links.
+
 `POST /jobs/{job_id}/app-link-tokens` (body `{ "alias"?: string }`) answers
 `{ data: [{ alias, name, env_var, access_token, expires_at }] }`. Only the
 job's own job token may call it, and only while the job runs. The harness's

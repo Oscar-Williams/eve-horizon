@@ -67,7 +67,9 @@ is used only by jobs without a secrets allowlist. A k8s runtime removes
 
 **Per-agent secrets allowlist**: an agent's `access.secrets` (and a workflow
 agent step's `secrets:`) limits the secrets its jobs receive to the names
-listed. See [secrets.md](./secrets.md#agent-secrets-allowlist).
+listed. It does not separate jobs that share an inline runtime pod (see
+below and [secrets.md](./secrets.md#agent-secrets-allowlist)); use runner-pod
+mode for agents that read untrusted input.
 
 **Prompt off the command line**: the prompt reaches the harness on stdin, not as
 an argument that `ps` would show to other jobs on the same pod.

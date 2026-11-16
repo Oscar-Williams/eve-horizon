@@ -118,6 +118,12 @@ agents:
   them.
 - `env_overrides` can only reference allowlisted secrets.
 - A workflow agent step can narrow it further with its own `secrets:`.
+- It limits what the job is handed, not what it can reach: on a shared
+  inline agent-runtime pod a job can read the environment and secret folders
+  of jobs running beside it. Run an agent that reads untrusted input in
+  runner-pod mode (`EVE_AGENT_RUNTIME_EXECUTION_MODE=runner`). Work the job
+  starts through events is not restricted, and app links are project-wide
+  (see [secrets.md](./secrets.md#agent-secrets-allowlist)).
 
 See [secrets.md](./secrets.md#agent-secrets-allowlist).
 

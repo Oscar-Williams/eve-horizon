@@ -203,6 +203,27 @@ edits, releases to run, or rejects in review is narrowed to it. On these
 routes a list only ever narrows. The job's `secrets_allowlist` is shown on job
 responses and is never set by clients.
 
+**What an allowlist does not do on a shared pod.** By default
+(`EVE_AGENT_RUNTIME_EXECUTION_MODE=inline`) concurrent agent jobs run inside
+one agent-runtime pod as the same user. A restricted job's harness can then
+read the environment of a job running beside it (`/proc/<pid>/environ`) and
+that job's secret folders (`$TMPDIR/eve/job-secrets/<attempt>`,
+`$TMPDIR/eve/git-keys/<attempt>`, `$TMPDIR/eve/agent-homes/<attempt>`). The
+allowlist limits what the job is handed, not what it can reach on a shared
+pod. For an agent that reads untrusted input, run agent jobs in runner-pod
+mode (`EVE_AGENT_RUNTIME_EXECUTION_MODE=runner`: one job per pod), or keep the
+agent in a project whose other jobs hold nothing it must not see.
+
+A restricted job token also cannot export (`POST /projects/{id}/secrets/export`)
+a secret its allowlist leaves out.
+
+App links are project-scoped, not job-scoped: the app-link tokens a job gets
+come from `hints.resolved_app_links`, which any `jobs:write` holder in the
+consumer project (a restricted job's token included) can edit, so such a
+holder can obtain tokens for any of the project's app-link subscriptions. The
+allowlist does not limit app links; grant a project only the links all its
+agents may use.
+
 **Not covered: work started by events.** An event a restricted job causes is
 not stamped, so workflows and pipelines its triggers start are not
 restricted. A default agent token can cause such events: posting a thread
