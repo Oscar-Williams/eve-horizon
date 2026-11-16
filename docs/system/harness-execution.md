@@ -280,15 +280,27 @@ Uses `GEMINI_API_KEY` or `GOOGLE_API_KEY` from environment. No special credentia
 
 ### Code/Codex Harnesses
 
-Use OpenAI OAuth credentials written by entrypoint:
+A job's Codex credential is chosen in this order:
 
-```bash
-# docker/worker/entrypoint.sh
-write_codex_credentials() {
-  # Write to ~/.code/auth.json (Every Code CLI)
-  # Write to ~/.codex/auth.json (OpenAI Codex CLI)
-}
-```
+1. Secrets: `OPENAI_API_KEY`, then `CODEX_AUTH_JSON_B64` (full `auth.json`,
+   base64), then `CODEX_OAUTH_ACCESS_TOKEN`. Under a secrets allowlist only
+   the names it lists count.
+2. An `auth.json` already in the harness config dir (`CODEX_HOME`), for jobs
+   without an allowlist.
+3. Operator auth, for jobs without an allowlist: `CODEX_AUTH_JSON` or
+   `CODEX_AUTH_JSON_B64` (base64 `auth.json`), or `CODEX_OAUTH_ACCESS_TOKEN`
+   (with optional `CODEX_OAUTH_ID_TOKEN`, `CODEX_OAUTH_ACCOUNT_ID`), set on the
+   worker or agent-runtime. It stays in the service's environment, which job
+   code can neither read nor change; it is never written to the service's
+   `$HOME`. Outside k8s (services on a developer's machine) a `codex login` in
+   `~/.codex/auth.json` or `~/.code/auth.json` is used the same way, read only.
+
+The chosen `auth.json` is written to the job's `CODEX_HOME` and per-job HOME
+only, both removed when the attempt ends. When `CODEX_HOME` is the repo's
+`.agent/harnesses/codex`, the file is added to `.git/info/exclude` so a commit
+policy never commits it. A k8s runtime removes `~/.codex/auth.json` and
+`~/.code/auth.json` from its own HOME at start (left there by earlier
+versions), and harness readiness ignores them in k8s.
 
 **Credentials file format:**
 ```json
@@ -361,7 +373,7 @@ Codex and Code CLI (`@openai/codex`, `@just-every/code`) store OAuth tokens in `
 **Write-back flow (worker and agent-runtime):**
 
 1. Before invocation: the worker captures the base64-encoded `auth.json` and its originating secret scope.
-2. After invocation: the worker reads `auth.json` from disk (picks the freshest across `~/.code` and `~/.codex`).
+2. After invocation: the worker reads `auth.json` from the job's own `CODEX_HOME` (never the service's `$HOME`).
 3. If the base64 differs from the original (token was refreshed), the new value is written back to the originating secret via `PATCH /internal/secrets/:scope_type/:scope_id/CODEX_AUTH_JSON_B64`.
 4. Write-back failures are non-fatal (logged as `warn`).
 

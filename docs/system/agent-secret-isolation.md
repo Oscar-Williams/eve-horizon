@@ -59,9 +59,12 @@ SSH keys (`$TMPDIR/eve/git-keys/<attempt>`)
 and the per-job HOME with its Eve, Claude, Codex and `gh` credentials
 (`cleanupJobSecretArtifacts`). A pod restart is not needed to clear them.
 Codex `auth.json` goes only to the harness config dir (`CODEX_HOME`) and the
-per-job HOME, never the runtime's own HOME, and no job falls back to an
-`auth.json` found there. A pre-existing `auth.json` in the harness config dir
-is used only by jobs without a secrets allowlist. A k8s runtime removes
+per-job HOME, never the runtime's own HOME, and no job in k8s falls back to an
+`auth.json` found there. A pre-existing `auth.json` in the harness config dir,
+and operator Codex auth (kept in the service's own environment, see
+[harness-execution.md](./harness-execution.md#codecodex-harnesses)), are used
+only by jobs without a secrets allowlist; so is the worker's Claude
+credentials file. A k8s runtime removes
 `~/.codex/auth.json` and `~/.code/auth.json` from its own HOME when it starts
 (left by earlier versions).
 

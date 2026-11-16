@@ -194,14 +194,23 @@ The orchestrator resolves the effective list into the invocation; the attempt
 log records the names kept, any named but missing, and how many were withheld
 (lifecycle `secrets` / `secrets_allowlist`).
 
-**Work a restricted job starts directly stays restricted.** The job token
-minted for a job with an effective allowlist carries it as a
+**Agent jobs a restricted job starts directly stay restricted.** The job
+token minted for a job with an effective allowlist carries it as a
 `secrets_allowlist` claim. Jobs that token creates (`POST /jobs`, batches,
 workflow runs and retries, pipeline runs, environment deploys, chat routes and
 thread continuations) are stamped with it, narrowed by any step list; a job it
-edits, releases to run, or rejects in review is narrowed to it. On these
-routes a list only ever narrows. The job's `secrets_allowlist` is shown on job
-responses and is never set by clients.
+edits, releases to run (`POST /jobs/{id}/release`), or rejects in review is
+narrowed to it, under a row lock. On these routes a list only ever narrows.
+The job's `secrets_allowlist` is shown on job responses and is never set by
+clients.
+
+The stamp restricts **agent** jobs only. Script and `run` steps and pipeline
+actions (builds, deploys, `run` actions) ignore it: they resolve their declared
+`env_overrides` from every project secret. A restricted job that may start a
+pipeline or a workflow with script steps (`pipelines:write`,
+`workflows:write`, `envs:write`; none is a default agent permission) reaches
+the secrets those steps name. Do not grant those permissions to an agent with
+an allowlist.
 
 **What an allowlist does not do on a shared pod.** By default
 (`EVE_AGENT_RUNTIME_EXECUTION_MODE=inline`) concurrent agent jobs run inside
@@ -210,9 +219,11 @@ read the environment of a job running beside it (`/proc/<pid>/environ`) and
 that job's secret folders (`$TMPDIR/eve/job-secrets/<attempt>`,
 `$TMPDIR/eve/git-keys/<attempt>`, `$TMPDIR/eve/agent-homes/<attempt>`). The
 allowlist limits what the job is handed, not what it can reach on a shared
-pod. For an agent that reads untrusted input, run agent jobs in runner-pod
-mode (`EVE_AGENT_RUNTIME_EXECUTION_MODE=runner`: one job per pod), or keep the
-agent in a project whose other jobs hold nothing it must not see.
+pod. A shared inline pod runs other projects' jobs too, and other orgs' jobs
+unless the deployment dedicates runtimes to one org (for example with
+`EVE_ORG_ID`), so moving the agent to its own project does not separate it.
+For an agent that reads untrusted input, run agent jobs in runner-pod mode
+(`EVE_AGENT_RUNTIME_EXECUTION_MODE=runner`: one job per pod).
 
 A restricted job token also cannot export (`POST /projects/{id}/secrets/export`)
 a secret its allowlist leaves out.
@@ -241,7 +252,7 @@ restrict them too.
 ## Git Auth Injection
 
 - HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access. When a secrets allowlist applies and leaves the token out, the token is not put in the clone URL (where it would persist in `.git/config`); the clone sends it as an auth header from its environment instead.
-- SSH clone: `ssh_key` secrets are written to a per-attempt key outside the workspace and wired via `GIT_SSH_COMMAND`. Under an allowlist that leaves the key out, the key is deleted once the workspace is prepared. Keys are always deleted when the attempt ends.
+- SSH clone: `ssh_key` secrets are written to a per-attempt key outside the workspace and wired via `GIT_SSH_COMMAND` (`ssh -F /dev/null ... -o UserKnownHostsFile=<per-attempt file> -o StrictHostKeyChecking=accept-new`), so ssh ignores the service user's `~/.ssh/config` and `known_hosts`, which job code can write. Under an allowlist that leaves the key out, the key is deleted once the workspace is prepared. Keys are always deleted when the attempt ends.
 - Only git commands that talk to the remote (`clone`, `fetch`, `push`, `pull`, `ls-remote`) get the credential environment; `checkout`, `add`, `commit`, `status` and the rest run without it, since they read repository config the job can write.
 - A job whose allowlist leaves the git credential out may not push (`git.push` other than `never`) or reuse a workspace (session mode, or a repo already on disk): both would run a credentialed git command under config the job wrote (a filter driver, `gpg.program`, or `http.proxy` with `sslVerify=false`). They fail fast with `git_credential_not_allowlisted`. The credential "stays out of the job" only on that basis.
 - Missing auth now surfaces explicit errors with remediation hints (use `eve secrets set`).
