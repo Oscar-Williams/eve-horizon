@@ -8,13 +8,10 @@ import type { AttemptResultData, CompleteAttemptResult, Job, JobAttempt } from '
 export function jobAttemptQueries(db: Db) {
   return {
     /**
-     * Get the current running attempt for a job
-     *
-     * @param jobId - Job ID
-     * @returns Current attempt if found, null otherwise
+     * What a job-token liveness check needs, and no more: the job's phase and
+     * the id of its running attempt (null when none runs).
      */
     async getTokenLiveness(jobId: string): Promise<{ phase: Job['phase']; running_attempt_id: string | null } | null> {
-      // What a job-token check needs, and no more: the job's phase and its running attempt.
       const [row] = await db<{ phase: Job['phase']; running_attempt_id: string | null }[]>`
         SELECT
           j.phase,
@@ -30,6 +27,12 @@ export function jobAttemptQueries(db: Db) {
       return row ?? null;
     },
 
+    /**
+     * Get the current running attempt for a job
+     *
+     * @param jobId - Job ID
+     * @returns Current attempt if found, null otherwise
+     */
     async getCurrentAttempt(jobId: string): Promise<JobAttempt | null> {
       const [attempt] = await db<JobAttempt[]>`
         SELECT * FROM job_attempts

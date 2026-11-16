@@ -1660,11 +1660,16 @@ export class JobsService {
    *
    * Also releases any gates held by the job.
    */
-  async release(jobId: string, data: ReleaseRequest): Promise<{ job: JobResponse }> {
+  async release(jobId: string, data: ReleaseRequest, caller?: AuthUser): Promise<{ job: JobResponse }> {
     // Release any gates held by this job
     await this.gates.releaseGates(jobId);
 
-    const result = await this.jobs.release(jobId, data.agent_id, data.reason);
+    // Re-queueing runs the job again: a restricted releaser narrows it first.
+    const result = await this.db.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await this.narrowToCallerAllowlist(tx, jobId, caller);
+      return jobQueries(tx).release(jobId, data.agent_id, data.reason);
+    });
     if (!result.success || !result.job) {
       throw new BadRequestException(result.error);
     }
@@ -1789,25 +1794,32 @@ export class JobsService {
   }
 
   /**
-   * Reject a job in review
+   * Narrow a job's secrets allowlist to a restricted caller's (a restricted
+   * job's token), reading the stored list under a row lock so concurrent
+   * narrowings intersect rather than overwrite. Nothing for other callers.
    */
+  private async narrowToCallerAllowlist(tx: Db, jobId: string, caller?: AuthUser): Promise<void> {
+    const callerAllowlist = workStartOptions(caller).secretsAllowlist ?? null;
+    if (!callerAllowlist) return;
+    const [row] = await tx<Array<{ secrets_allowlist: string[] | null }>>`
+      SELECT secrets_allowlist FROM jobs WHERE id = ${jobId} FOR UPDATE
+    `;
+    if (!row) return;
+    const narrowed = narrowSecretsAllowlist(row.secrets_allowlist ?? null, callerAllowlist);
+    if (sameSecretsAllowlist(narrowed, row.secrets_allowlist ?? null)) return;
+    await tx`UPDATE jobs SET secrets_allowlist = ${narrowed}, updated_at = NOW() WHERE id = ${jobId}`;
+  }
+
   /**
    * Reject a job in review, which runs it again. The job keeps its actor, but
    * a rejecter with a secrets allowlist (a restricted job's token) narrows the
    * job to it, so rejecting cannot re-run work that receives more secrets.
    */
   async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
-    const callerAllowlist = workStartOptions(caller).secretsAllowlist ?? null;
     try {
       const job = await this.db.begin(async (rawTx) => {
         const tx = rawTx as unknown as Db;
-        if (callerAllowlist) {
-          const current = await jobQueries(tx).findById(jobId);
-          if (current) {
-            const narrowed = narrowSecretsAllowlist(current.secrets_allowlist ?? null, callerAllowlist);
-            await tx`UPDATE jobs SET secrets_allowlist = ${narrowed}, updated_at = NOW() WHERE id = ${jobId}`;
-          }
-        }
+        await this.narrowToCallerAllowlist(tx, jobId, caller);
         return jobQueries(tx).rejectReview(jobId, data.reviewer_id, data.reason);
       });
       return this.toJobResponse(job as Job);

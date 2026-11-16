@@ -135,3 +135,92 @@ export async function removeStaleServiceHomeCodexAuth(options: {
     }),
   ));
 }
+
+/**
+ * Write a job's Codex auth.json to its harness config dir and per-job HOME.
+ * When the config dir is inside the repo (the default
+ * `<repo>/.agent/harnesses/codex`), the file is added to `.git/info/exclude`
+ * so a commit policy's `git add -A` never commits or pushes it.
+ */
+export async function writeJobCodexAuth(
+  content: string,
+  target: { configDir?: string; jobUserHome?: string; repoPath?: string },
+): Promise<void> {
+  for (const dir of jobCodexAuthDirs(target.configDir, target.jobUserHome)) {
+    const authPath = path.join(dir, 'auth.json');
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(authPath, content, { mode: 0o600 });
+    } catch (error) {
+      console.warn(`[codex-auth] Failed to write auth.json to ${authPath}: ${String(error)}`);
+    }
+  }
+  if (target.configDir && target.repoPath) {
+    await excludeFromGit(target.repoPath, path.join(target.configDir, 'auth.json'));
+  }
+}
+
+async function excludeFromGit(repoPath: string, file: string): Promise<void> {
+  const relative = path.relative(repoPath, file);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return;
+  const gitDir = path.join(repoPath, '.git');
+  const isDir = await fs.stat(gitDir).then((stat) => stat.isDirectory(), () => false);
+  if (!isDir) return;
+  const excludePath = path.join(gitDir, 'info', 'exclude');
+  const line = `/${relative.split(path.sep).join('/')}`;
+  try {
+    const existing = await fs.readFile(excludePath, 'utf-8').catch(() => '');
+    if (existing.split('\n').includes(line)) return;
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
+    await fs.appendFile(excludePath, `${prefix}${line}\n`);
+  } catch (error) {
+    console.warn(`[codex-auth] Failed to exclude ${line} from git: ${String(error)}`);
+  }
+}
+
+/**
+ * Codex auth the operator provides, for jobs without a secrets allowlist:
+ *
+ * - the service's own environment (`CODEX_AUTH_JSON` / `CODEX_AUTH_JSON_B64`,
+ *   base64 auth.json; or `CODEX_OAUTH_ACCESS_TOKEN` with optional
+ *   `CODEX_OAUTH_ID_TOKEN` / `CODEX_OAUTH_ACCOUNT_ID`). Job code can neither
+ *   read nor change it, unlike a file in a directory the service user owns;
+ * - outside k8s only (services run on a developer's machine), the developer's
+ *   own `codex login` in `~/.codex/auth.json` or `~/.code/auth.json`, read and
+ *   never written.
+ *
+ * Returns the auth.json content, or null.
+ */
+export async function operatorCodexAuth(options: {
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  runtime?: string;
+} = {}): Promise<string | null> {
+  const env = options.env ?? process.env;
+  const b64 = env.CODEX_AUTH_JSON || env.CODEX_AUTH_JSON_B64;
+  if (b64) return Buffer.from(b64, 'base64').toString('utf-8');
+  if (env.CODEX_OAUTH_ACCESS_TOKEN) {
+    return JSON.stringify({
+      tokens: {
+        access_token: env.CODEX_OAUTH_ACCESS_TOKEN,
+        ...(env.CODEX_OAUTH_ID_TOKEN ? { id_token: env.CODEX_OAUTH_ID_TOKEN } : {}),
+        ...(env.CODEX_OAUTH_ACCOUNT_ID ? { account_id: env.CODEX_OAUTH_ACCOUNT_ID } : {}),
+      },
+    });
+  }
+
+  const runtime = Object.prototype.hasOwnProperty.call(options, 'runtime') ? options.runtime : process.env.EVE_RUNTIME;
+  if (runtime === 'k8s') return null;
+  const home = options.home ?? (process.env.HOME || os.homedir());
+  for (const dir of ['.codex', '.code']) {
+    try {
+      const content = await fs.readFile(path.join(home, dir, 'auth.json'), 'utf-8');
+      const data = JSON.parse(content) as { tokens?: { access_token?: string }; OPENAI_API_KEY?: string };
+      if (data.tokens?.access_token || data.OPENAI_API_KEY) return content;
+    } catch {
+      // missing or invalid: try the next
+    }
+  }
+  return null;
+}

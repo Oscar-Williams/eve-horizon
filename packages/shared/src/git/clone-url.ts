@@ -1,4 +1,13 @@
 /**
+ * github.com or one of its subdomains. A substring match would also send the
+ * token to `github.com.attacker.example`.
+ */
+export function isGitHubHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'github.com' || host.endsWith('.github.com');
+}
+
+/**
  * Build an authenticated HTTPS clone URL for a GitHub repository.
  *
  * GitHub's HTTPS git endpoint accepts a token differently depending on the
@@ -30,15 +39,6 @@
  * @param token - the GitHub token value
  * @returns the authenticated clone URL, or `repoUrl` when auth cannot be applied
  */
-/**
- * github.com or one of its subdomains. A substring match would also send the
- * token to `github.com.attacker.example`.
- */
-export function isGitHubHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return host === 'github.com' || host.endsWith('.github.com');
-}
-
 export function buildAuthenticatedHttpsUrl(repoUrl: string, token: string): string {
   if (!repoUrl.startsWith('http')) return repoUrl;
 

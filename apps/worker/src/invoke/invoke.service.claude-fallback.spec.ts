@@ -27,10 +27,10 @@ function decide(invocation: Partial<HarnessInvocation>) {
 
 describe("the worker's Claude credentials file in its own HOME", () => {
   it('still serves a job without a secrets allowlist', async () => {
-    expect(await decide({ jobId: 'j1' })).not.toBeNull();
+    expect(await decide({})).not.toBeNull();
   });
 
   it('never serves a job with a secrets allowlist', async () => {
-    expect(await decide({ jobId: 'j2', secrets_allowlist: ['OPPS_SIGNING_KEY'] })).toBeNull();
+    expect(await decide({ secrets_allowlist: ['OPPS_SIGNING_KEY'] })).toBeNull();
   });
 });

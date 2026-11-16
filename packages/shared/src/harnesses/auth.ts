@@ -62,8 +62,16 @@ function createAuthChecks(): Record<HarnessCanonicalName, AuthCheck> {
       if (env.CODEX_AUTH_JSON) {
         return ready('using CODEX_AUTH_JSON', instructionsOpenAi());
       }
+      if (env.CODEX_AUTH_JSON_B64) {
+        return ready('using CODEX_AUTH_JSON_B64', instructionsOpenAi());
+      }
       if (env.CODEX_OAUTH_ACCESS_TOKEN) {
         return ready('using CODEX_OAUTH_ACCESS_TOKEN', instructionsOpenAi());
+      }
+      // In k8s the runtime's own HOME is shared with job code and never used for
+      // job auth; only a developer machine's codex login counts.
+      if ((env.EVE_RUNTIME ?? process.env.EVE_RUNTIME) === 'k8s') {
+        return missing('missing OPENAI_API_KEY or Codex OAuth', instructionsOpenAi());
       }
       if (checkHostCredentials('.code/auth.json', ['OPENAI_API_KEY'])) {
         return ready('using ~/.code/auth.json (API key)', instructionsOpenAi());

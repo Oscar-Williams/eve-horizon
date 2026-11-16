@@ -175,6 +175,8 @@ export {
   jobCodexAuthDirs,
   preexistingCodexAuthPaths,
   removeStaleServiceHomeCodexAuth,
+  writeJobCodexAuth,
+  operatorCodexAuth,
   type CodexAuthSource,
   type CodexAuthSelection,
 } from './codex-auth.js';

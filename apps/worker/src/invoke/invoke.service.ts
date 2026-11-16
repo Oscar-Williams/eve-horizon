@@ -82,9 +82,10 @@ import {
   releaseCloneOnlyGitKey,
   assertCloneOnlyGitCredentialSafe,
   writeBackCodexAuth,
-  jobCodexAuthDirs,
   preexistingCodexAuthPaths,
   removeStaleServiceHomeCodexAuth,
+  writeJobCodexAuth,
+  operatorCodexAuth,
   selectJobSecrets,
   applyEnvOverrides,
   materializeWorkspaceSkills,
@@ -285,6 +286,7 @@ export class InvokeService implements OnModuleInit {
   private async resolveClaudeAuthDecision(
     resolvedSecrets: SecretResolveItem[],
     env: Record<string, string | undefined>,
+    invocation?: Pick<HarnessInvocation, 'secrets_allowlist'>,
   ): Promise<ClaudeAuthDecision | null> {
     const selected = selectClaudeAuth(resolvedSecrets);
     if (selected) return selected;
@@ -308,7 +310,9 @@ export class InvokeService implements OnModuleInit {
         scope_type: undefined,
       });
     }
-    if (fallbackSecrets.length === 0) {
+    // The credentials file sits in the worker's own HOME: never for a job with a
+    // secrets allowlist, which uses only the credentials it names.
+    if (fallbackSecrets.length === 0 && !invocation?.secrets_allowlist) {
       const fileTokens = await this.readClaudeCredentialsFile();
       if (fileTokens?.accessToken) {
         fallbackSecrets.push({
@@ -1464,7 +1468,7 @@ export class InvokeService implements OnModuleInit {
         };
         const isClaudeHarness = harness === 'claude' || harness === 'mclaude';
         const jobUserHome = await createJobUserHome(effectiveInvocation.attemptId);
-        const claudeAuthDecision = await this.resolveClaudeAuthDecision(resolvedSecrets, baseEnv);
+        const claudeAuthDecision = await this.resolveClaudeAuthDecision(resolvedSecrets, baseEnv, effectiveInvocation);
         let claudeAuthRuntime: ClaudeAuthRuntimeState | null = null;
 
         // IMPORTANT: resolveMclaudeAuth/resolveCodeAuth must read from the per-invocation
@@ -1488,7 +1492,7 @@ export class InvokeService implements OnModuleInit {
             };
           },
           resolveCodeAuth: (options?: { configDir?: string }) =>
-            this.resolveCodeAuth(effectiveInvocation, harness, resolvedSecrets, { ...options, env: baseEnv, jobUserHome }),
+            this.resolveCodeAuth(effectiveInvocation, harness, resolvedSecrets, { ...options, env: baseEnv, jobUserHome, repoPath }),
         };
 
         const options = await adapter.buildOptions({
@@ -1889,12 +1893,14 @@ export class InvokeService implements OnModuleInit {
       env?: NodeJS.ProcessEnv;
       /** The per-job HOME the harness runs with; auth files go here, never to the worker's own HOME. */
       jobUserHome?: string;
+      /** The job's repo, so an auth.json in a repo-local config dir is kept out of git. */
+      repoPath?: string;
     },
   ): Promise<{
     env: Record<string, string | undefined>;
   }> {
     const env = options?.env ?? process.env;
-    const authTargets = jobCodexAuthDirs(options?.configDir, options?.jobUserHome);
+    const authTarget = { configDir: options?.configDir, jobUserHome: options?.jobUserHome, repoPath: options?.repoPath };
     const secretFor = (key: string) => secrets.find(s => s.key === key) ?? { key };
 
     console.log(`[codex-auth] resolveCodeAuth called: configDir=${options?.configDir ?? '(none)'} OPENAI_API_KEY=${!!env.OPENAI_API_KEY} CODEX_AUTH_JSON_B64=${!!env.CODEX_AUTH_JSON_B64} CODEX_OAUTH_ACCESS_TOKEN=${!!env.CODEX_OAUTH_ACCESS_TOKEN}`);
@@ -1929,16 +1935,7 @@ export class InvokeService implements OnModuleInit {
       }
 
       // Write auth.json to CODEX_HOME and the per-job HOME (never the worker's own HOME).
-      for (const dir of authTargets) {
-        const authPath = path.join(dir, 'auth.json');
-        try {
-          await fs.mkdir(dir, { recursive: true });
-          await fs.writeFile(authPath, authJsonStr);
-          console.log(`[codex-auth] Wrote auth.json to ${authPath}`);
-        } catch (error) {
-          console.warn(`[codex-auth] Failed to write auth.json to ${authPath}: ${String(error)}`);
-        }
-      }
+      await writeJobCodexAuth(authJsonStr, authTarget);
 
       // Do NOT pass OPENAI_API_KEY as env var — let the Codex CLI use file-based
       // auth from CODEX_HOME/auth.json so it can auto-refresh using refresh_token.
@@ -1954,15 +1951,7 @@ export class InvokeService implements OnModuleInit {
         last_refresh: new Date().toISOString(),
       };
       const authJsonStr = JSON.stringify(authPayload, null, 2);
-      for (const dir of authTargets) {
-        const authPath = path.join(dir, 'auth.json');
-        try {
-          await fs.mkdir(dir, { recursive: true });
-          await fs.writeFile(authPath, authJsonStr);
-        } catch (error) {
-          console.warn(`[codex-auth] Failed to write auth.json to ${authPath}: ${String(error)}`);
-        }
-      }
+      await writeJobCodexAuth(authJsonStr, authTarget);
       // No refresh_token available — pass as env var fallback
       await this.logCodexAuthSelected(invocation, harness, selectedCodexAuth('oauth_access_token', secretFor('CODEX_OAUTH_ACCESS_TOKEN')));
       return { env: { OPENAI_API_KEY: oauthToken } };
@@ -1983,6 +1972,17 @@ export class InvokeService implements OnModuleInit {
         }
       } catch {
         // File doesn't exist or isn't valid JSON, try next
+      }
+    }
+
+    // Priority 5: operator Codex auth (the worker's own env, or a developer's
+    // codex login outside k8s), for jobs without a secrets allowlist only.
+    if (!invocation.secrets_allowlist) {
+      const operatorAuth = await operatorCodexAuth();
+      if (operatorAuth) {
+        await writeJobCodexAuth(operatorAuth, authTarget);
+        await this.logCodexAuthSelected(invocation, harness, selectedCodexAuth('preexisting'));
+        return { env: {} };
       }
     }
 

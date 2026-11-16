@@ -107,14 +107,18 @@ export async function prepareGitAuth(
     await fs.mkdir(keyDir, { recursive: true, mode: 0o700 });
     const keyPath = path.join(keyDir, 'git_ssh_key');
     await fs.writeFile(keyPath, sshSecret.value, { mode: 0o600 });
+    // ssh reads ~/.ssh/config and ~/.ssh/known_hosts from the service user's
+    // home, which job code can write (a ProxyCommand would run while the key is
+    // on disk). -F /dev/null ignores the config; known hosts go next to the key.
+    const knownHosts = path.join(keyDir, 'known_hosts');
     return {
       env: {
-        GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`,
+        GIT_SSH_COMMAND: `ssh -F /dev/null -i ${keyPath} -o IdentitiesOnly=yes -o UserKnownHostsFile=${knownHosts} -o StrictHostKeyChecking=accept-new`,
       },
     };
   }
 
-  if (githubToken && repoUrl.startsWith('http')) {
+  if (githubToken && usesGitHubToken(repoUrl)) {
     const jobMayHoldToken = !invocation.secrets_allowlist || invocation.secrets_allowlist.includes(githubToken.key);
     if (jobMayHoldToken) {
       const cloneUrl = buildAuthenticatedHttpsUrl(repoUrl, githubToken.value);
@@ -180,7 +184,7 @@ function cloneOnlyGitCredential(invocation: HarnessInvocation, secrets: SecretRe
   const { sshSecret, githubToken } = gitCredentials(secrets);
   const credential = isSshRepoUrl(repoUrl)
     ? sshSecret
-    : repoUrl.startsWith('http') ? githubToken : undefined;
+    : usesGitHubToken(repoUrl) ? githubToken : undefined;
   return credential && !allowlist.includes(credential.key) ? credential.key : null;
 }
 
@@ -198,6 +202,16 @@ function gitCredentials(secrets: SecretResolveItem[]): {
 
 function isSshRepoUrl(repoUrl: string): boolean {
   return repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://');
+}
+
+/** Whether a GitHub token authenticates this repo: HTTP(S) to github.com or a subdomain. */
+function usesGitHubToken(repoUrl: string): boolean {
+  if (!repoUrl.startsWith('http')) return false;
+  try {
+    return isGitHubHost(new URL(repoUrl).hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**

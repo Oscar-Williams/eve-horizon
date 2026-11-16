@@ -509,9 +509,10 @@ export class JobsController {
   })
   async release(
     @Param('job_id') jobId: string,
-    @Body() body: ReleaseRequest
+    @Body() body: ReleaseRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<{ job: JobResponse }> {
-    return this.jobsService.release(jobId, body);
+    return this.jobsService.release(jobId, body, caller);
   }
 
   @RequirePermission('jobs:read')

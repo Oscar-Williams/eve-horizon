@@ -197,8 +197,12 @@ export async function findJobAgent(
 ): Promise<Agent | null> {
   if (!job.agentId) return null;
   const own = await agents.findByProjectAndId(job.projectId, job.agentId);
-  if (own) return own;
-  if (!job.agentSlug) return null;
-  const routed = await agents.findByOrgAndSlug(orgId, job.agentSlug);
-  return routed && routed.id === job.agentId ? routed : null;
+  // A same-id agent in the job's project counts only if the slug the job was
+  // routed by names it; otherwise the slug's agent (in any project) wins.
+  if (own && (!job.agentSlug || own.slug === job.agentSlug)) return own;
+  if (job.agentSlug) {
+    const routed = await agents.findByOrgAndSlug(orgId, job.agentSlug);
+    if (routed && routed.id === job.agentId) return routed;
+  }
+  return own ?? null;
 }

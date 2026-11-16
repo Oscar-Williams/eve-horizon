@@ -26,50 +26,14 @@ write_claude_credentials() {
 }
 
 write_codex_credentials() {
-  # Write to both ~/.code (Every Code) and ~/.codex (OpenAI Codex)
-  # NOTE: Access token only - refresh not supported (re-auth with 'code auth' when expired)
-  local code_home="${CODEX_HOME:-$HOME/.code}"
-  local codex_home="$HOME/.codex"
-
-  write_auth_to_dir() {
-    local dir="$1"
-    local auth_file="$dir/auth.json"
-    mkdir -p "$dir"
-
-    if [[ -n "${CODEX_AUTH_JSON:-}" ]]; then
-      echo "$CODEX_AUTH_JSON" | base64 --decode > "$auth_file"
-      chmod 600 "$auth_file" 2>/dev/null || true
-      echo "Wrote auth.json to $auth_file from CODEX_AUTH_JSON" >&2
-      return 0
-    fi
-
-    if [[ -z "${CODEX_OAUTH_ACCESS_TOKEN:-}" ]]; then
-      return 1
-    fi
-
-    local json
-    json='{"tokens":{"access_token":"'"$CODEX_OAUTH_ACCESS_TOKEN"'"'
-
-    if [[ -n "${CODEX_OAUTH_ID_TOKEN:-}" ]]; then
-      json+=',"id_token":"'"$CODEX_OAUTH_ID_TOKEN"'"'
-    fi
-
-    if [[ -n "${CODEX_OAUTH_ACCOUNT_ID:-}" ]]; then
-      json+=',"account_id":"'"$CODEX_OAUTH_ACCOUNT_ID"'"'
-    fi
-
-    json+='}}'
-
-    printf '%s' "$json" > "$auth_file"
-    chmod 600 "$auth_file" 2>/dev/null || true
-    echo "Wrote auth.json to $auth_file" >&2
-    return 0
-  }
-
-  # Write to ~/.code for Every Code CLI
-  write_auth_to_dir "$code_home" || true
-  # Write to ~/.codex for OpenAI Codex CLI
-  write_auth_to_dir "$codex_home" || true
+  # Operator Codex auth (CODEX_AUTH_JSON, CODEX_AUTH_JSON_B64 or
+  # CODEX_OAUTH_ACCESS_TOKEN) stays in the service's environment, which job
+  # code can neither read nor change. The service writes it into each job's own
+  # HOME, and only for jobs without a secrets allowlist. It is never written to
+  # $HOME, which every job on this worker shares and can rewrite.
+  if [[ -n "${CODEX_AUTH_JSON:-}${CODEX_AUTH_JSON_B64:-}${CODEX_OAUTH_ACCESS_TOKEN:-}" ]]; then
+    echo "Codex auth: operator credentials set (served to jobs without a secrets allowlist)" >&2
+  fi
 }
 
 preflight_check() {
