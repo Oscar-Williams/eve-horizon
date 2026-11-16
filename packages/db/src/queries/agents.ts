@@ -183,3 +183,22 @@ export function agentQueries(db: Db) {
     },
   };
 }
+
+/**
+ * The agent a job runs as: its assignee in the job's own project, or, for a
+ * job routed by `target.agent_slug` to an agent in another project of the
+ * org, that agent (when the slug still names the assigned agent). Null when
+ * the job has no agent.
+ */
+export async function findJobAgent(
+  agents: Pick<ReturnType<typeof agentQueries>, 'findByProjectAndId' | 'findByOrgAndSlug'>,
+  job: { projectId: string; agentId: string | null | undefined; agentSlug?: string | null },
+  orgId: string,
+): Promise<Agent | null> {
+  if (!job.agentId) return null;
+  const own = await agents.findByProjectAndId(job.projectId, job.agentId);
+  if (own) return own;
+  if (!job.agentSlug) return null;
+  const routed = await agents.findByOrgAndSlug(orgId, job.agentSlug);
+  return routed && routed.id === job.agentId ? routed : null;
+}

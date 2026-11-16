@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DEFAULT_SERVICE_PERMISSIONS, AccessBindingScopeSchema, agentSecretsAllowlist, narrowSecretsAllowlist, type AccessBindingScope } from '@eve/shared';
-import { type Db, agentQueries, jobQueries, projectQueries } from '@eve/db';
+import { type Db, agentQueries, findJobAgent, jobQueries, projectQueries } from '@eve/db';
 import { Public } from './auth.decorator.js';
 import { InternalTokenGuard } from '../common/internal-token.guard.js';
 import { AuthService } from './auth.service.js';
@@ -82,7 +82,11 @@ export class AuthInternalController {
 
     // The job's effective secrets allowlist rides on its token, so work the
     // job starts or changes cannot receive secrets the job itself may not.
-    const agent = job.assignee ? await agentQueries(this.db).findByProjectAndId(job.project_id, job.assignee) : null;
+    const agent = await findJobAgent(agentQueries(this.db), {
+      projectId: job.project_id,
+      agentId: job.assignee,
+      agentSlug: (job.target as { agent_slug?: string } | null)?.agent_slug,
+    }, project.org_id);
     const secretsAllowlist = narrowSecretsAllowlist(agentSecretsAllowlist(agent?.access_json), job.secrets_allowlist ?? null);
 
     const accessToken = this.authService.mintJobToken({

@@ -175,7 +175,7 @@ Two places declare one:
 
 | Where | Field | Applies to |
 | --- | --- | --- |
-| `agents.yaml` | `agents.<id>.access.secrets: [NAME, ...]` | Every job the agent runs, however it was started |
+| `agents.yaml` | `agents.<id>.access.secrets: [NAME, ...]` | Every job the agent runs, however it was started, including a job in another project of the org routed to it by `target.agent_slug` |
 | Workflow agent step | `secrets: [NAME, ...]` | That step's job (stored on the job as `secrets_allowlist`) |
 
 When both apply, the job receives only names both lists contain. Names match

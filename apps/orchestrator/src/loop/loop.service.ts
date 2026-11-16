@@ -48,6 +48,7 @@ import {
 import {
   accessRoleQueries,
   agentQueries,
+  findJobAgent,
   eventQueries,
   gateQueries,
   ingestRecordQueries,
@@ -2131,7 +2132,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     const toolchains = Array.isArray(job.hints?.toolchains) ? job.hints.toolchains as string[] : [];
 
     // Secrets allowlist: the agent's access.secrets narrowed by the job's own.
-    const secretsAllowlist = await this.resolveSecretsAllowlist(job, attempt, projectId);
+    const secretsAllowlist = await this.resolveSecretsAllowlist(job, attempt, projectId, project.org_id);
 
     // Env overrides travel with the invocation in placeholder form; the
     // shared invoke module resolves ${secret.KEY} against the materialized
@@ -2174,10 +2175,12 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
    * the job's own allowlist (a workflow step's `secrets:`, or inherited from
    * the job that started it). Null when neither declares one.
    */
-  private async resolveSecretsAllowlist(job: Job, attempt: JobAttempt, projectId: string): Promise<string[] | null> {
-    const agent = attempt.agent_id
-      ? await agentQueries(this.db).findByProjectAndId(projectId, attempt.agent_id)
-      : null;
+  private async resolveSecretsAllowlist(job: Job, attempt: JobAttempt, projectId: string, orgId: string): Promise<string[] | null> {
+    const agent = await findJobAgent(agentQueries(this.db), {
+      projectId,
+      agentId: attempt.agent_id,
+      agentSlug: job.target?.agent_slug,
+    }, orgId);
     return narrowSecretsAllowlist(
       agentSecretsAllowlist(agent?.access_json),
       job.secrets_allowlist ?? null,
