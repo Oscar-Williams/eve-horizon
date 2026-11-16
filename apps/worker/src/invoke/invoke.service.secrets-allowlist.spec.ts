@@ -22,11 +22,12 @@ function secret(key: string, value = `${key}-value`): SecretResolveItem {
 
 afterEach(() => vi.restoreAllMocks());
 
-async function runUntilSecretsMaterialize(secrets_allowlist?: string[]) {
+async function runUntilSecretsMaterialize(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
   const invocation = {
     jobId: 'opps-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'triage',
     workspacePath: '/tmp/eve-allowlist-test', repoUrl: 'https://github.com/org/repo.git',
     ...(secrets_allowlist ? { secrets_allowlist } : {}),
+    ...extra,
   } as unknown as HarnessInvocation;
   const service = new InvokeService(null as never);
   (service as any).jobs = { markExecutionStarted: vi.fn(), updateRuntimeMeta: vi.fn() };
@@ -35,15 +36,18 @@ async function runUntilSecretsMaterialize(secrets_allowlist?: string[]) {
   vi.spyOn(service as any, 'resolveSecrets').mockResolvedValue([
     secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD'),
   ]);
-  const captured: { gitAuth?: any; secrets?: SecretResolveItem[] } = {};
+  const captured: { gitAuth?: any; secrets?: SecretResolveItem[]; result?: any; cloned?: boolean } = {};
   seen.secrets = undefined;
-  vi.spyOn(service as any, 'prepareWorkspace').mockImplementation(async (_inv, gitAuth) => {
-    captured.gitAuth = gitAuth;
-    return { repoPath: os.tmpdir(), hadRepoPath: true };
-  });
+  for (const prepare of ['prepareWorkspace', 'prepareWorkspaceWithGitControls']) {
+    vi.spyOn(service as any, prepare).mockImplementation(async (_inv, gitAuth) => {
+      captured.gitAuth = gitAuth;
+      captured.cloned = true;
+      return { repoPath: os.tmpdir(), hadRepoPath: true };
+    });
+  }
   const cancellation = { signal: new AbortController().signal, check: vi.fn(), stop: vi.fn() };
   // The inline path's workspace cleanup reads service config, absent here; the context is captured first.
-  await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
+  captured.result = await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
   captured.secrets = seen.secrets as SecretResolveItem[];
   return captured;
 }
@@ -60,5 +64,11 @@ describe('worker secrets allowlist', () => {
     expect(seen.secrets?.map((s) => s.key)).toEqual(['ANTHROPIC_API_KEY']);
     expect(seen.gitAuth?.cloneUrl).toBeUndefined();
     expect(JSON.stringify(seen.gitAuth?.env ?? {})).toContain(Buffer.from(`x-access-token:${TOKEN}`).toString('base64'));
+  });
+
+  it('refuses, before cloning, a job that would push with a git token its allowlist leaves out', async () => {
+    const seen = await runUntilSecretsMaterialize(['ANTHROPIC_API_KEY'], { git: { push: 'required' } });
+    expect(seen.cloned).toBeUndefined();
+    expect(seen.result).toMatchObject({ success: false, error: expect.stringContaining('secrets allowlist') });
   });
 });

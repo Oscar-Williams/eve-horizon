@@ -18,12 +18,13 @@ function secret(key: string, value = `${key}-value`): SecretResolveItem {
 
 afterEach(() => vi.restoreAllMocks());
 
-async function contextFor(secrets_allowlist?: string[]) {
+async function contextFor(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
   resolved.secrets = [secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD')];
   const invocation = {
     jobId: 'opps-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'triage',
     workspacePath: '/tmp/eve-allowlist-test', repoUrl: 'https://github.com/org/repo.git',
     ...(secrets_allowlist ? { secrets_allowlist } : {}),
+    ...extra,
   } as unknown as HarnessInvocation;
   const service = new InvokeService(null as never);
   (service as any).jobs = { markExecutionStarted: vi.fn(), updateRuntimeMeta: vi.fn() };
@@ -32,8 +33,8 @@ async function contextFor(secrets_allowlist?: string[]) {
   vi.spyOn(service as any, 'prepareRepo').mockImplementation(async (ctx) => { captured = ctx; throw new Error('stop'); });
   const cancellation = { signal: new AbortController().signal, check: vi.fn(), stop: vi.fn() };
   // The inline path's workspace cleanup reads service config, absent here; the context is captured first.
-  await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
-  return captured;
+  const result = await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
+  return Object.assign(captured ?? {}, { result, cloned: Boolean(captured) });
 }
 
 describe('agent runtime secrets allowlist', () => {
@@ -53,5 +54,11 @@ describe('agent runtime secrets allowlist', () => {
     expect(ctx.gitAuth?.cloneUrl).toBeUndefined();
     expect(JSON.stringify(ctx.gitAuth?.env ?? {})).toContain(Buffer.from(`x-access-token:${TOKEN}`).toString('base64'));
     expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).not.toContain('GITHUB_TOKEN');
+  });
+
+  it('refuses, before cloning, a job that would push with a git token its allowlist leaves out', async () => {
+    const ctx = await contextFor(['ANTHROPIC_API_KEY'], { git: { push: 'on_success' } });
+    expect(ctx.cloned).toBe(false);
+    expect(ctx.result).toMatchObject({ success: false, error: expect.stringContaining('secrets allowlist') });
   });
 });
