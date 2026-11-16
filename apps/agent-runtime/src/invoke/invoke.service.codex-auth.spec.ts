@@ -38,7 +38,20 @@ function makeService() {
         options?: { configDir?: string },
       ) => Promise<{ env: Record<string, string | undefined> }>;
     }).resolveCodeAuth(invocation, 'codex', secrets, options);
-  return { appendLog, resolveCodeAuth };
+  const resolveCodeAuthFor = (
+    inv: HarnessInvocation,
+    secrets: SecretResolveItem[],
+    options?: { configDir?: string },
+  ): Promise<{ env: Record<string, string | undefined> }> =>
+    (service as unknown as {
+      resolveCodeAuth: (
+        invocation: HarnessInvocation,
+        harness: string,
+        secrets: SecretResolveItem[],
+        options?: { configDir?: string },
+      ) => Promise<{ env: Record<string, string | undefined> }>;
+    }).resolveCodeAuth(inv, 'codex', secrets, options);
+  return { appendLog, resolveCodeAuth, resolveCodeAuthFor };
 }
 
 function logsOfType(appendLog: ReturnType<typeof vi.fn>, type: string): Record<string, unknown>[] {
@@ -128,9 +141,9 @@ describe('agent-runtime codex auth provenance', () => {
 
   it('logs preexisting without key or scope when a pre-existing auth.json is used', async () => {
     const { appendLog, resolveCodeAuth } = makeService();
-    await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+    await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(
-      path.join(home, '.codex', 'auth.json'),
+      path.join(configDir, 'auth.json'),
       JSON.stringify({ tokens: { access_token: 'file-secret' } }),
     );
 
@@ -151,5 +164,54 @@ describe('agent-runtime codex auth provenance', () => {
     await expect(resolveCodeAuth([], { configDir })).rejects.toThrow(/Missing code auth/);
 
     expect(logsOfType(appendLog, 'codex_auth_selected')).toEqual([]);
+  });
+
+  describe("the runtime's own HOME", () => {
+    // Several jobs, from different orgs, share one runtime and its HOME.
+    const authJson = JSON.stringify({ tokens: { access_token: 'tok-secret', refresh_token: 'rt-secret' } });
+    let jobUserHome: string;
+
+    beforeEach(async () => {
+      jobUserHome = path.join(home, 'job-home');
+      await fs.mkdir(jobUserHome, { recursive: true });
+    });
+
+    async function exists(target: string): Promise<boolean> {
+      return fs.stat(target).then(() => true, () => false);
+    }
+
+    it('is never written: auth.json goes to the harness config dir and the per-job HOME', async () => {
+      const { resolveCodeAuth } = makeService();
+
+      await resolveCodeAuth([secret('CODEX_AUTH_JSON_B64', Buffer.from(authJson).toString('base64'), 'org', 'org_1')], { configDir, jobUserHome } as never);
+
+      expect(await exists(path.join(home, '.codex', 'auth.json'))).toBe(false);
+      expect(await exists(path.join(home, '.code', 'auth.json'))).toBe(false);
+      await expect(fs.readFile(path.join(jobUserHome, '.codex', 'auth.json'), 'utf-8')).resolves.toBe(authJson);
+      await expect(fs.readFile(path.join(configDir, 'auth.json'), 'utf-8')).resolves.toBe(authJson);
+    });
+
+    it("is never read: an auth.json another job left there is not this job's credential", async () => {
+      const { resolveCodeAuth } = makeService();
+      for (const dir of ['.codex', '.code']) {
+        await fs.mkdir(path.join(home, dir), { recursive: true });
+        await fs.writeFile(path.join(home, dir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'other-job' } }));
+      }
+
+      await expect(resolveCodeAuth([], { configDir, jobUserHome } as never)).rejects.toThrow(/Missing code auth/);
+      expect(await exists(path.join(configDir, 'auth.json'))).toBe(false);
+    });
+
+    it('is not consulted for a job with a secrets allowlist, which uses only its allowlisted credentials', async () => {
+      const { resolveCodeAuthFor } = makeService();
+      await fs.mkdir(configDir, { recursive: true });
+      await fs.writeFile(path.join(configDir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'repo-file' } }));
+
+      await expect(resolveCodeAuthFor(
+        { ...invocation, secrets_allowlist: ['ANTHROPIC_API_KEY'] } as HarnessInvocation,
+        [],
+        { configDir, jobUserHome } as never,
+      )).rejects.toThrow(/Missing code auth/);
+    });
   });
 });
