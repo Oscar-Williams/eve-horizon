@@ -3,7 +3,7 @@ import { Observable } from 'rxjs';
 import type { Db } from '@eve/db';
 import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
 import type { AccessBindingScope, JobGit, JobWorkspace, JobHarnessOptions, JobCompareResponse, JobTarget, ResourceRef, CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, InlineProfileBundle } from '@eve/shared';
-import { AccessBindingScopeSchema, hasUserActor, isSameActor, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
+import { AccessBindingScopeSchema, hasUserActor, isSameActor, narrowSecretsAllowlist, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
 import * as yaml from 'yaml';
 import { buildApiError } from '../system/api-errors.js';
 import { JobLogsService } from './job-logs.service.js';
@@ -64,6 +64,12 @@ export interface UpdateJobRequest {
   workspace?: JobWorkspace;                          // workspace configuration (mode, key)
   env_name?: string | null;                          // target environment name
   execution_mode?: 'persistent' | 'ephemeral';      // execution strategy
+}
+
+/** Two secrets allowlists name the same keys (null: none declared). */
+function sameSecretsAllowlist(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && [...a].sort().every((key, i) => key === [...b].sort()[i]);
 }
 
 export interface JobResponse extends Omit<Job, 'created_at' | 'updated_at' | 'defer_until' | 'due_at' | 'ready_at' | 'closed_at' | 'git_json' | 'resolved_git_json' | 'workspace_json' | 'target' | 'resource_refs' | 'user_secrets_excluded'> {
@@ -826,7 +832,7 @@ export class JobsService {
       content_hash: null,
       actor_user_id: userId ?? null,
       user_secrets_excluded: options.userSecretsExcluded ?? false,
-      secrets_allowlist: null,
+      secrets_allowlist: options.secretsAllowlist ?? null,
       failure_disposition: null,
       closed_at: null,
       close_reason: null,
@@ -1011,7 +1017,7 @@ export class JobsService {
       if (nextActor) {
         await tx`
           UPDATE jobs
-          SET actor_user_id = ${nextActor.actorUserId}, user_secrets_excluded = ${nextActor.userSecretsExcluded}, updated_at = NOW()
+          SET actor_user_id = ${nextActor.actorUserId}, user_secrets_excluded = ${nextActor.userSecretsExcluded}, secrets_allowlist = ${nextActor.secretsAllowlist}, updated_at = NOW()
           WHERE id = ${job.id}
         `;
       }
@@ -1142,14 +1148,21 @@ export class JobsService {
   private async actorForChange(
     job: Job,
     caller: AuthUser,
-  ): Promise<{ actorUserId: string | null; userSecretsExcluded: boolean } | null> {
-    const { userSecretsExcluded } = workStartOptions(caller);
+  ): Promise<{ actorUserId: string | null; userSecretsExcluded: boolean; secretsAllowlist: string[] | null } | null> {
+    const { userSecretsExcluded, secretsAllowlist: callerAllowlist } = workStartOptions(caller);
     // No actor and the 'system' actor of a no-user job token are the same actor.
     const sameActor = isSameActor(job.actor_user_id, caller.user_id);
     // The marker is sticky for the same actor and never loosened by an edit.
     const nextExcluded = sameActor ? job.user_secrets_excluded || userSecretsExcluded : userSecretsExcluded;
+    // A secrets allowlist only ever narrows: a job a restricted job changes
+    // may receive no secret that job could not.
+    const nextAllowlist = narrowSecretsAllowlist(job.secrets_allowlist ?? null, callerAllowlist ?? null);
+    const allowlistNarrowed = !sameSecretsAllowlist(nextAllowlist, job.secrets_allowlist ?? null);
     if (sameActor && nextExcluded === job.user_secrets_excluded) {
-      return null;
+      // Narrowing needs no authority, so the actor's checks are not repeated.
+      return allowlistNarrowed
+        ? { actorUserId: job.actor_user_id, userSecretsExcluded: nextExcluded, secretsAllowlist: nextAllowlist }
+        : null;
     }
 
     const project = await this.projects.findById(job.project_id);
@@ -1172,7 +1185,7 @@ export class JobsService {
     });
     // Work no user started is recorded as no actor, never as 'system'.
     const actorUserId = sameActor ? job.actor_user_id : hasUserActor(caller.user_id) ? caller.user_id : null;
-    return { actorUserId, userSecretsExcluded: nextExcluded };
+    return { actorUserId, userSecretsExcluded: nextExcluded, secretsAllowlist: nextAllowlist };
   }
 
   /**
@@ -1187,6 +1200,7 @@ export class JobsService {
       WHERE id = ${job.id}
         AND actor_user_id IS NOT DISTINCT FROM ${job.actor_user_id}
         AND user_secrets_excluded IS NOT DISTINCT FROM ${job.user_secrets_excluded}
+        AND secrets_allowlist IS NOT DISTINCT FROM ${job.secrets_allowlist ?? null}::text[]
       FOR UPDATE
     `;
     if (!row) {

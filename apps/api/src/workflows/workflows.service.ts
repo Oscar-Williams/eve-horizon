@@ -1,7 +1,7 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
 import { assertCanUseJobScope, type WorkStartOptions } from '../auth/token-scope.js';
 import { intersectScopes } from './scope-algebra.js';
@@ -856,6 +856,7 @@ export class WorkflowsService {
     options: WorkStartOptions = {},
   ): Promise<WorkflowInvokeResponse | WorkflowInvokeResult> {
     const userSecretsExcluded = options.userSecretsExcluded ?? false;
+    const callerSecretsAllowlist = options.secretsAllowlist ?? null;
     // 1. Validate project and workflow exist
     await this.ensureProjectExists(projectId);
     const workflow = await this.findByName(projectId, workflowName);
@@ -1008,7 +1009,7 @@ export class WorkflowsService {
       content_hash: null,
       actor_user_id: userId ?? null,
       user_secrets_excluded: userSecretsExcluded,
-      secrets_allowlist: null,
+      secrets_allowlist: callerSecretsAllowlist,
       failure_disposition: null,
       closed_at: null,
       close_reason: null,
@@ -1186,7 +1187,7 @@ export class WorkflowsService {
         content_hash: null,
         actor_user_id: userId ?? null,
         user_secrets_excluded: userSecretsExcluded,
-        secrets_allowlist: stepSecretsAllowlist,
+        secrets_allowlist: narrowSecretsAllowlist(callerSecretsAllowlist, stepSecretsAllowlist),
         failure_disposition: null,
         closed_at: null,
         close_reason: null,
@@ -1447,7 +1448,7 @@ export class WorkflowsService {
           content_hash: source.content_hash,
           actor_user_id: userId ?? null,
           user_secrets_excluded: options.userSecretsExcluded ?? false,
-          secrets_allowlist: source.secrets_allowlist,
+          secrets_allowlist: narrowSecretsAllowlist(source.secrets_allowlist, options.secretsAllowlist),
           failure_disposition: null,
           closed_at: null,
           close_reason: null,

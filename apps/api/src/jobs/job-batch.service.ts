@@ -257,7 +257,7 @@ export class JobBatchService {
         content_hash: null,
         actor_user_id: userId ?? null,
         user_secrets_excluded: options.userSecretsExcluded ?? false,
-        secrets_allowlist: null,
+        secrets_allowlist: options.secretsAllowlist ?? null,
         failure_disposition: null,
         closed_at: null,
         close_reason: null,

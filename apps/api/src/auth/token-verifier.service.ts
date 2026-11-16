@@ -411,6 +411,7 @@ export class TokenVerifierService {
       ...(payload.agent_slug ? { agent_slug: payload.agent_slug } : {}),
       ...(payload.email ? { email: payload.email } : {}),
       ...(payload.user_secrets_excluded ? { user_secrets_excluded: true } : {}),
+      ...(payload.secrets_allowlist ? { secrets_allowlist: payload.secrets_allowlist } : {}),
     };
   }
 
@@ -529,6 +530,12 @@ export class TokenVerifierService {
       throw new UnauthorizedException('Invalid token timestamps');
     }
 
+    const secretsAllowlist = payload.secrets_allowlist as unknown;
+    if (secretsAllowlist !== undefined
+      && (!Array.isArray(secretsAllowlist) || !secretsAllowlist.every((key) => typeof key === 'string'))) {
+      throw new UnauthorizedException('Invalid token secrets_allowlist');
+    }
+
     let scope: AccessBindingScope | undefined;
     if (payload.scope !== undefined) {
       const parsedScope = AccessBindingScopeSchema.safeParse(payload.scope);
@@ -553,6 +560,7 @@ export class TokenVerifierService {
       ...(typeof payload.agent_slug === 'string' ? { agent_slug: payload.agent_slug } : {}),
       ...(typeof payload.email === 'string' ? { email: payload.email } : {}),
       ...(payload.user_secrets_excluded === true ? { user_secrets_excluded: true } : {}),
+      ...(Array.isArray(secretsAllowlist) ? { secrets_allowlist: secretsAllowlist as string[] } : {}),
       exp: payload.exp,
       iat: payload.iat,
       type: 'job',

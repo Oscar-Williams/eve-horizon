@@ -150,10 +150,15 @@ export async function jobTokenPermissionsFor(
   return kept;
 }
 
-/** How work a caller starts treats the actor's user-scope secrets. */
+/** How work a caller starts treats secrets. */
 export interface WorkStartOptions {
   /** True for work started with an org-bound token: never resolve the actor's user-scope secrets. */
   userSecretsExcluded?: boolean;
+  /**
+   * Set for work started by a job with a secrets allowlist: the jobs it
+   * creates may receive only these secrets (narrowed by their own lists).
+   */
+  secretsAllowlist?: string[] | null;
 }
 
 /**
@@ -162,8 +167,11 @@ export interface WorkStartOptions {
  * work stays attributed, but is marked to resolve no user-scope secrets: a
  * person who later adopts the account must not leak secrets through it.
  */
-export function workStartOptions(caller: AuthUser | undefined): Required<WorkStartOptions> {
-  return { userSecretsExcluded: Boolean(caller?.bound_org_id || caller?.user_secrets_excluded) };
+export function workStartOptions(caller: AuthUser | undefined): WorkStartOptions & { userSecretsExcluded: boolean } {
+  return {
+    userSecretsExcluded: Boolean(caller?.bound_org_id || caller?.user_secrets_excluded),
+    ...(caller?.secrets_allowlist ? { secretsAllowlist: caller.secrets_allowlist } : {}),
+  };
 }
 
 /**

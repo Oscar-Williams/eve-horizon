@@ -285,6 +285,8 @@ export class AuthService {
     ttlSeconds?: number;
     agentSlug?: string;
     userSecretsExcluded?: boolean;
+    /** The job's effective secrets allowlist; work the token starts inherits it. */
+    secretsAllowlist?: string[] | null;
   }): string {
     if (!this.signerKey?.privateKey) {
       throw new Error('Signing key not configured');
@@ -313,6 +315,10 @@ export class AuthService {
 
     if (params.userSecretsExcluded) {
       payload.user_secrets_excluded = true;
+    }
+
+    if (params.secretsAllowlist) {
+      payload.secrets_allowlist = params.secretsAllowlist;
     }
 
     // Include agent identity when available — gives apps a stable agent identifier

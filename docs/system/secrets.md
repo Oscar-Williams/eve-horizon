@@ -194,6 +194,14 @@ The orchestrator resolves the effective list into the invocation; the attempt
 log records the names kept, any named but missing, and how many were withheld
 (lifecycle `secrets` / `secrets_allowlist`).
 
+**Work a restricted job starts stays restricted.** The job token minted for a
+job with an effective allowlist carries it as a `secrets_allowlist` claim.
+Jobs that token creates (`POST /jobs`, batches, workflow runs and retries,
+pipeline runs, environment deploys) are stamped with it, narrowed by any
+step list, and a job it edits or releases to run is narrowed to it. A list
+only ever narrows; no route widens it. The job's `secrets_allowlist` is shown
+on job responses and is never set by clients.
+
 ## Git Auth Injection
 
 - HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access. When a secrets allowlist applies and leaves the token out, the token is not put in the clone URL (where it would persist in `.git/config`); the platform's own git calls send it as an auth header from their environment instead.

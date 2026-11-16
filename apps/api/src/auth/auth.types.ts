@@ -47,6 +47,11 @@ export type AuthUser = {
    * this token starts must not resolve its actor's user-scope secrets either.
    */
   user_secrets_excluded?: boolean;
+  /**
+   * Set on a job token for a job with a secrets allowlist: work this token
+   * starts or changes may receive only these secrets too.
+   */
+  secrets_allowlist?: string[];
   /** Per-org membership roles (populated for user tokens) */
   memberships?: Array<{ org_id: string; role: string; org_name?: string; org_slug?: string }>;
   /** Redirect URL from a just-applied org invite (used by SSO callback) */
@@ -68,6 +73,7 @@ export interface JobTokenPayload {
   agent_slug?: string;
   email?: string;
   user_secrets_excluded?: boolean;
+  secrets_allowlist?: string[];
   exp: number;
   iat: number;
   type: 'job';

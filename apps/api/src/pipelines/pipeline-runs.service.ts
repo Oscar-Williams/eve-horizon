@@ -64,7 +64,7 @@ export class PipelineRunsService {
     options: { actorUserId?: string; dedupeKey?: string } & WorkStartOptions = {},
   ): Promise<{ detail: PipelineRunDetailResponse; pipeline: PipelineDefinition }>
   {
-    const { actorUserId, dedupeKey, userSecretsExcluded } = options;
+    const { actorUserId, dedupeKey, userSecretsExcluded, secretsAllowlist } = options;
     await this.ensureProjectExists(projectId);
     const { manifest, pipeline } = await this.getPipeline(projectId, pipelineName, request.ref);
 
@@ -75,7 +75,7 @@ export class PipelineRunsService {
 
     // Route all pipelines to job-based execution (build actions require job-based path)
     // Legacy step_run path is retained below but no longer reached
-    return this.createRunAsJobs(projectId, pipelineName, request, pipeline, dedupeKey, actorUserId, { userSecretsExcluded });
+    return this.createRunAsJobs(projectId, pipelineName, request, pipeline, dedupeKey, actorUserId, { userSecretsExcluded, secretsAllowlist });
 
     /* ===== LEGACY STEP_RUN CODE - RETAINED FOR REFERENCE, NO LONGER EXECUTED =====
     // Handle deduplication: cancel existing active run if dedupe_key provided
