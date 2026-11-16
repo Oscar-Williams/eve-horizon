@@ -83,6 +83,39 @@ If `gateway.clients` is set, only those client identities can directly route to 
 
 Embedded app direct targets (`{ kind: "agent", agent_slug }`) reuse the same policy check as gateway chat: the agent must be `routable`, and `gateway.clients` must include `app` when present. Team targets apply the check to the team lead.
 
+### Agent Secrets Allowlist
+
+By default an agent job receives every secret it can resolve: system, org,
+the actor's user secrets and project secrets, as environment variables (file
+and SSH-key secrets as file paths). An agent that reads untrusted content
+should declare `access.secrets`: its jobs then receive only the named
+secrets, whatever scope each comes from, and nothing else.
+
+```yaml
+agents:
+  triage:
+    skill: opportunity-triage
+    harness_profile: triage
+    access:
+      secrets: [ANTHROPIC_API_KEY, OPPS_SIGNING_KEY]
+```
+
+- Name the harness credential too (for example `ANTHROPIC_API_KEY` or
+  `CLAUDE_CODE_OAUTH_TOKEN`); without it the harness cannot authenticate.
+- `secrets: []` means no secrets at all. Omitting `secrets` keeps today's
+  behaviour.
+- The platform's own job token (`EVE_JOB_TOKEN`, `~/.eve/credentials.json`)
+  and app-link variables (`EVE_APP_LINK_<ALIAS>_URL` / `_TOKEN`) are not
+  secrets and still reach the job.
+- A git credential the list leaves out (`GITHUB_TOKEN`, `GH_TOKEN`, an
+  `ssh_key` secret) is still used to clone the workspace, but stays out of the
+  clone URL and `.git/config`, and the SSH key is deleted after the clone
+  unless the job's git policy pushes.
+- `env_overrides` can only reference allowlisted secrets.
+- A workflow agent step can narrow it further with its own `secrets:`.
+
+See [secrets.md](./secrets.md#agent-secrets-allowlist).
+
 ### Agent Toolchains
 
 Agents can declare `toolchains` with valid values `python`, `media`, `rust`,

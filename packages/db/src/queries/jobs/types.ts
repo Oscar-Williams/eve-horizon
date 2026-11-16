@@ -149,6 +149,11 @@ export interface Job {
   actor_user_id: string | null;
   /** Set by the API for work started with an org-bound token: never resolve the actor's user-scope secrets. */
   user_secrets_excluded: boolean;
+  /**
+   * Set by the API: the only secrets this job may receive (further narrowed by
+   * its agent's access.secrets). Null when the job has no allowlist of its own.
+   */
+  secrets_allowlist: string[] | null;
   failure_disposition: 'cancelled' | 'failed' | 'upstream_failed' | null;
 
   // Timestamps

@@ -246,26 +246,58 @@ export function serviceHelperEnv(
   return env;
 }
 
+/** The service's own git config, applied after any caller config so it always wins. */
+const SERVICE_GIT_CONFIG: ReadonlyArray<readonly [string, string]> = [
+  ['core.hooksPath', '/dev/null'],
+  ['core.fsmonitor', 'false'],
+];
+
 /**
  * Environment for git run by the service. Global config (`~/.gitconfig`, which a
  * job can write) is ignored, and hooks and fsmonitor are disabled at
  * command-line precedence, so repository config written by a job cannot make
  * the service run a command. System config (`/etc/gitconfig`) stays: it is part
  * of the root-owned image and carries the worker's commit identity.
+ *
+ * `extra` may carry its own `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`
+ * entries (for example an auth header for one clone); they are kept, ahead of
+ * the service's own entries, which therefore still win.
  */
 export function serviceGitEnv(
   extra: Record<string, string | undefined> = {},
   source: NodeJS.ProcessEnv = process.env,
   options: TrustedPathOptions = {},
 ): NodeJS.ProcessEnv {
+  const { entries: callerConfig, rest } = splitGitConfigEnv(extra);
+  const config = [...callerConfig, ...SERVICE_GIT_CONFIG];
+  const configEnv: Record<string, string> = { GIT_CONFIG_COUNT: String(config.length) };
+  config.forEach(([key, value], index) => {
+    configEnv[`GIT_CONFIG_KEY_${index}`] = key;
+    configEnv[`GIT_CONFIG_VALUE_${index}`] = value;
+  });
   return serviceHelperEnv({
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_TERMINAL_PROMPT: '0',
-    GIT_CONFIG_COUNT: '2',
-    GIT_CONFIG_KEY_0: 'core.hooksPath',
-    GIT_CONFIG_VALUE_0: '/dev/null',
-    GIT_CONFIG_KEY_1: 'core.fsmonitor',
-    GIT_CONFIG_VALUE_1: 'false',
-    ...extra,
+    ...rest,
+    ...configEnv,
   }, source, options);
+}
+
+function splitGitConfigEnv(env: Record<string, string | undefined>): {
+  entries: Array<[string, string]>;
+  rest: Record<string, string | undefined>;
+} {
+  const rest: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key === 'GIT_CONFIG_COUNT' || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) continue;
+    rest[key] = value;
+  }
+  const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10);
+  const entries: Array<[string, string]> = [];
+  for (let index = 0; Number.isFinite(count) && index < count; index++) {
+    const key = env[`GIT_CONFIG_KEY_${index}`];
+    const value = env[`GIT_CONFIG_VALUE_${index}`];
+    if (key !== undefined && value !== undefined) entries.push([key, value]);
+  }
+  return { entries, rest };
 }

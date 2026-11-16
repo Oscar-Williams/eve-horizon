@@ -776,6 +776,15 @@ export class WorkflowsService {
     return [...new Set(toolchains)];
   }
 
+  /** A step's `secrets:` allowlist, or null when it declares none. */
+  private parseSecretsAllowlist(value: unknown, path: string): string[] | null {
+    if (value === undefined || value === null) return null;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !/^\S+$/.test(entry))) {
+      throw new BadRequestException(`Invalid ${path}: expected a list of secret names`);
+    }
+    return [...new Set(value as string[])].sort();
+  }
+
   private resolveStepToolchains(
     workflowToolchains: string[] | undefined,
     stepToolchains: string[] | undefined,
@@ -999,6 +1008,7 @@ export class WorkflowsService {
       content_hash: null,
       actor_user_id: userId ?? null,
       user_secrets_excluded: userSecretsExcluded,
+      secrets_allowlist: null,
       failure_disposition: null,
       closed_at: null,
       close_reason: null,
@@ -1016,6 +1026,12 @@ export class WorkflowsService {
         step.toolchains,
         `Workflow "${workflowName}" step "${stepName}".toolchains`,
       );
+      const stepSecretsAllowlist = stepExecutions[index].executionType === 'agent'
+        ? this.parseSecretsAllowlist(
+          (step as { secrets?: unknown }).secrets,
+          `Workflow "${workflowName}" step "${stepName}".secrets`,
+        )
+        : null;
 
       // Resolve agent config only for agent steps. Script steps execute on the worker.
       const agentConfig = stepExecution.executionType === 'agent'
@@ -1170,6 +1186,7 @@ export class WorkflowsService {
         content_hash: null,
         actor_user_id: userId ?? null,
         user_secrets_excluded: userSecretsExcluded,
+        secrets_allowlist: stepSecretsAllowlist,
         failure_disposition: null,
         closed_at: null,
         close_reason: null,
@@ -1430,6 +1447,7 @@ export class WorkflowsService {
           content_hash: source.content_hash,
           actor_user_id: userId ?? null,
           user_secrets_excluded: options.userSecretsExcluded ?? false,
+          secrets_allowlist: source.secrets_allowlist,
           failure_disposition: null,
           closed_at: null,
           close_reason: null,

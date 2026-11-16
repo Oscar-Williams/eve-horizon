@@ -266,6 +266,8 @@ export const JobResponseSchema = z.object({
   env_overrides: z.record(z.string()).nullable().optional(),
   token_scope: AccessBindingScopeSchema.nullable().optional(),
   token_permissions: z.array(z.string()).nullable().optional(),
+  /** Secret names the job may receive (its own allowlist; the agent's access.secrets narrows it further). */
+  secrets_allowlist: z.array(z.string()).nullable().optional(),
   harness_profile_source: HarnessProfileSourceSchema.nullable().optional(),
   harness_profile_hash: z.string().nullable().optional(),
   hints: JobHintsSchema.optional(),

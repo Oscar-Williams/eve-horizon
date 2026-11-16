@@ -55,9 +55,13 @@ The adapter-provided env is the key subtlety. Harness adapters (zai, claude, cod
 **Nothing outlives the attempt**: when an attempt ends, whatever the outcome
 (success, failure, exception, cancellation), both execution paths delete what
 they wrote for it: file-type secrets (`$TMPDIR/eve/job-secrets/<attempt>`), git
-SSH keys (`$TMPDIR/eve/worker-secrets/<attempt>`, `<workspace>/.eve/git_ssh_key`)
+SSH keys (`$TMPDIR/eve/git-keys/<attempt>`)
 and the per-job HOME with its Eve, Claude and `gh` credentials
 (`cleanupJobSecretArtifacts`). A pod restart is not needed to clear them.
+
+**Per-agent secrets allowlist**: an agent's `access.secrets` (and a workflow
+agent step's `secrets:`) limits the secrets its jobs receive to the names
+listed. See [secrets.md](./secrets.md#agent-secrets-allowlist).
 
 **Prompt off the command line**: the prompt reaches the harness on stdin, not as
 an argument that `ps` would show to other jobs on the same pod.

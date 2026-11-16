@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { EnvOverridesSchema } from './job.js';
 import { AccessBindingScopeSchema } from './access-scope.js';
 import { JobGitSchema } from './git-controls.js';
-import { ToolchainsSchema } from './agent-config.js';
+import { SecretsAllowlistSchema, ToolchainsSchema } from './agent-config.js';
 import {
   PipelineStepRequiresSchema,
   StepHarnessProfileOverrideSchema,
@@ -40,6 +40,8 @@ export const WorkflowStepSchema = z.object({
   with_apis: WorkflowWithApisSchema.optional(),
   'with-apis': WorkflowWithApisSchema.optional(),
   toolchains: ToolchainsSchema.optional(),
+  /** Secrets allowlist for an agent step's job; narrows the agent's own access.secrets. */
+  secrets: SecretsAllowlistSchema.optional(),
 }).superRefine((value, ctx) => {
   const keys = ['action', 'script', 'agent', 'run'] as const;
   if (keys.filter((key) => value[key] !== undefined).length !== 1) {
@@ -57,6 +59,13 @@ export const WorkflowStepSchema = z.object({
       code: 'custom',
       path: ['action', 'toolchains'],
       message: 'Use top-level step toolchains instead of action.toolchains',
+    });
+  }
+  if (value.secrets !== undefined && value.agent === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['secrets'],
+      message: 'secrets (an allowlist) applies to agent steps only; script and run steps receive only their env_overrides',
     });
   }
   if (value.action !== undefined && value.toolchains !== undefined) {

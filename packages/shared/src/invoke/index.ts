@@ -96,9 +96,18 @@ export {
   materializeSecrets,
   cleanupWorkspaceSecretArtifacts,
   cleanupJobSecretArtifacts,
+  releaseCloneOnlyGitKey,
   extractSecretRefs,
   interpolateEnvOverrides,
 } from './workspace-secrets.js';
+
+// Secrets allowlists (agent access.secrets, workflow step secrets)
+export {
+  narrowSecretsAllowlist,
+  filterSecretsByAllowlist,
+  agentSecretsAllowlist,
+  selectJobSecrets,
+} from './secrets-allowlist.js';
 
 // Per-job env_overrides application
 export {

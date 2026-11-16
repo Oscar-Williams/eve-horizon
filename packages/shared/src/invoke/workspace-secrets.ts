@@ -18,14 +18,13 @@ import { sanitizeSecretFilename } from '../harnesses/invoke-utils.js';
 import { cleanupJobUserHome } from './job-user-home.js';
 
 /**
- * Per-attempt folders that hold secret files outside the workspace:
- * `job-secrets` for file-type secrets, `worker-secrets` for the worker's git
- * SSH key. Both are keyed by attempt id and removed when the attempt ends.
+ * Per-attempt folders that hold secrets outside the workspace: file-type
+ * secrets, and the git SSH key used for the workspace clone. Both are keyed by
+ * attempt id and removed when the attempt ends (cleanupJobSecretArtifacts).
  */
-const JOB_SECRET_ROOTS = [
-  path.join(os.tmpdir(), 'eve', 'job-secrets'),
-  path.join(os.tmpdir(), 'eve', 'worker-secrets'),
-];
+const SECRET_FILES_ROOT = path.join(os.tmpdir(), 'eve', 'job-secrets');
+const GIT_KEYS_ROOT = path.join(os.tmpdir(), 'eve', 'git-keys');
+const JOB_SECRET_ROOTS = [SECRET_FILES_ROOT, GIT_KEYS_ROOT];
 
 function attemptKey(attemptId: string | undefined): string {
   return attemptId || 'unknown-attempt';
@@ -82,12 +81,17 @@ export async function resolveSecrets(
 }
 
 /**
- * Derive git authentication from resolved secrets and the invocation's
- * repo URL.
+ * Derive git authentication for the platform's own git calls (clone, fetch,
+ * push) from resolved secrets and the invocation's repo URL.
  *
- * Returns SSH env overrides for `git@` / `ssh://` URLs, or a rewritten
- * HTTPS clone URL with an embedded GitHub token. Returns `undefined` when
- * no applicable credential is found.
+ * Pass every resolved secret: the workspace clone may use a credential the
+ * job itself does not receive. For `git@` / `ssh://` URLs the SSH key is
+ * written outside the workspace and named in `GIT_SSH_COMMAND`. For GitHub
+ * HTTPS URLs the token is embedded in the clone URL (and so in the clone's
+ * `.git/config`, where the agent can use it) only when the job may hold it:
+ * with no secrets allowlist, or one that names it. Otherwise it travels as an
+ * auth header in the env of the platform's git calls only. Returns
+ * `undefined` when no applicable credential is found.
  */
 export async function prepareGitAuth(
   invocation: HarnessInvocation,
@@ -102,9 +106,9 @@ export async function prepareGitAuth(
     secrets.find((secret) => ['GITHUB_TOKEN', 'GH_TOKEN'].includes(secret.key));
 
   if (sshSecret && (repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://'))) {
-    const workspaceSecretsDir = path.join(invocation.workspacePath, '.eve');
-    await fs.mkdir(workspaceSecretsDir, { recursive: true });
-    const keyPath = path.join(workspaceSecretsDir, 'git_ssh_key');
+    const keyDir = path.join(GIT_KEYS_ROOT, attemptKey(invocation.attemptId));
+    await fs.mkdir(keyDir, { recursive: true, mode: 0o700 });
+    const keyPath = path.join(keyDir, 'git_ssh_key');
     await fs.writeFile(keyPath, sshSecret.value, { mode: 0o600 });
     return {
       env: {
@@ -114,13 +118,61 @@ export async function prepareGitAuth(
   }
 
   if (githubToken && repoUrl.startsWith('http')) {
-    const cloneUrl = buildAuthenticatedHttpsUrl(repoUrl, githubToken.value);
-    if (cloneUrl !== repoUrl) {
-      return { cloneUrl };
+    const jobMayHoldToken = !invocation.secrets_allowlist || invocation.secrets_allowlist.includes(githubToken.key);
+    if (jobMayHoldToken) {
+      const cloneUrl = buildAuthenticatedHttpsUrl(repoUrl, githubToken.value);
+      if (cloneUrl !== repoUrl) {
+        return { cloneUrl };
+      }
+    } else {
+      const env = githubAuthHeaderEnv(repoUrl, githubToken.value);
+      if (env) return { env };
     }
   }
 
   return undefined;
+}
+
+/**
+ * Once the workspace is prepared, delete an SSH key the job may not hold (a
+ * secrets allowlist that leaves it out), unless the platform still needs it to
+ * push when the harness finishes. The harness runs as the same user and could
+ * otherwise read the key from its folder.
+ */
+export async function releaseCloneOnlyGitKey(
+  invocation: HarnessInvocation,
+  secrets: SecretResolveItem[],
+): Promise<void> {
+  const allowlist = invocation.secrets_allowlist;
+  const sshSecret = secrets.find((secret) => secret.type === 'ssh_key');
+  const push = (invocation.git as { push?: string } | undefined)?.push;
+  const willPush = push === 'on_success' || push === 'required';
+  if (!allowlist || !sshSecret || allowlist.includes(sshSecret.key) || willPush) return;
+  await fs.rm(path.join(GIT_KEYS_ROOT, attemptKey(invocation.attemptId)), { recursive: true, force: true });
+}
+
+/**
+ * Git config, as env, that sends a GitHub token as a basic-auth header to the
+ * repo's host: the same `x-access-token:<token>` credential the clone URL
+ * would carry, without writing it into the clone's `.git/config`.
+ */
+function githubAuthHeaderEnv(repoUrl: string, token: string): Record<string, string> | undefined {
+  const trimmed = token.trim();
+  if (!trimmed) return undefined;
+  let origin: string;
+  try {
+    const url = new URL(repoUrl);
+    if (!url.hostname.includes('github.com')) return undefined;
+    origin = `${url.protocol}//${url.host}/`;
+  } catch {
+    return undefined;
+  }
+  const basic = Buffer.from(`x-access-token:${trimmed}`).toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: `http.${origin}.extraheader`,
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+  };
 }
 
 /**
@@ -159,7 +211,7 @@ export async function materializeSecrets(
 
   // File-type secrets are written outside the workspace so hooks can reference
   // them by path. Plain secrets are passed as env vars.
-  const secretFilesDir = path.join(JOB_SECRET_ROOTS[0], attemptKey(invocation.attemptId));
+  const secretFilesDir = path.join(SECRET_FILES_ROOT, attemptKey(invocation.attemptId));
 
   for (const secret of secrets) {
     if (secret.type === 'file' || secret.type === 'ssh_key') {
@@ -291,6 +343,7 @@ export async function cleanupJobSecretArtifacts(
     if (path.dirname(dir) === path.resolve(root)) targets.push(dir);
   }
   if (invocation.workspacePath) {
+    // Where earlier versions wrote the clone's SSH key; a reused session workspace may still hold one.
     targets.push(path.join(invocation.workspacePath, '.eve', 'git_ssh_key'));
   }
 

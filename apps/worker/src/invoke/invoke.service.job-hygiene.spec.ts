@@ -15,7 +15,7 @@ async function attemptWithSecretsOnDisk(): Promise<{ invocation: HarnessInvocati
   const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'eve-hygiene-ws-'));
   const attemptId = `att-${path.basename(workspacePath)}`;
   const secretsDir = path.join(os.tmpdir(), 'eve', 'job-secrets', attemptId);
-  const keyDir = path.join(os.tmpdir(), 'eve', 'worker-secrets', attemptId);
+  const keyDir = path.join(os.tmpdir(), 'eve', 'git-keys', attemptId);
   cleanup.push(workspacePath, secretsDir, keyDir);
   await fs.mkdir(secretsDir, { recursive: true });
   await fs.writeFile(path.join(secretsDir, 'SERVICE_ACCOUNT_JSON'), '{"private_key":"x"}');

@@ -9,11 +9,21 @@ const AgentPolicySchema = z.object({
   }).optional(),
 }).passthrough();
 
+/** A secret name in an allowlist: the key the secret is stored under. */
+export const SecretsAllowlistSchema = z.array(
+  z.string().regex(/^\S+$/, 'secret names are non-empty and contain no whitespace'),
+);
+
 const AgentAccessSchema = z.object({
   envs: z.array(z.string()).optional(),
   services: z.array(z.string()).optional(),
   api_specs: z.array(z.string()).optional(),
   permissions: z.array(z.string()).optional(),
+  /**
+   * Secrets allowlist: when set, this agent's jobs receive only these secrets
+   * (from any scope). Omit it to keep receiving every secret in scope.
+   */
+  secrets: SecretsAllowlistSchema.optional(),
 }).passthrough();
 
 const AgentScheduleSchema = z.object({

@@ -93,6 +93,7 @@ must stay inside the repository.
 | `resource_refs` | No | Step resource policy: `inherit`, `none`, or selected resource names/labels. Overrides workflow-level policy |
 | `env_overrides` | No | Secret-backed or literal environment overrides for this step job. Merged over workflow-level defaults |
 | `toolchains` | No | Valid toolchain names (`python`, `media`, `rust`, `java`, `kotlin`). Valid on `agent`, `script`, and shorthand `run` steps |
+| `secrets` | No | Secrets allowlist for an `agent` step: the job receives only these secrets (from any scope), narrowed further by the agent's `access.secrets`. Not valid on `script`/`run` steps, which receive only their `env_overrides`. Distinct from `requires.secrets`, which checks that secrets exist. See [secrets.md](./secrets.md#agent-secrets-allowlist) |
 
 ### Workflow-Level Fields
 

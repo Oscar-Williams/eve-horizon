@@ -63,8 +63,8 @@ describe('cleanupJobSecretArtifacts', () => {
     const workspace = await makeWorkspace();
     const invocation = invocationFor(workspace, `att-${path.basename(workspace)}`);
 
-    await prepareGitAuth(invocation, [secret('DEPLOY_KEY', 'ssh-key-material', 'ssh_key')]);
-    const keyPath = path.join(workspace, '.eve', 'git_ssh_key');
+    const auth = await prepareGitAuth(invocation, [secret('DEPLOY_KEY', 'ssh-key-material', 'ssh_key')]);
+    const keyPath = /-i (\S+)/.exec(auth?.env?.GIT_SSH_COMMAND ?? '')?.[1] ?? '';
     expect(await exists(keyPath)).toBe(true);
 
     await cleanupJobSecretArtifacts(invocation);
@@ -72,10 +72,10 @@ describe('cleanupJobSecretArtifacts', () => {
     expect(await exists(keyPath)).toBe(false);
   });
 
-  it('removes the worker git SSH key folder for the attempt', async () => {
+  it('removes the git SSH key folder for the attempt', async () => {
     const workspace = await makeWorkspace();
     const attemptId = `att-${path.basename(workspace)}`;
-    const keyDir = path.join(os.tmpdir(), 'eve', 'worker-secrets', attemptId);
+    const keyDir = path.join(os.tmpdir(), 'eve', 'git-keys', attemptId);
     await fs.mkdir(keyDir, { recursive: true });
     await fs.writeFile(path.join(keyDir, 'git_ssh_key'), 'ssh-key-material');
 

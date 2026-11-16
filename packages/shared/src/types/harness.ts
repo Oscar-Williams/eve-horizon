@@ -79,6 +79,12 @@ export interface HarnessInvocation {
    * merge into adapter env AFTER Eve-reserved env vars so callers cannot shadow them.
    */
   env_overrides?: Record<string, string>;
+  /**
+   * Secrets allowlist resolved by the orchestrator from the agent's
+   * access.secrets and the job's own allowlist. When set, the harness receives
+   * only these secrets; absent means every secret in scope.
+   */
+  secrets_allowlist?: string[];
 
   /** Profile provenance — recorded on routing log and job_attempts for audit/analytics. */
   harness_profile_source?: HarnessProfileSource;

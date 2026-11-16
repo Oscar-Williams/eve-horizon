@@ -77,6 +77,10 @@ import {
   writeThreadContext,
   writeCarryoverContext,
   cleanupWorkspaceSecretArtifacts,
+  prepareGitAuth,
+  materializeSecrets,
+  releaseCloneOnlyGitKey,
+  selectJobSecrets,
   applyEnvOverrides,
   materializeWorkspaceSkills,
   runAcquireHooks,
@@ -109,9 +113,9 @@ import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type Ha
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
 import { runInvocationInK8s } from './k8s-runner';
 import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintAppLinkToken } from '@eve/shared';
-import { GitWorkspace, buildAuthenticatedHttpsUrl, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
+import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { resolveProjectSecrets, mintJobToken, updateSecret } from '@eve/shared';
-import { extractPrefixedEnv, sanitizeSecretFilename, writeEveCredentials } from '@eve/shared';
+import { extractPrefixedEnv, writeEveCredentials } from '@eve/shared';
 import { createJobUserHome, cleanupJobSecretArtifacts, buildEveAgentCliArgs, spawnHarnessProcess } from '@eve/shared';
 import { materializeScopedOrgFsMount, type OrgFsMountSpec } from '@eve/shared';
 import { serviceHelperEnv } from '@eve/shared';
@@ -875,83 +879,6 @@ export class InvokeService {
     return result.secrets;
   }
 
-  private async prepareGitAuth(
-    invocation: HarnessInvocation,
-    secrets: SecretResolveItem[],
-  ): Promise<GitAuth | undefined> {
-    const repoUrl = invocation.repoUrl;
-    if (!repoUrl) return undefined;
-
-    const sshSecret = secrets.find((secret) => secret.type === 'ssh_key');
-    const githubToken =
-      secrets.find((secret) => secret.type === 'github_token') ??
-      secrets.find((secret) => ['GITHUB_TOKEN', 'GH_TOKEN'].includes(secret.key));
-
-    if (sshSecret && (repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://'))) {
-      const keyDir = path.join(os.tmpdir(), 'eve', 'worker-secrets', invocation.attemptId || 'unknown-attempt');
-      await fs.mkdir(keyDir, { recursive: true });
-      const keyPath = path.join(keyDir, 'git_ssh_key');
-      await fs.writeFile(keyPath, sshSecret.value, { mode: 0o600 });
-      return {
-        env: {
-          GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`,
-        },
-      };
-    }
-
-    if (githubToken && repoUrl.startsWith('http')) {
-      const cloneUrl = buildAuthenticatedHttpsUrl(repoUrl, githubToken.value);
-      if (cloneUrl !== repoUrl) {
-        return { cloneUrl };
-      }
-    }
-
-    return undefined;
-  }
-
-  private async materializeSecrets(
-    repoPath: string,
-    invocation: HarnessInvocation,
-    secrets: SecretResolveItem[],
-    orgRootPath: string | null,
-  ): Promise<{ env: NodeJS.ProcessEnv; secretsFilePath: string | null }> {
-    const env: NodeJS.ProcessEnv = {
-      EVE_JOB_ID: invocation.jobId,
-      EVE_ATTEMPT_ID: invocation.attemptId,
-      EVE_PROJECT_ID: invocation.projectId,
-      EVE_REPO_PATH: repoPath,
-    };
-
-    if (invocation.agentId) {
-      env.EVE_AGENT_ID = invocation.agentId;
-    }
-    if (orgRootPath) {
-      env.EVE_ORG_ROOT = orgRootPath;
-    }
-
-    if (secrets.length === 0) {
-      return { env, secretsFilePath: null };
-    }
-
-    // File-type secrets are written outside the workspace so hooks can reference
-    // them by path.  Plain secrets are passed as env vars.
-    const secretFilesDir = path.join(os.tmpdir(), 'eve', 'job-secrets', invocation.attemptId || 'unknown-attempt');
-
-    for (const secret of secrets) {
-      if (secret.type === 'file' || secret.type === 'ssh_key') {
-        await fs.mkdir(secretFilesDir, { recursive: true });
-        const fileName = sanitizeSecretFilename(secret.key);
-        const filePath = path.join(secretFilesDir, fileName);
-        await fs.writeFile(filePath, secret.value, { mode: 0o600 });
-        env[secret.key] = filePath;
-      } else {
-        env[secret.key] = secret.value;
-      }
-    }
-
-    return { env, secretsFilePath: null };
-  }
-
   private async hydrateResources(
     invocation: HarnessInvocation,
     orgId: string,
@@ -1348,8 +1275,11 @@ export class InvokeService {
       }
 
       const userId = typeof effectiveInvocation.data?.user_id === 'string' ? effectiveInvocation.data.user_id : undefined;
-      const resolvedSecrets = await this.resolveSecrets(effectiveInvocation.projectId, userId, effectiveInvocation.attemptId);
-      const gitAuth = await this.prepareGitAuth(effectiveInvocation, resolvedSecrets);
+      const allSecrets = await this.resolveSecrets(effectiveInvocation.projectId, userId, effectiveInvocation.attemptId);
+      // The workspace clone may use a git credential the job itself does not receive.
+      const gitAuth = await prepareGitAuth(effectiveInvocation, allSecrets);
+      // Everything from here on, harness included, sees only the job's own secrets.
+      const resolvedSecrets = await selectJobSecrets(effectiveInvocation, allSecrets, this.buildLifecycleLogger());
 
       // Prepare workspace before execution
       // Check if job has git controls for advanced workspace handling
@@ -1372,6 +1302,7 @@ export class InvokeService {
         hadRepoPath = result.hadRepoPath;
       }
       await cleanupWorkspaceSecretArtifacts(repoPath);
+      await releaseCloneOnlyGitKey(effectiveInvocation, allSecrets);
       if (effectiveInvocation.attemptId) {
         await this.logLifecycleEvent(effectiveInvocation.attemptId, 'workspace', 'log', {
           had_repo_path: hadRepoPath,
@@ -1405,7 +1336,7 @@ export class InvokeService {
         });
       }
 
-      const secretsContext = await this.materializeSecrets(repoPath, effectiveInvocation, resolvedSecrets, orgRootPath);
+      const secretsContext = await materializeSecrets(repoPath, effectiveInvocation, resolvedSecrets, orgRootPath);
 
       let resourceIndexPath: string | null = null;
       if (effectiveInvocation.resource_refs && effectiveInvocation.resource_refs.length > 0) {

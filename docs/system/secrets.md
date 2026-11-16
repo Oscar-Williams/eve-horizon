@@ -168,10 +168,36 @@ The [eve-horizon-fullstack-example](https://github.com/eve-horizon/eve-horizon-f
 - The worker no longer writes `.eve/secrets.env` into the workspace and does **not** set `EVE_SECRETS_FILE`.
 - Optional hooks still run in the worker context, but only see the allowlisted environment variables.
 
+## Agent Secrets Allowlist
+
+An agent job receives every secret it resolves unless an allowlist applies.
+Two places declare one:
+
+| Where | Field | Applies to |
+| --- | --- | --- |
+| `agents.yaml` | `agents.<id>.access.secrets: [NAME, ...]` | Every job the agent runs, however it was started |
+| Workflow agent step | `secrets: [NAME, ...]` | That step's job (stored on the job as `secrets_allowlist`) |
+
+When both apply, the job receives only names both lists contain. Names match
+the secret key in any scope (system, org, user, project); the usual
+precedence picks the value. `[]` means no secrets; an absent field means no
+restriction. Both execution paths (agent runtime and worker) apply the list
+before anything reaches the harness: env vars, file secrets, Claude/Codex auth
+selection, workspace hooks and `env_overrides` interpolation.
+
+Not affected: the job token and app-link variables (platform credentials, not
+secrets), and the workspace clone, which may still use a git credential the
+list leaves out (see below). Script and `run` steps never receive secrets
+except through their declared `env_overrides`.
+
+The orchestrator resolves the effective list into the invocation; the attempt
+log records the names kept, any named but missing, and how many were withheld
+(lifecycle `secrets` / `secrets_allowlist`).
+
 ## Git Auth Injection
 
-- HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access.
-- SSH clone: `ssh_key` secrets are written to a temp key and wired via `GIT_SSH_COMMAND`.
+- HTTPS clone: `github_token` secrets are injected into the clone URL for private repo access. When a secrets allowlist applies and leaves the token out, the token is not put in the clone URL (where it would persist in `.git/config`); the platform's own git calls send it as an auth header from their environment instead.
+- SSH clone: `ssh_key` secrets are written to a per-attempt key outside the workspace and wired via `GIT_SSH_COMMAND`. Under an allowlist that leaves the key out, the key is deleted once the workspace is prepared unless the job's git policy pushes. Keys are always deleted when the attempt ends.
 - Missing auth now surfaces explicit errors with remediation hints (use `eve secrets set`).
 
 ## OAuth Token Management

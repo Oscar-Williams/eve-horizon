@@ -1,6 +1,17 @@
 import * as os from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessInvocation, SecretResolveItem } from '@eve/shared';
+
+const seen = vi.hoisted(() => ({ secrets: undefined as unknown }));
+
+vi.mock('@eve/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/shared')>()),
+  materializeSecrets: vi.fn(async (_repo: string, _inv: unknown, secrets: unknown) => {
+    seen.secrets = secrets;
+    throw new Error('stop');
+  }),
+}));
+
 import { InvokeService } from './invoke.service.js';
 
 const TOKEN = 'ghs_exampleInstallationToken123';
@@ -24,19 +35,17 @@ async function runUntilSecretsMaterialize(secrets_allowlist?: string[]) {
   vi.spyOn(service as any, 'resolveSecrets').mockResolvedValue([
     secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD'),
   ]);
-  const seen: { gitAuth?: any; secrets?: SecretResolveItem[] } = {};
+  const captured: { gitAuth?: any; secrets?: SecretResolveItem[] } = {};
+  seen.secrets = undefined;
   vi.spyOn(service as any, 'prepareWorkspace').mockImplementation(async (_inv, gitAuth) => {
-    seen.gitAuth = gitAuth;
+    captured.gitAuth = gitAuth;
     return { repoPath: os.tmpdir(), hadRepoPath: true };
-  });
-  vi.spyOn(service as any, 'materializeSecrets').mockImplementation(async (_repo, _inv, secrets) => {
-    seen.secrets = secrets as SecretResolveItem[];
-    throw new Error('stop');
   });
   const cancellation = { signal: new AbortController().signal, check: vi.fn(), stop: vi.fn() };
   // The inline path's workspace cleanup reads service config, absent here; the context is captured first.
   await (service as any).executeCancellable(invocation, cancellation).catch(() => undefined);
-  return seen;
+  captured.secrets = seen.secrets as SecretResolveItem[];
+  return captured;
 }
 
 describe('worker secrets allowlist', () => {

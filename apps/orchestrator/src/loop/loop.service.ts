@@ -42,9 +42,12 @@ import {
   vetOutboundUrl,
   hasUserActor,
   isSameActor,
+  agentSecretsAllowlist,
+  narrowSecretsAllowlist,
 } from '@eve/shared';
 import {
   accessRoleQueries,
+  agentQueries,
   eventQueries,
   gateQueries,
   ingestRecordQueries,
@@ -2127,6 +2130,9 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     // Resolve toolchains from job hints
     const toolchains = Array.isArray(job.hints?.toolchains) ? job.hints.toolchains as string[] : [];
 
+    // Secrets allowlist: the agent's access.secrets narrowed by the job's own.
+    const secretsAllowlist = await this.resolveSecretsAllowlist(job, attempt, projectId);
+
     // Env overrides travel with the invocation in placeholder form; the
     // shared invoke module resolves ${secret.KEY} against the materialized
     // project secrets at spawn time (never here, never on the API).
@@ -2154,12 +2160,28 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       workspace,
       ...(toolchains.length > 0 ? { toolchains } : {}),
       ...(envOverrides && Object.keys(envOverrides).length > 0 ? { env_overrides: envOverrides } : {}),
+      ...(secretsAllowlist ? { secrets_allowlist: secretsAllowlist } : {}),
       ...(profileSource ? { harness_profile_source: profileSource as HarnessProfileSource } : {}),
       ...(profileHash ? { harness_profile_hash: profileHash } : {}),
       ...(job.harness_profile ? { harness_profile_name: job.harness_profile } : {}),
     };
 
     return invocation;
+  }
+
+  /**
+   * The secrets a job may receive: its agent's `access.secrets` narrowed by
+   * the job's own allowlist (a workflow step's `secrets:`, or inherited from
+   * the job that started it). Null when neither declares one.
+   */
+  private async resolveSecretsAllowlist(job: Job, attempt: JobAttempt, projectId: string): Promise<string[] | null> {
+    const agent = attempt.agent_id
+      ? await agentQueries(this.db).findByProjectAndId(projectId, attempt.agent_id)
+      : null;
+    return narrowSecretsAllowlist(
+      agentSecretsAllowlist(agent?.access_json),
+      job.secrets_allowlist ?? null,
+    );
   }
 
   /**

@@ -236,6 +236,7 @@ export class SyncEngine {
       content_hash: jobParams.content_hash ?? null,
       actor_user_id: 'sync',
       user_secrets_excluded: false,
+      secrets_allowlist: null,
       failure_disposition: null,
       closed_at: null,
       close_reason: null,

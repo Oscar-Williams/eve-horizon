@@ -93,6 +93,8 @@ import {
   materializeSecrets,
   cleanupWorkspaceSecretArtifacts,
   cleanupJobSecretArtifacts,
+  releaseCloneOnlyGitKey,
+  selectJobSecrets,
   applyEnvOverrides,
   // Harness lifecycle events
   logHarnessStart,
@@ -1027,13 +1029,16 @@ export class InvokeService {
 
       const lifecycleLogger = this.logLifecycleEvent.bind(this);
       const userId = typeof effectiveInvocation.data?.user_id === 'string' ? effectiveInvocation.data.user_id : undefined;
-      const resolvedSecrets = await timePhase('secrets', () => resolveSecrets(
+      const allSecrets = await timePhase('secrets', () => resolveSecrets(
         effectiveInvocation.projectId,
         lifecycleLogger,
         userId,
         effectiveInvocation.attemptId,
       ));
-      const gitAuth = await prepareGitAuth(effectiveInvocation, resolvedSecrets);
+      // The workspace clone may use a git credential the job itself does not receive.
+      const gitAuth = await prepareGitAuth(effectiveInvocation, allSecrets);
+      // Everything from here on, harness included, sees only the job's own secrets.
+      const resolvedSecrets = await selectJobSecrets(effectiveInvocation, allSecrets, lifecycleLogger);
 
       const gitConfig = effectiveInvocation.git as JobGit | undefined;
 
@@ -1051,6 +1056,7 @@ export class InvokeService {
 
       const prepared = await this.prepareRepo(ctx);
       const { repoPath, hadRepoPath } = prepared;
+      await releaseCloneOnlyGitKey(effectiveInvocation, allSecrets);
 
       const orgRootPath = await this.mountOrgFs(ctx);
       const { env, secretsFilePath } = await this.materializeJobSecrets(ctx, repoPath, orgRootPath);
