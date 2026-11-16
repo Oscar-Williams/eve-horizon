@@ -518,6 +518,36 @@
         ]
       }
     },
+    "/jobs/{job_id}/app-link-tokens": {
+      "post": {
+        "operationId": "JobAppLinkTokensController_refresh",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "description": "Job ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mint fresh app-link tokens for a running job (the job's own token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/.well-known/jwks.json": {
       "get": {
         "operationId": "AuthKeysController_jwks",
@@ -25714,6 +25744,13 @@
             },
             "nullable": true
           },
+          "secrets_allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
           "harness_profile_source": {
             "type": "string",
             "enum": [
@@ -26305,6 +26342,13 @@
                   "nullable": true
                 },
                 "token_permissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "nullable": true
+                },
+                "secrets_allowlist": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -27120,6 +27164,13 @@
             "nullable": true
           },
           "token_permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "secrets_allowlist": {
             "type": "array",
             "items": {
               "type": "string"
@@ -28057,6 +28108,13 @@
             },
             "nullable": true
           },
+          "secrets_allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
           "harness_profile_source": {
             "type": "string",
             "enum": [
@@ -28658,6 +28716,13 @@
                 },
                 "nullable": true
               },
+              "secrets_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "nullable": true
+              },
               "harness_profile_source": {
                 "type": "string",
                 "enum": [
@@ -29167,6 +29232,9 @@
                     "token_permissions": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/token_permissions"
                     },
+                    "secrets_allowlist": {
+                      "$ref": "#/definitions/JobContextResponse/properties/job/properties/secrets_allowlist"
+                    },
                     "harness_profile_source": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/harness_profile_source"
                     },
@@ -29344,6 +29412,9 @@
                     "token_permissions": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/token_permissions"
                     },
+                    "secrets_allowlist": {
+                      "$ref": "#/definitions/JobContextResponse/properties/job/properties/secrets_allowlist"
+                    },
                     "harness_profile_source": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/harness_profile_source"
                     },
@@ -29520,6 +29591,9 @@
                     },
                     "token_permissions": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/token_permissions"
+                    },
+                    "secrets_allowlist": {
+                      "$ref": "#/definitions/JobContextResponse/properties/job/properties/secrets_allowlist"
                     },
                     "harness_profile_source": {
                       "$ref": "#/definitions/JobContextResponse/properties/job/properties/harness_profile_source"
@@ -29909,6 +29983,13 @@
                   "nullable": true
                 },
                 "token_permissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "nullable": true
+                },
+                "secrets_allowlist": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -30375,6 +30456,9 @@
                 "token_permissions": {
                   "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/token_permissions"
                 },
+                "secrets_allowlist": {
+                  "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/secrets_allowlist"
+                },
                 "harness_profile_source": {
                   "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/harness_profile_source"
                 },
@@ -30551,6 +30635,9 @@
                 },
                 "token_permissions": {
                   "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/token_permissions"
+                },
+                "secrets_allowlist": {
+                  "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/secrets_allowlist"
                 },
                 "harness_profile_source": {
                   "$ref": "#/definitions/DependenciesResponse/properties/dependencies/items/properties/harness_profile_source"
@@ -31073,6 +31160,13 @@
                 "nullable": true
               },
               "token_permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "nullable": true
+              },
+              "secrets_allowlist": {
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -36898,6 +36992,13 @@
                                 "browser"
                               ]
                             }
+                          },
+                          "secrets": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^\\S+$"
+                            }
                           }
                         },
                         "additionalProperties": false
@@ -37320,6 +37421,13 @@
                           "kotlin",
                           "browser"
                         ]
+                      }
+                    },
+                    "secrets": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^\\S+$"
                       }
                     }
                   },

@@ -338,6 +338,24 @@ paths:
           description: ""
       summary: Mint an app-link token for cross-project API access (internal only)
       tags: *a2
+  /jobs/{job_id}/app-link-tokens:
+    post:
+      operationId: JobAppLinkTokensController_refresh
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          description: Job ID
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ""
+      security:
+        - bearer: []
+      summary: Mint fresh app-link tokens for a running job (the job's own token only)
+      tags:
+        - jobs
   /.well-known/jwks.json:
     get:
       operationId: AuthKeysController_jwks
@@ -15709,6 +15727,11 @@ components:
           items:
             type: string
           nullable: true
+        secrets_allowlist:
+          type: array
+          items:
+            type: string
+          nullable: true
         harness_profile_source:
           type: string
           enum:
@@ -16140,6 +16163,11 @@ components:
                 additionalProperties: false
                 nullable: true
               token_permissions:
+                type: array
+                items:
+                  type: string
+                nullable: true
+              secrets_allowlist:
                 type: array
                 items:
                   type: string
@@ -16722,6 +16750,11 @@ components:
           additionalProperties: false
           nullable: true
         token_permissions:
+          type: array
+          items:
+            type: string
+          nullable: true
+        secrets_allowlist:
           type: array
           items:
             type: string
@@ -17401,6 +17434,11 @@ components:
           items:
             type: string
           nullable: true
+        secrets_allowlist:
+          type: array
+          items:
+            type: string
+          nullable: true
         harness_profile_source:
           type: string
           enum:
@@ -17838,6 +17876,11 @@ components:
               items:
                 type: string
               nullable: true
+            secrets_allowlist:
+              type: array
+              items:
+                type: string
+              nullable: true
             harness_profile_source:
               type: string
               enum:
@@ -18208,6 +18251,9 @@ components:
                   token_permissions:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/token_permiss\
                       ions"
+                  secrets_allowlist:
+                    $ref: "#/definitions/JobContextResponse/properties/job/properties/secrets_allow\
+                      list"
                   harness_profile_source:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/harness_profi\
                       le_source"
@@ -18344,6 +18390,9 @@ components:
                   token_permissions:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/token_permiss\
                       ions"
+                  secrets_allowlist:
+                    $ref: "#/definitions/JobContextResponse/properties/job/properties/secrets_allow\
+                      list"
                   harness_profile_source:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/harness_profi\
                       le_source"
@@ -18480,6 +18529,9 @@ components:
                   token_permissions:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/token_permiss\
                       ions"
+                  secrets_allowlist:
+                    $ref: "#/definitions/JobContextResponse/properties/job/properties/secrets_allow\
+                      list"
                   harness_profile_source:
                     $ref: "#/definitions/JobContextResponse/properties/job/properties/harness_profi\
                       le_source"
@@ -18769,6 +18821,11 @@ components:
                 additionalProperties: false
                 nullable: true
               token_permissions:
+                type: array
+                items:
+                  type: string
+                nullable: true
+              secrets_allowlist:
                 type: array
                 items:
                   type: string
@@ -19127,6 +19184,9 @@ components:
               token_permissions:
                 $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
                   ies/token_permissions"
+              secrets_allowlist:
+                $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
+                  ies/secrets_allowlist"
               harness_profile_source:
                 $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
                   ies/harness_profile_source"
@@ -19299,6 +19359,9 @@ components:
               token_permissions:
                 $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
                   ies/token_permissions"
+              secrets_allowlist:
+                $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
+                  ies/secrets_allowlist"
               harness_profile_source:
                 $ref: "#/definitions/DependenciesResponse/properties/dependencies/items/propert\
                   ies/harness_profile_source"
@@ -19698,6 +19761,11 @@ components:
               additionalProperties: false
               nullable: true
             token_permissions:
+              type: array
+              items:
+                type: string
+              nullable: true
+            secrets_allowlist:
               type: array
               items:
                 type: string
@@ -23896,6 +23964,11 @@ components:
                               - java
                               - kotlin
                               - browser
+                        secrets:
+                          type: array
+                          items:
+                            type: string
+                            pattern: ^\S+$
                       additionalProperties: false
                   inputs:
                     type: object
@@ -24207,6 +24280,11 @@ components:
                         - java
                         - kotlin
                         - browser
+                  secrets:
+                    type: array
+                    items:
+                      type: string
+                      pattern: ^\S+$
                 additionalProperties: false
             inputs:
               type: object
