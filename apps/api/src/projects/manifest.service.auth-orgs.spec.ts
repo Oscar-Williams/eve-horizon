@@ -211,6 +211,67 @@ describe('ManifestService.syncManifest: app sign-in org references', () => {
     await expect(sync({ user_id: 'user_member' }, { mode: 'project_org' })).resolves.toBeTruthy();
   });
 
+  it('refuses a member who re-points a stored sign-up domain at another org', async () => {
+    joinOrg('user_member', ORG_A, 'member');
+    db.state.projects[0].auth_config = storedAuthConfig({
+      mode: 'allowlist',
+      allowed_orgs: [ORG_A, ORG_B],
+      domain_signup: { enabled: true, domains: [{ domain: 'example.com', target_org: ORG_A, role: 'member' }] },
+    });
+    await expect(
+      sync({ user_id: 'user_member' }, {
+        mode: 'allowlist',
+        allowed_orgs: [ORG_A, ORG_B],
+        domain_signup: { enabled: true, domains: [{ domain: 'example.com', target_org: ORG_B }] },
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('refuses a member who switches on stored but disabled sign-up rules', async () => {
+    joinOrg('user_member', ORG_A, 'member');
+    db.state.projects[0].auth_config = storedAuthConfig({
+      domain_signup: { enabled: false, domains: [{ domain: 'example.com', target_org: ORG_A, role: 'member' }] },
+    });
+    await expect(sync({ user_id: 'user_member' }, domainSignupIntoOrgA)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('refuses service-principal and app-link tokens', async () => {
+    joinOrg('user_admin', ORG_A, 'admin');
+    await expect(
+      sync({ user_id: 'user_admin', is_service_principal: true, org_id: ORG_A }, domainSignupIntoOrgA),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      sync({ user_id: 'app_link:sub_1', is_app_link_token: true }, domainSignupIntoOrgA),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('accepts a token bound to the project org when its user is an admin there', async () => {
+    joinOrg('user_admin', ORG_A, 'admin');
+    await expect(sync({ user_id: 'user_admin', bound_org_id: ORG_A }, domainSignupIntoOrgA)).resolves.toBeTruthy();
+  });
+
+  it('refuses a request with no caller while sign-in is enabled', async () => {
+    await expect(sync(undefined, domainSignupIntoOrgA)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('accepts a request with no caller while sign-in is disabled, as the guard does', async () => {
+    process.env.EVE_AUTH_ENABLED = 'false';
+    try {
+      await expect(sync(undefined, domainSignupIntoOrgA)).resolves.toBeTruthy();
+    } finally {
+      delete process.env.EVE_AUTH_ENABLED;
+    }
+  });
+
+  it('accepts a job token re-syncing an unchanged domain sign-up rule', async () => {
+    db.state.projects[0].auth_config = storedAuthConfig({
+      domain_signup: { enabled: true, domains: [{ domain: 'example.com', target_org: ORG_A, role: 'member' }] },
+    });
+    await expect(
+      sync({ user_id: 'user_member', is_job_token: true, job_id: 'app-1234', project_id: PROJECT }, domainSignupIntoOrgA),
+    ).resolves.toBeTruthy();
+  });
+
   it('accepts a job token re-syncing an unchanged cross-org config', async () => {
     db.state.projects[0].auth_config = storedAuthConfig({ mode: 'allowlist', allowed_orgs: [ORG_A, ORG_B] });
     await expect(
