@@ -110,7 +110,7 @@ describe('steps of a run no user started', () => {
   function jobsForNoUserRun() {
     const jobs = jobsWith(
       [done('run1.1', 'run1', 'research', 'system')],
-      { 'run1.1': { result_text: 'Research notes', result_json: { eve: { status: 'ok' } } } },
+      { 'run1.1': { status: 'succeeded', result_text: 'Research notes', result_json: { eve: { status: 'ok' } } } },
     );
     jobs.findById.mockImplementation(async (id: string) => (id === 'run1' ? NO_USER_ROOT : null));
     return jobs;
@@ -141,8 +141,8 @@ describe('workflow step conditions', () => {
     const jobs = jobsWith(
       [outside],
       {
-        'run2.1': { result_json: { eve: { status: 'ok' } } },
-        'run1.1': { result_json: { eve: { status: 'skip' } } },
+        'run2.1': { status: 'succeeded', result_json: { eve: { status: 'ok' } } },
+        'run1.1': { status: 'succeeded', result_json: { eve: { status: 'skip' } } },
       },
       ownStep,
     );
@@ -156,8 +156,8 @@ describe('workflow step conditions', () => {
     const jobs = jobsWith(
       [filedUnderRun('run1.9', 'research')],
       {
-        'run1.9': { result_json: { eve: { status: 'ok' } } },
-        'run1.1': { result_json: { eve: { status: 'skip' } } },
+        'run1.9': { status: 'succeeded', result_json: { eve: { status: 'ok' } } },
+        'run1.1': { status: 'succeeded', result_json: { eve: { status: 'skip' } } },
       },
       done('run1.1', 'run1', 'research'),
     );
@@ -170,7 +170,7 @@ describe('workflow step conditions', () => {
   it('is not met when the named step now runs as someone other than the step or the run', async () => {
     const jobs = jobsWith(
       [done('run1.1', 'run1', 'research', 'user_mate')],
-      { 'run1.1': { result_json: { eve: { status: 'ok' } } } },
+      { 'run1.1': { status: 'succeeded', result_json: { eve: { status: 'ok' } } } },
     );
 
     const outcome = await loop().evaluateStepCondition(jobs, CONDITIONAL_STEP);
@@ -182,7 +182,7 @@ describe('workflow step conditions', () => {
   it("is decided by the run's own step", async () => {
     const jobs = jobsWith(
       [done('run1.1', 'run1', 'research')],
-      { 'run1.1': { result_json: { eve: { status: 'ok' } } } },
+      { 'run1.1': { status: 'succeeded', result_json: { eve: { status: 'ok' } } } },
     );
 
     const outcome = await loop().evaluateStepCondition(jobs, CONDITIONAL_STEP);
