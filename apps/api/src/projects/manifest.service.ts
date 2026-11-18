@@ -9,6 +9,7 @@ import {
   customDomainQueries,
   appLinkGrantQueries,
   appLinkSubscriptionQueries,
+  membershipQueries,
   type Project,
   type ProjectAppLinkGrant,
 } from '@eve/db';
@@ -57,6 +58,8 @@ import * as crypto from 'crypto';
 import * as yaml from 'yaml';
 import { SecretsService } from '../secrets/secrets.service.js';
 import { ensureManifestEnvironment } from '../environments/manifest-environment.js';
+import type { AuthUser } from '../auth/auth.types.js';
+import { assertMayDeclareAuthOrgReferences } from './app-auth-org-references.js';
 
 type PreparedAppLinkGrant = {
   producer_project_id: string;
@@ -103,6 +106,7 @@ export class ManifestService {
   private customDomains: ReturnType<typeof customDomainQueries>;
   private appLinkGrants: ReturnType<typeof appLinkGrantQueries>;
   private appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
+  private memberships: ReturnType<typeof membershipQueries>;
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -116,9 +120,14 @@ export class ManifestService {
     this.customDomains = customDomainQueries(db);
     this.appLinkGrants = appLinkGrantQueries(db);
     this.appLinkSubscriptions = appLinkSubscriptionQueries(db);
+    this.memberships = membershipQueries(db);
   }
 
-  async syncManifest(projectId: string, data: SyncManifestRequest): Promise<ManifestResponse> {
+  async syncManifest(
+    projectId: string,
+    data: SyncManifestRequest,
+    caller?: AuthUser,
+  ): Promise<ManifestResponse> {
     // Verify project exists
     const project = await this.projects.findById(projectId);
     if (!project) {
@@ -287,6 +296,17 @@ export class ManifestService {
     if (!validatedManifest) {
       throw new BadRequestException('Invalid manifest: no validated manifest content');
     }
+
+    // Widening which orgs the app signs people into needs an admin of each
+    // newly named org. Checked before anything is written.
+    await assertMayDeclareAuthOrgReferences({
+      caller,
+      projectOrgId: project.org_id,
+      previous: project.auth_config,
+      next: parsedAuthConfig,
+      findOrgRole: async (userId, orgId) =>
+        (await this.memberships.findOrgMembership(userId, orgId))?.role ?? null,
+    });
 
     // Hash the manifest content
     const manifestHash = crypto

@@ -288,9 +288,10 @@ export class ProjectsController {
   })
   async syncManifest(
     @Param('project_id') projectId: string,
-    @Body(new ZodValidationPipe(SyncManifestRequestSchema)) body: SyncManifestRequest
+    @Body(new ZodValidationPipe(SyncManifestRequestSchema)) body: SyncManifestRequest,
+    @CurrentUser() caller: AuthUser | undefined,
   ): Promise<ManifestResponse> {
-    return this.projectsService.syncManifest(projectId, body);
+    return this.projectsService.syncManifest(projectId, body, caller);
   }
 
   @RequirePermission('projects:write')

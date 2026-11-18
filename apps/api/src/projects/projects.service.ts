@@ -1,6 +1,7 @@
 import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException, ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { resolveWorkerUrl, workerRequestHeaders } from '../common/worker-url';
 import { assertRepoUrlAllowed } from '../common/local-repo';
+import type { AuthUser } from '../auth/auth.types.js';
 import type { Db } from '@eve/db';
 import {
   projectQueries,
@@ -476,8 +477,8 @@ export class ProjectsService {
   // Implementations live in ManifestService / AgentsConfigService; these
   // delegates keep the public surface unchanged for controllers.
 
-  async syncManifest(projectId: string, data: SyncManifestRequest): Promise<ManifestResponse> {
-    return this.manifestService.syncManifest(projectId, data);
+  async syncManifest(projectId: string, data: SyncManifestRequest, caller?: AuthUser): Promise<ManifestResponse> {
+    return this.manifestService.syncManifest(projectId, data, caller);
   }
 
   async syncAgentsConfig(projectId: string, data: AgentsSyncRequest): Promise<AgentsSyncResponse> {
