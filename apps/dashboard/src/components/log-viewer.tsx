@@ -13,7 +13,7 @@ import {
   Hash,
   RefreshCw,
 } from 'lucide-react';
-import { createEventSource, api, ApiError } from '@/lib/api';
+import { createEventSource, api, ApiError, type ApiEventStream } from '@/lib/api';
 import { highlightRanges, matchRanges, parseAnsi, stripAnsi } from '@/lib/ansi';
 
 interface LogViewerProps {
@@ -140,7 +140,7 @@ export function LogViewer({ jobId, attemptNumber = 1, isActive = false }: LogVie
   const containerRef = useRef<HTMLDivElement>(null);
   const reconnectAttempts = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
-  const sseRef = useRef<EventSource | null>(null);
+  const sseRef = useRef<ApiEventStream | null>(null);
 
   // Reset state when job/attempt changes
   useEffect(() => {
