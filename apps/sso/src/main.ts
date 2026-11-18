@@ -1,5 +1,3 @@
-import express from 'express';
-import cookieParser from 'cookie-parser';
 import {
   COOKIE_SAMESITE,
   EVE_API_URL,
@@ -9,27 +7,9 @@ import {
   SIGNUP_ALLOWED_DOMAINS,
   SUPABASE_AUTH_URL,
 } from './config.js';
-import { registerCallbackRoutes } from './routes/callback.js';
-import { registerLandingRoutes } from './routes/landing.js';
-import { registerLoginRoutes } from './routes/login.js';
-import { registerSessionRoutes } from './routes/session.js';
-import { registerSetPasswordRoutes } from './routes/set-password.js';
-import { registerWrapRoutes } from './routes/wrap.js';
+import { createApp } from './app.js';
 
-// ---------------------------------------------------------------------------
-// Express App
-// ---------------------------------------------------------------------------
-
-const app = express();
-app.use(cookieParser());
-app.use(express.json());
-
-registerWrapRoutes(app);
-registerLandingRoutes(app);
-registerLoginRoutes(app);
-registerCallbackRoutes(app);
-registerSetPasswordRoutes(app);
-registerSessionRoutes(app);
+const app = createApp();
 
 // ---------------------------------------------------------------------------
 // Start
