@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as k8s from '@kubernetes/client-node';
 import type { Db } from '@eve/db';
 import {
@@ -26,6 +26,8 @@ import {
   DEFAULT_INGRESS_MAX_BODY_SIZE,
   DEFAULT_INGRESS_TIMEOUT,
   getServicesFromManifest,
+  isImplicitPublicIngress,
+  isPublicIngress,
   loadConfig,
   parseIngressDuration,
   resolveTcpIngressConfig,
@@ -37,6 +39,7 @@ import { EnvLogsService } from './env-logs.service.js';
 import { EnvDbService } from './env-db.service.js';
 import { TracesService } from '../traces/traces.service.js';
 import { EmailDeliveryService } from '../mailer/email-delivery.service.js';
+import { SecurityService } from '../security/security.service.js';
 
 @Injectable()
 export class EnvDiagnosticsService {
@@ -58,6 +61,7 @@ export class EnvDiagnosticsService {
     private readonly envDbService: EnvDbService,
     private readonly tracesService: TracesService,
     private readonly emailDeliveryService: EmailDeliveryService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.environments = environmentQueries(db);
     this.releases = releaseQueries(db);
@@ -576,6 +580,11 @@ export class EnvDiagnosticsService {
       }
     }
 
+    // The deployer's rule: no ingress block means public unless the project is strict.
+    const profile = Object.values(services).some((service) => isImplicitPublicIngress(service)) && this.security
+      ? await this.security.effectiveProfile({ projectId }, 'project')
+      : 'legacy';
+
     const result: EnvHttpIngressInfo[] = [];
     for (const [serviceName, service] of Object.entries(services)) {
       const ingressConfig = this.resolveHttpIngressConfig(service);
@@ -584,10 +593,7 @@ export class EnvDiagnosticsService {
         continue;
       }
 
-      const isPublic = ingressConfig
-        ? Boolean((ingressConfig as Record<string, unknown>).public)
-        : true;
-      if (!isPublic) {
+      if (!isPublicIngress(service, profile)) {
         continue;
       }
 

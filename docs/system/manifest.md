@@ -539,7 +539,7 @@ services:
 | Field | Description |
 |-------|-------------|
 | `role` | `component` (default), `worker`, `job`, or `managed_db` |
-| `ingress` | Public HTTP routing: `{ public: true|false, port: number, alias?: string, domains?: string[], timeout?: string, max_body_size?: string }` |
+| `ingress` | HTTP routing: `{ public: true|false, port: number, alias?: string, domains?: string[], timeout?: string, max_body_size?: string }`; public only with `public: true` (see notes) |
 | `tcp_ingress` | Public L4 TCP listeners for raw protocols |
 | `api_spec` | Single API spec registration |
 | `api_specs` | Multiple API specs |
@@ -554,8 +554,15 @@ services:
 | `request_id_column` | Optional request ID column for `audit_log_table` (default `request_id`) |
 
 Notes:
-- If a service exposes ports and a domain is configured, Eve creates public
-  ingress by default. Set `x-eve.ingress.public: false` to disable.
+- A service is public only with `x-eve.ingress.public: true`. An
+  `x-eve.ingress` block without it is private. A service that lists ports and
+  has no `x-eve.ingress` block at all is still public under the `legacy` and
+  `audit` security profiles (with a `ports.implicit_public` finding under
+  `audit`), and private under `strict`. Declare `public: true` or
+  `public: false` on every service with ports so the profile does not matter.
+  The deployer, preview URLs and `eve env diagnose` follow the same rule.
+- `alias` and `domains` are served only on a public service. Sync warns about
+  `domains` on a service that is not public.
 - `x-eve.ingress.timeout` tunes nginx-ingress request/response timeout for all
   HTTP ingress objects for the service (default host, alias, and custom
   domains). Use lowercase duration strings such as `30s`, `5m`, or `30m`.

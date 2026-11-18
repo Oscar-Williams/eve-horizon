@@ -17,9 +17,13 @@ import {
   projectQueries,
   releaseQueries,
   threadMessageQueries,
+  governingSecurityProfile,
 } from '@eve/db';
 import {
   applyEnvOverrides,
+  isImplicitPublicIngress,
+  isPublicIngress,
+  type SecurityProfile,
   DEFAULT_ACTION_RUN_JOB_PERMISSIONS,
   deliverProvisioningError,
   extractSecretRefs,
@@ -1594,34 +1598,19 @@ export class ActionExecutorService {
       return null;
     }
 
-    // Look for the first service with public ingress (usually 'web' or 'api')
-    // Priority order: web > api > first service with ingress
+    // Look for the first service with public ingress (usually 'web' or 'api'),
+    // by the deployer's own rule. Priority order: web > api > first public service.
     const serviceNames = ['web', 'api', ...Object.keys(services)];
     let publicService: string | null = null;
+    let profile: SecurityProfile | null = null;
 
     for (const serviceName of serviceNames) {
       const service = services[serviceName];
       if (!service) continue;
-
-      const xeve = service['x-eve'] ?? service.x_eve;
-      if (!xeve || typeof xeve !== 'object') {
-        // If no x-eve config, check if service has ports (default to public)
-        if (service.ports && Array.isArray(service.ports) && service.ports.length > 0) {
-          publicService = serviceName;
-          break;
-        }
-        continue;
+      if (isImplicitPublicIngress(service)) {
+        profile ??= await governingSecurityProfile(this.db, { projectId, governing: 'project' });
       }
-
-      const ingress = xeve.ingress;
-      if (ingress && typeof ingress === 'object') {
-        const isPublic = ingress.public !== false; // Default to true if not specified
-        if (isPublic) {
-          publicService = serviceName;
-          break;
-        }
-      } else if (service.ports && Array.isArray(service.ports) && service.ports.length > 0) {
-        // Has ports but no explicit ingress config - default to public
+      if (isPublicIngress(service, profile ?? 'legacy')) {
         publicService = serviceName;
         break;
       }

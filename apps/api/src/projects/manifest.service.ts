@@ -53,6 +53,7 @@ import {
   assertNoUnresolvedManifestReferences,
   getManifestAppLinks,
   readDeclaredProfiles,
+  serviceIngressBlock,
   findUndeclaredHarnessNames,
   describeHarnessNameGaps,
   type AppLinks,
@@ -318,8 +319,9 @@ export class ManifestService {
     });
 
     const profileWarnings = await this.checkWorkflowHarnessProfiles(projectId, validatedManifest, caller);
-    if (profileWarnings.length > 0) {
-      warnings = [...(warnings ?? []), ...profileWarnings];
+    const privateDomainWarnings = this.privateServiceDomainWarnings(validatedManifest);
+    if (profileWarnings.length > 0 || privateDomainWarnings.length > 0) {
+      warnings = [...(warnings ?? []), ...profileWarnings, ...privateDomainWarnings];
     }
 
     // Hash the manifest content
@@ -387,6 +389,33 @@ export class ManifestService {
     if (secretValidation) response.secret_validation = secretValidation;
     if (warnings) response.warnings = warnings;
     return response;
+  }
+
+  /**
+   * The deployer gives a service's `domains` an ingress only when the service
+   * is public (`x-eve.ingress.public: true`), so a domain on any other service
+   * would be claimed but never served.
+   */
+  private privateServiceDomainWarnings(manifest: Manifest): string[] {
+    const services = manifest.services ?? {};
+    const warnings: string[] = [];
+    for (const declaration of getManifestCustomDomainDeclarations(manifest)) {
+      const base = serviceIngressBlock(services[declaration.service_name]);
+      const override = declaration.env_name
+        ? serviceIngressBlock(
+            (manifest.environments?.[declaration.env_name]?.overrides as { services?: Record<string, unknown> } | undefined)
+              ?.services?.[declaration.service_name],
+          )
+        : null;
+      const isPublic = (override?.public ?? base?.public) === true;
+      if (!isPublic) {
+        warnings.push(
+          `Custom domain "${declaration.hostname}" (${declaration.origin_path}) gets no ingress: service ` +
+          `"${declaration.service_name}" is not public. Set x-eve.ingress.public: true to serve it.`,
+        );
+      }
+    }
+    return warnings;
   }
 
   /**

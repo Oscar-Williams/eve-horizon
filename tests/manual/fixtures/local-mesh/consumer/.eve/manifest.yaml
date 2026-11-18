@@ -6,6 +6,10 @@ services:
   api:
     image: praqma/network-multitool:latest
     ports: [80]
+    x-eve:
+      # Reached in-cluster through app links only.
+      ingress:
+        public: false
 
 environments:
   local: {}

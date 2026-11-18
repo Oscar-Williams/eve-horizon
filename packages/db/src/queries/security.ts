@@ -153,6 +153,39 @@ export function securityQueries(db: Db) {
 }
 
 /**
+ * The profile that governs a rule for a scope, outside the API, without
+ * recording anything: for code that only reports what a rule means (preview
+ * URLs). Uncached.
+ */
+export async function governingSecurityProfile(
+  db: Db,
+  ctx: { orgId?: string | null; projectId?: string | null; governing: SecurityGoverningScope },
+): Promise<SecurityProfile> {
+  return (await resolveGoverning(db, ctx)).profile;
+}
+
+async function resolveGoverning(
+  db: Db,
+  ctx: { orgId?: string | null; projectId?: string | null; governing: SecurityGoverningScope },
+): Promise<{ profile: SecurityProfile; row: SecurityProfileRow | null }> {
+  const [setting] = await db<{ value: string }[]>`
+    SELECT value FROM system_settings WHERE key = ${SECURITY_PROFILE_SETTING}
+  `;
+  const instance = setting?.value ?? null;
+  const row = ctx.projectId || ctx.orgId
+    ? await securityQueries(db).getProfiles({ orgId: ctx.orgId, projectId: ctx.projectId })
+    : null;
+  const profile = ctx.governing === 'instance'
+    ? resolveSecurityProfile({ instance })
+    : resolveSecurityProfile({
+        project: ctx.governing === 'project' ? row?.project_profile : null,
+        org: row?.org_profile,
+        instance,
+      });
+  return { profile, row };
+}
+
+/**
  * Decide a security rule outside the API (orchestrator, worker): resolve the
  * governing profile and record a finding under `audit` and `strict`. Returns
  * the profile; the caller enforces when it is `strict`. Uncached: for code
@@ -170,20 +203,7 @@ export async function decideSecurityRule(
     detail?: Record<string, string | number | boolean | null>;
   },
 ): Promise<SecurityProfile> {
-  const [setting] = await db<{ value: string }[]>`
-    SELECT value FROM system_settings WHERE key = ${SECURITY_PROFILE_SETTING}
-  `;
-  const instance = setting?.value ?? null;
-  const row = ctx.projectId || ctx.orgId
-    ? await securityQueries(db).getProfiles({ orgId: ctx.orgId, projectId: ctx.projectId })
-    : null;
-  const profile = ctx.governing === 'instance'
-    ? resolveSecurityProfile({ instance })
-    : resolveSecurityProfile({
-        project: ctx.governing === 'project' ? row?.project_profile : null,
-        org: row?.org_profile,
-        instance,
-      });
+  const { profile, row } = await resolveGoverning(db, ctx);
   if (profile !== 'legacy') {
     try {
       await securityQueries(db).recordFinding({

@@ -12,6 +12,7 @@ import {
   customDomainQueries,
   storageBucketQueries,
   appLinkSubscriptionQueries,
+  decideSecurityRule,
 } from '@eve/db';
 import yaml from 'yaml';
 import {
@@ -49,7 +50,10 @@ import {
   combineK8sName,
   appendK8sSuffix,
   deriveNamespace,
+  isImplicitPublicIngress,
+  isPublicIngress,
   type ObjectStoreBucket,
+  type SecurityProfile,
   type ObjectStoreIsolation,
   type TcpIngressConfig,
 } from '@eve/shared';
@@ -1357,6 +1361,7 @@ export class DeployerService {
       );
     }
     if (typeof domain === 'string' && domain.length > 0) {
+      const implicitPublicProfiles = await this.decideImplicitPublicIngress(params, deployableServices);
       Object.entries(deployableServices).forEach(([name, service]) => {
         const ingressConfig = this.resolveIngressConfig(service);
         const ports = this.parseServicePorts(service.ports);
@@ -1366,9 +1371,7 @@ export class DeployerService {
           return;
         }
 
-        const isPublic = ingressConfig
-          ? Boolean((ingressConfig as Record<string, unknown>).public)
-          : true;
+        const isPublic = isPublicIngress(service, implicitPublicProfiles.get(name) ?? 'legacy');
 
         if (!isPublic || !ingressPort) {
           return;
@@ -1563,6 +1566,31 @@ export class DeployerService {
       customDomainIngresses,
       desiredTcpIngressServices,
     };
+  }
+
+  /**
+   * A service with ports and no x-eve.ingress block is public unless its
+   * project's profile is `strict`, which needs `public: true`. Each such
+   * service is recorded under `audit` and `strict`. Returns the governing
+   * profile for each of them.
+   */
+  private async decideImplicitPublicIngress(
+    params: { projectId: string; orgId: string; envName: string },
+    services: Record<string, Service>,
+  ): Promise<Map<string, SecurityProfile>> {
+    const profiles = new Map<string, SecurityProfile>();
+    for (const [name, service] of Object.entries(services)) {
+      if (!isImplicitPublicIngress(service) || this.parseServicePorts(service.ports).length === 0) continue;
+      profiles.set(name, await decideSecurityRule(this.db, 'ports.implicit_public', {
+        orgId: params.orgId,
+        projectId: params.projectId,
+        governing: 'project',
+        actorType: 'deployer',
+        actorId: `${params.envName}/${name}`,
+        detail: { env: params.envName, service: name },
+      }));
+    }
+    return profiles;
   }
 
   private async garbageCollectAliasIngresses(namespace: string, desiredAliases: string[]): Promise<void> {

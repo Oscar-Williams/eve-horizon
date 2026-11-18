@@ -26,6 +26,7 @@ export * from './crypto/index.js';
 export * from './managed-db/index.js';
 export * from './permissions.js';
 export * from './security/profile.js';
+export * from './security/public-ingress.js';
 export * from './api-client/index.js';
 export * from './git/index.js';
 export * from './log-normalize.js';
