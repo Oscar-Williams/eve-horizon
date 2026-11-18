@@ -1134,6 +1134,13 @@ unset EVE_AUTH_PUBLIC_KEY_OLD  # Don't honor old tokens
 | `admin` | Manage members, projects, settings |
 | `member` | Access projects, create jobs |
 
+In a project, a project membership's role takes priority over the org role.
+An org `member` with no project membership reaches every project of the org
+through the org role, except in a project whose
+[security profile](./security-profiles.md) is `strict` (rule
+`access.implicit_project`): there they hold only what their bindings on the
+project give. Org owners and admins keep their access in every project.
+
 ### Adding Members
 
 ```bash

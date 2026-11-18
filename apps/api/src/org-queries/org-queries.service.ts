@@ -1,6 +1,8 @@
 import { Injectable, Inject, NotFoundException } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import { orgQueryQueries, orgQueries } from '@eve/db';
+import { SecurityService } from '../security/security.service.js';
+import { IMPLICIT_PROJECT_RULE } from '../auth/rbac.service.js';
 import type {
   OrgJobListResponse,
   OrgJobStatsResponse,
@@ -15,7 +17,10 @@ export class OrgQueriesService {
   private queries: ReturnType<typeof orgQueryQueries>;
   private orgs: ReturnType<typeof orgQueries>;
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    private readonly security: SecurityService,
+  ) {
     this.queries = orgQueryQueries(db);
     this.orgs = orgQueries(db);
   }
@@ -38,7 +43,8 @@ export class OrgQueriesService {
   /**
    * Get the list of project IDs the caller has access to within an org.
    * For admin/system callers, userId may be undefined — in that case,
-   * return all projects in the org.
+   * return all projects in the org. A project reached only through the org
+   * member role is left out under its strict profile, and recorded under audit.
    */
   private async getAccessibleProjectIds(
     orgId: string,
@@ -53,7 +59,22 @@ export class OrgQueriesService {
       return rows.map((r) => r.id);
     }
 
-    return this.queries.getAccessibleProjectIds(orgId, userId);
+    const projects = await this.queries.listAccessibleProjects(orgId, userId);
+    const ids: string[] = [];
+    for (const project of projects) {
+      if (project.implicit_access) {
+        const profile = await this.security.decide(IMPLICIT_PROJECT_RULE, {
+          governing: 'project',
+          projectId: project.id,
+          orgId,
+          actor: { user_id: userId },
+          detail: { org_role: 'member', listing: 'org_queries' },
+        });
+        if (profile === 'strict') continue;
+      }
+      ids.push(project.id);
+    }
+    return ids;
   }
 
   // --------------------------------------------------------------------------

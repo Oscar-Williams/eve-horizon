@@ -1,4 +1,5 @@
 import type { Db } from '../client.js';
+import { projectBindingExists } from './memberships.js';
 
 // ============================================================================
 // Cursor encoding / decoding
@@ -324,19 +325,19 @@ export function orgQueryQueries(db: Db) {
     },
 
     /**
-     * Get all project IDs in an org that a user has access to.
-     *
-     * A user has access to a project if:
-     *   1. They have a direct project_memberships row, OR
-     *   2. They are a member of the org (org_memberships) — which grants
-     *      implicit access to all projects in that org.
+     * The projects in an org a user reaches: by a project membership, or by
+     * any org membership. Each is marked `implicit_access` when only the org
+     * member role reaches it (no project membership, no binding on the
+     * project); a strict project withholds those, which the caller decides.
      */
-    async getAccessibleProjectIds(
+    async listAccessibleProjects(
       orgId: string,
       userId: string,
-    ): Promise<string[]> {
-      const rows = await db<{ id: string }[]>`
-        SELECT DISTINCT p.id
+    ): Promise<Array<{ id: string; implicit_access: boolean }>> {
+      return db<{ id: string; implicit_access: boolean }[]>`
+        SELECT
+          p.id,
+          (pm.user_id IS NULL AND om.role = 'member' AND NOT ${projectBindingExists(db, userId)}) AS implicit_access
         FROM projects p
         LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = ${userId}
         LEFT JOIN org_memberships om ON om.org_id = p.org_id AND om.user_id = ${userId}
@@ -344,7 +345,6 @@ export function orgQueryQueries(db: Db) {
           AND p.deleted_at IS NULL
           AND (pm.user_id IS NOT NULL OR om.user_id IS NOT NULL)
       `;
-      return rows.map((r) => r.id);
     },
   };
 }

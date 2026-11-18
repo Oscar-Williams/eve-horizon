@@ -3,6 +3,7 @@ import { resolveWorkerUrl, workerRequestHeaders } from '../common/worker-url';
 import { assertRepoUrlAllowed } from '../common/local-repo';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
+import { IMPLICIT_PROJECT_RULE } from '../auth/rbac.service.js';
 import type { Db } from '@eve/db';
 import {
   projectQueries,
@@ -368,12 +369,7 @@ export class ProjectsService {
     user_id?: string;
   }): Promise<ProjectListResponse> {
     const projects = options.user_id
-      ? await this.memberships.listProjectsForUser(options.user_id, {
-          include_deleted: options.include_deleted,
-          limit: options.limit,
-          offset: options.offset,
-          org_id: options.org_id,
-        })
+      ? await this.listProjectsForUser(options.user_id, options)
       : await this.projects.list({
           limit: options.limit,
           offset: options.offset,
@@ -390,6 +386,36 @@ export class ProjectsService {
         count: projects.length,
       },
     };
+  }
+
+  /**
+   * The user's projects. One reached only through the org member role is left
+   * out under a strict profile (the query applies the instance profile too),
+   * and recorded under audit.
+   */
+  private async listProjectsForUser(
+    userId: string,
+    options: { limit: number; offset: number; include_deleted: boolean; org_id?: string },
+  ) {
+    const rows = await this.memberships.listProjectsForUser(userId, {
+      include_deleted: options.include_deleted,
+      limit: options.limit,
+      offset: options.offset,
+      org_id: options.org_id,
+      instance_profile: await this.security?.effectiveProfile({}, 'instance'),
+    });
+    for (const row of rows) {
+      if (row.implicit_access) {
+        await this.security?.decide(IMPLICIT_PROJECT_RULE, {
+          governing: 'project',
+          projectId: row.id,
+          orgId: row.org_id,
+          actor: { user_id: userId },
+          detail: { org_role: 'member', listing: 'projects' },
+        });
+      }
+    }
+    return rows;
   }
 
   async findById(id: string, includeDeleted = false): Promise<ProjectResponse | null> {

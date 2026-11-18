@@ -77,7 +77,7 @@ export class PermissionGuard implements CanActivate {
     }
 
     // Resolve effective permissions
-    const effective = await this.resolvePermissions(user, request, scopeNarrowed);
+    const effective = await this.resolvePermissions(user, request, scopeNarrowed, required);
 
     if (!hasAnyPermission(effective, required)) {
       throw new ForbiddenException(
@@ -107,6 +107,7 @@ export class PermissionGuard implements CanActivate {
     user: AuthUser,
     request: any,
     scopeNarrowed: boolean,
+    required: readonly Permission[],
   ): Promise<ReadonlySet<string>> {
     const projectId = extractProjectId(request);
     const resource = projectId ? undefined : extractResourceRef(request);
@@ -144,15 +145,18 @@ export class PermissionGuard implements CanActivate {
       orgId = extractPathOrgId(request) ?? extractBodyOrgId(request);
     }
 
+    // The project's profile judges a grant only when the request depends on it.
+    const options = { actor: user, need: (permissions: ReadonlySet<string>) => hasAnyPermission(permissions, required) };
+
     // An org-bound token holds only the user's permissions in its org, and
     // never the account-level ones (creating orgs).
     if (boundOrgId) {
-      const inOrg = await this.rbacService.getEffectivePermissions(user.user_id, orgId ?? boundOrgId, contextProjectId);
+      const inOrg = await this.rbacService.getEffectivePermissions(user.user_id, orgId ?? boundOrgId, contextProjectId, options);
       return new Set([...inOrg].filter((permission) => !isAccountLevelPermission(permission)));
     }
 
     if (orgId) {
-      return this.rbacService.getEffectivePermissions(user.user_id, orgId, contextProjectId);
+      return this.rbacService.getEffectivePermissions(user.user_id, orgId, contextProjectId, options);
     }
 
     // No org, project, or job context — use member baseline

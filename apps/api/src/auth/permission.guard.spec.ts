@@ -94,7 +94,7 @@ describe('PermissionGuard resource context', () => {
 
       expect(allowed).toBe(true);
       expect(rbacService.getResourceProjectContext).toHaveBeenCalledWith('job', jobA);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a', expect.objectContaining({ actor: member }));
     });
 
     it("denies a user with no membership in the job's org", async () => {
@@ -144,7 +144,7 @@ describe('PermissionGuard resource context', () => {
           }),
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a', expect.objectContaining({ actor: member }));
     });
 
     it('is ignored when the route addresses a job', async () => {
@@ -159,7 +159,7 @@ describe('PermissionGuard resource context', () => {
           executionContext({ user: member, params: { job_id: jobA }, body: { org_id: 'org_attacker' }, url: `/jobs/${jobA}` }),
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a', expect.objectContaining({ actor: member }));
     });
 
     it('is still honoured on routes with no project or job context', async () => {
@@ -170,7 +170,7 @@ describe('PermissionGuard resource context', () => {
       );
 
       expect(allowed).toBe(true);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', undefined);
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', undefined, expect.objectContaining({ actor: member }));
     });
   });
 
@@ -249,7 +249,7 @@ describe('PermissionGuard resource context', () => {
         guard.canActivate(executionContext({ user: member, params: { runId: run }, url: `/pipeline-runs/${run}/approve` })),
       ).resolves.toBe(true);
       expect(rbacService.getResourceProjectContext).toHaveBeenCalledWith('pipeline_run', run);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', 'proj_a', expect.objectContaining({ actor: member }));
     });
 
     it('denies an admin of another org on the same pipeline run', async () => {
@@ -270,7 +270,7 @@ describe('PermissionGuard resource context', () => {
       await expect(
         guard.canActivate(executionContext({ user: member, params: { build_id: build }, url: `/builds/${build}` })),
       ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_b', 'proj_b');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_b', 'proj_b', expect.objectContaining({ actor: member }));
     });
 
     it('resolves flat thread routes through the thread project', async () => {
@@ -291,7 +291,7 @@ describe('PermissionGuard resource context', () => {
         ),
       ).resolves.toBe(true);
       expect(rbacService.getResourceProjectContext).not.toHaveBeenCalled();
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', undefined);
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_a', undefined, expect.objectContaining({ actor: member }));
     });
 
     it('returns 404 for an unknown pipeline run instead of the member baseline', async () => {
@@ -479,7 +479,7 @@ describe('PermissionGuard resource context', () => {
       await expect(guard.canActivate(createJob(member, 'proj_b'))).resolves.toBe(true);
       await expect(guard.canActivate(createJob(member, 'proj_a'))).rejects.toBeInstanceOf(ForbiddenException);
       expect(rbacService.getProjectScope).not.toHaveBeenCalled();
-      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_b', 'proj_b');
+      expect(rbacService.getEffectivePermissions).toHaveBeenCalledWith('user_member', 'org_b', 'proj_b', expect.objectContaining({ actor: member }));
     });
   });
 

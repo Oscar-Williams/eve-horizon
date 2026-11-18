@@ -21,8 +21,9 @@ import type {
   AccessBindingScope,
   AccessEffectiveScopeSummary,
 } from '@eve/shared';
-import { RbacService } from './rbac.service.js';
+import { RbacService, IMPLICIT_PROJECT_RULE } from './rbac.service.js';
 import { expandPermissions, allPermissions, type Permission } from './permissions.js';
+import { SecurityService } from '../security/security.service.js';
 
 type AccessPrincipalType = 'user' | 'service_principal' | 'group';
 type AccessResourceType = 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs';
@@ -39,7 +40,16 @@ type RawGrant = {
   role?: string;
   permissions: string[];
   scope_json?: AccessBindingScope | null;
+  /**
+   * Set on a grant that a stricter security profile withholds: the rule that
+   * judges it, whose profile governs, and what is left of it under `strict`
+   * (null: nothing).
+   */
+  withheld?: { rule: string; governing: 'project' | 'org'; strict: RawGrant | null };
 };
+
+/** Who is being judged, where: the context a withheld grant's rule is decided in. */
+type GrantContext = { orgId: string; projectId?: string; userId: string };
 
 type ScopeEvaluation = {
   scope_required: boolean;
@@ -68,6 +78,7 @@ export class AccessService {
   constructor(
     private readonly rbacService: RbacService,
     @Inject('DB') private readonly db: Db,
+    private readonly security?: SecurityService,
   ) {
     this.membershipStore = membershipQueries(db);
     this.projects = projectQueries(db);
@@ -218,8 +229,8 @@ export class AccessService {
     permission: string,
     resource?: AccessResourceContext,
   ): Promise<PermissionEvaluation> {
-    const grants = await this.collectUserGrants(orgId, userId, projectId);
-    return this.evaluatePermission(permission, grants, resource);
+    const { grants, context } = await this.collectUserGrants(orgId, userId, projectId);
+    return this.evaluateUnderProfiles(permission, grants, resource, context, 'decide');
   }
 
   private async explainUser(
@@ -229,13 +240,15 @@ export class AccessService {
     permission: string,
     resource?: AccessResourceContext,
   ): Promise<AccessExplainResponse> {
-    const grants = await this.collectUserGrants(orgId, userId, projectId);
-    const evaluated = this.evaluatePermission(permission, grants, resource);
+    const { grants, context } = await this.collectUserGrants(orgId, userId, projectId);
+    const evaluated = await this.evaluateUnderProfiles(permission, grants, resource, context, 'peek');
 
     const result = evaluated.allowed ? 'ALLOWED' : 'DENIED';
     let missingReason: string | undefined;
     if (!evaluated.allowed) {
-      if (evaluated.permissionMatched && evaluated.deniedByScope) {
+      if (evaluated.withheldBy) {
+        missingReason = `${permission} comes only from grants the security profile withholds (${evaluated.withheldBy.join(', ')})`;
+      } else if (evaluated.permissionMatched && evaluated.deniedByScope) {
         missingReason = this.scopeMissingReason(permission, resource);
       } else {
         missingReason = this.suggestRequiredRole(permission);
@@ -253,44 +266,51 @@ export class AccessService {
   private async collectUserGrants(
     orgId: string,
     userId: string,
-    projectId?: string,
-  ): Promise<RawGrant[]> {
+    projectInput?: string,
+  ): Promise<{ grants: RawGrant[]; context: GrantContext }> {
     const grants: RawGrant[] = [];
 
-    if (projectId) {
-      const project = await this.resolveProject(projectId);
-      if (project && project.org_id === orgId) {
-        const projectMembership = await this.membershipStore.findProjectMembership(userId, project.id);
-        if (projectMembership) {
-          grants.push({
-            source: `project membership (${project.id})`,
-            role: projectMembership.role,
-            permissions: [...expandPermissions(projectMembership.role)] as string[],
-            scope_json: AccessService.BUILT_IN_ROLES.has(projectMembership.role)
-              ? AccessService.BUILT_IN_ROLE_SCOPE
-              : undefined,
-          });
-        }
-      }
+    // A project named by slug resolves to its id, so bindings on it apply.
+    const resolved = projectInput ? await this.resolveProject(projectInput) : null;
+    const project = resolved && resolved.org_id === orgId ? resolved : null;
+
+    const projectMembership = project
+      ? await this.membershipStore.findProjectMembership(userId, project.id)
+      : null;
+    if (project && projectMembership) {
+      grants.push({
+        source: `project membership (${project.id})`,
+        role: projectMembership.role,
+        permissions: [...expandPermissions(projectMembership.role)] as string[],
+        scope_json: AccessService.BUILT_IN_ROLES.has(projectMembership.role)
+          ? AccessService.BUILT_IN_ROLE_SCOPE
+          : undefined,
+      });
     }
 
     const orgMembership = await this.membershipStore.findOrgMembership(userId, orgId);
     if (orgMembership) {
-      grants.push({
+      const grant: RawGrant = {
         source: `org membership (${orgId})`,
         role: orgMembership.role,
         permissions: [...expandPermissions(orgMembership.role)] as string[],
         scope_json: AccessService.BUILT_IN_ROLES.has(orgMembership.role)
           ? AccessService.BUILT_IN_ROLE_SCOPE
           : undefined,
-      });
+      };
+      // In a project the user holds no membership on, the org member role is
+      // an implicit grant, which a strict project withholds.
+      if (projectInput && !projectMembership && orgMembership.role === 'member') {
+        grant.withheld = { rule: IMPLICIT_PROJECT_RULE, governing: 'project', strict: null };
+      }
+      grants.push(grant);
     }
 
     const bindings = await this.accessRoles.listApplicableBindings({
       orgId,
       principalType: 'user',
       principalId: userId,
-      projectId,
+      projectId: project?.id,
     });
 
     for (const binding of bindings) {
@@ -303,7 +323,7 @@ export class AccessService {
       });
     }
 
-    return grants;
+    return { grants, context: { orgId, projectId: project?.id, userId } };
   }
 
   // ── Service principal resolution ─────────────────────────────────────
@@ -472,13 +492,15 @@ export class AccessService {
   private async collectGroupGrants(
     orgId: string,
     groupId: string,
-    projectId?: string,
+    projectInput?: string,
   ): Promise<RawGrant[]> {
+    // A project named by slug resolves to its id, so bindings on it apply.
+    const project = projectInput ? await this.resolveProject(projectInput) : null;
     const bindings = await this.accessRoles.listApplicableBindings({
       orgId,
       principalType: 'group',
       principalId: groupId,
-      projectId,
+      projectId: project && project.org_id === orgId ? project.id : undefined,
     });
 
     return bindings.map((binding) => {
@@ -673,6 +695,62 @@ export class AccessService {
   private static readonly BUILT_IN_ROLES = new Set(['owner', 'admin', 'member']);
 
   // ── Evaluator helpers ────────────────────────────────────────────────
+
+  /**
+   * Evaluate a permission as {@link evaluatePermission} does, then hold any
+   * grant marked `withheld` to its rule. When a stricter view (every such
+   * grant withheld) would still allow, nothing is judged or recorded. When
+   * only withheld grants allow, each rule is decided under its governing
+   * profile: `decide` records a finding (audit and strict), `peek` only reads
+   * the profile. The permission stands if any rule's profile is not strict.
+   */
+  private async evaluateUnderProfiles(
+    permission: string,
+    grants: RawGrant[],
+    resource: AccessResourceContext | undefined,
+    context: GrantContext,
+    mode: 'decide' | 'peek',
+  ): Promise<PermissionEvaluation & { withheldBy?: string[] }> {
+    const evaluation = this.evaluatePermission(permission, grants, resource);
+    if (!evaluation.allowed || !this.security || !grants.some((grant) => grant.withheld)) {
+      return evaluation;
+    }
+    const strictGrants = grants.flatMap((grant) => (grant.withheld ? (grant.withheld.strict ? [grant.withheld.strict] : []) : [grant]));
+    const strictEvaluation = this.evaluatePermission(permission, strictGrants, resource);
+    if (strictEvaluation.allowed) {
+      return evaluation;
+    }
+
+    const rules = new Map<string, 'project' | 'org'>();
+    for (const grant of grants) {
+      if (grant.withheld && this.evaluatePermission(permission, [grant], resource).allowed) {
+        rules.set(grant.withheld.rule, grant.withheld.governing);
+      }
+    }
+    let allowed = false;
+    for (const [rule, governing] of rules) {
+      const scope = { orgId: context.orgId, projectId: context.projectId };
+      const profile = mode === 'decide'
+        ? await this.security.decide(rule, {
+            ...scope,
+            governing,
+            actor: { user_id: context.userId },
+            detail: {
+              permission,
+              ...(resource ? { resource_type: resource.type, resource: resource.id } : {}),
+            },
+          })
+        : await this.security.effectiveProfile(scope, governing);
+      if (profile !== 'strict') {
+        allowed = true;
+      }
+    }
+    if (allowed) {
+      return evaluation;
+    }
+    const withheldBy = [...rules.keys()];
+    return { ...strictEvaluation, source: `withheld by the security profile (${withheldBy.join(', ')})`, withheldBy };
+  }
 
   private evaluatePermission(
     permission: string,

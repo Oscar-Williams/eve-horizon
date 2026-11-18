@@ -5,6 +5,29 @@ import { expandPermissions, type Permission } from './permissions.js';
 import { allPermissions } from '@eve/shared';
 import type { AuthUser } from './auth.service.js';
 import { isScopedToken, tokenMayAddressProject, type TokenScopeResolver } from './token-scope.js';
+import { SecurityService } from '../security/security.service.js';
+
+/** An org member reached a project only through the org member role (P1-5). */
+export const IMPLICIT_PROJECT_RULE = 'access.implicit_project';
+/** Permissions were asked for a project that could not be looked up (P1-5). */
+export const UNRESOLVED_PROJECT_RULE = 'access.unresolved_project';
+/** A chat sender with no Eve user, or no `jobs:write` on the project, started agent work (P1-5). */
+export const CHAT_SENDER_RULE = 'chat.sender_rights';
+
+/** A test the caller's permissions must pass; used to tell whether a request depends on a grant. */
+export type PermissionNeed = (permissions: ReadonlySet<string>) => boolean;
+
+/**
+ * A user's permissions in an org, or in a project of it, split by source.
+ * `implicit` is the org member role's set when it reaches a project the user
+ * holds no membership on; under a strict project it grants nothing there.
+ */
+interface PermissionSources {
+  explicit: Set<string>;
+  implicit: ReadonlySet<string>;
+  /** The project's id, when the context named a project that exists. */
+  projectId?: string;
+}
 
 export const ROLE_RANK: Record<MembershipRole, number> = {
   member: 1,
@@ -29,7 +52,10 @@ export class RbacService implements TokenScopeResolver {
   private accessRoles: ReturnType<typeof accessRoleQueries>;
   private accessGroups: ReturnType<typeof accessGroupQueries>;
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    private readonly security?: SecurityService,
+  ) {
     this.memberships = membershipQueries(db);
     this.projects = projectQueries(db);
     this.accessRoles = accessRoleQueries(db);
@@ -59,6 +85,19 @@ export class RbacService implements TokenScopeResolver {
     }
 
     await this.requireOrgRole(userId, project.org_id, required);
+
+    // The org role decides. Owners and admins outrank the member role, so a
+    // pass that needed only `member` may rest on the org member role alone.
+    if (ROLE_RANK[required] === ROLE_RANK.member) {
+      const orgMembership = await this.memberships.findOrgMembership(userId, project.org_id);
+      if (orgMembership?.role === 'member') {
+        await this.security?.gate(
+          IMPLICIT_PROJECT_RULE,
+          { governing: 'project', projectId: project.id, orgId: project.org_id, actor: { user_id: userId }, detail: { org_role: 'member' } },
+          'Org members need a project membership or binding to use this project',
+        );
+      }
+    }
   }
 
   async listOrgsForUser(userId: string, options: { limit: number; offset: number; include_deleted: boolean }) {
@@ -72,54 +111,71 @@ export class RbacService implements TokenScopeResolver {
   /**
    * Resolve the full effective permission set for a user, combining
    * base role permissions with any custom role grants.
+   *
+   * In a project the user holds no membership on, the org member role is an
+   * implicit grant: a strict project withholds it, an audit project records
+   * it. Pass `need` when the caller only tests the set, so a request that
+   * does not depend on the implicit grant is neither judged nor recorded.
    */
   async getEffectivePermissions(
     userId: string,
     orgId: string,
     projectId?: string,
+    options: { actor?: AuthUser; need?: PermissionNeed } = {},
   ): Promise<Set<string>> {
-    // 1. Get base role (project membership takes priority over org membership)
-    let baseRole: MembershipRole | null = null;
+    const sources = await this.permissionSources(userId, orgId, projectId);
+    const all = new Set<string>([...sources.explicit, ...sources.implicit]);
+    if (all.size === sources.explicit.size) {
+      return all;
+    }
+    // The outcome is the same whatever the profile: nothing to decide or record.
+    if (options.need && (options.need(sources.explicit) || !options.need(all))) {
+      return all;
+    }
+    const profile = await this.security?.decide(IMPLICIT_PROJECT_RULE, {
+      governing: 'project',
+      projectId: sources.projectId,
+      orgId,
+      actor: options.actor ?? { user_id: userId },
+      detail: { org_role: 'member' },
+    });
+    return profile === 'strict' ? sources.explicit : all;
+  }
 
-    if (projectId) {
-      let project: { id: string; org_id: string } | null;
+  private async permissionSources(userId: string, orgId: string, projectInput?: string): Promise<PermissionSources> {
+    let project: { id: string; org_id: string } | null = null;
+    if (projectInput) {
       try {
-        project = await this.resolveProject(projectId);
+        project = await this.resolveProject(projectInput);
       } catch (error) {
-        if (error instanceof NotFoundException) {
-          project = null;
-        } else {
+        if (!(error instanceof NotFoundException)) {
           throw error;
         }
       }
-
-      if (project) {
-        const projectMembership = await this.memberships.findProjectMembership(userId, project.id);
-        if (projectMembership) {
-          baseRole = projectMembership.role;
-        }
-      }
     }
 
-    if (!baseRole) {
-      const orgMembership = await this.memberships.findOrgMembership(userId, orgId);
-      baseRole = orgMembership?.role ?? null;
-    }
-
+    // Project membership takes priority over org membership.
+    const projectMembership = project ? await this.memberships.findProjectMembership(userId, project.id) : null;
+    const orgMembership = projectMembership ? null : await this.memberships.findOrgMembership(userId, orgId);
+    const baseRole = projectMembership?.role ?? orgMembership?.role ?? null;
+    const implicit = Boolean(projectInput) && !projectMembership && orgMembership?.role === 'member';
     const basePermissions = baseRole ? expandPermissions(baseRole) : new Set<Permission>();
 
-    // 2. Get custom role permissions
+    // Custom role grants: org-wide bindings, and bindings on the project by its id.
     const customPermissions = await this.accessRoles.getEffectiveCustomPermissions(
-      'user', userId, orgId, projectId,
+      'user', userId, orgId, project?.id,
     );
 
-    // 3. Union
-    const effective = new Set<string>(basePermissions as ReadonlySet<string>);
+    const explicit = new Set<string>(implicit ? [] : (basePermissions as ReadonlySet<string>));
     for (const perm of customPermissions) {
-      effective.add(perm);
+      explicit.add(perm);
     }
 
-    return effective;
+    return {
+      explicit,
+      implicit: implicit ? (basePermissions as ReadonlySet<string>) : new Set<string>(),
+      projectId: project?.id,
+    };
   }
 
   /**
@@ -132,6 +188,7 @@ export class RbacService implements TokenScopeResolver {
   async resolveEffectivePermissions(
     user: AuthUser,
     projectInput?: string,
+    need?: PermissionNeed,
   ): Promise<ReadonlySet<string>> {
     if (user.is_admin) return new Set<string>(allPermissions());
     if (isScopedToken(user)) {
@@ -154,9 +211,18 @@ export class RbacService implements TokenScopeResolver {
     if (projectInput) {
       try {
         const orgId = await this.getProjectOrgId(projectInput);
-        return this.getEffectivePermissions(user.user_id, orgId, projectInput);
+        return await this.getEffectivePermissions(user.user_id, orgId, projectInput, { actor: user, need });
       } catch {
-        // fall through to member baseline
+        // The project could not be resolved: a strict profile refuses rather
+        // than fall back to the member baseline.
+        const profile = await this.security?.decide(UNRESOLVED_PROJECT_RULE, {
+          governing: 'project',
+          actor: user,
+          detail: { project: projectInput },
+        });
+        if (profile === 'strict') {
+          return new Set<string>();
+        }
       }
     }
     return expandPermissions('member');
@@ -171,12 +237,46 @@ export class RbacService implements TokenScopeResolver {
     projectInput: string | undefined,
     required: readonly Permission[],
   ): Promise<void> {
-    const effective = await this.resolveEffectivePermissions(user, projectInput);
+    const effective = await this.resolveEffectivePermissions(
+      user,
+      projectInput,
+      (permissions) => required.every((perm) => permissions.has(perm)),
+    );
     for (const perm of required) {
       if (!effective.has(perm)) {
         throw new ForbiddenException(`Missing required permission: ${perm}`);
       }
     }
+  }
+
+  /**
+   * Whether chat may start agent work in a project for this sender: the
+   * person the message came from, mapped to an Eve user, must hold
+   * `jobs:write` there. Governed by the project's profile: `strict` refuses
+   * (returns false), `audit` records, `legacy` does not look.
+   */
+  async chatSenderMayStartWork(
+    projectId: string,
+    sender: AuthUser | undefined,
+    detail: Record<string, string> = {},
+  ): Promise<boolean> {
+    const profile = await this.security?.effectiveProfile({ projectId }, 'project');
+    if (!profile || profile === 'legacy') {
+      return true;
+    }
+    if (sender) {
+      const permissions = await this.resolveEffectivePermissions(sender, projectId, (set) => set.has('jobs:write'));
+      if (permissions.has('jobs:write')) {
+        return true;
+      }
+    }
+    const decided = await this.security!.decide(CHAT_SENDER_RULE, {
+      governing: 'project',
+      projectId,
+      actor: sender ?? null,
+      detail: { ...detail, sender: sender ? 'no_jobs_write' : 'unmapped' },
+    });
+    return decided !== 'strict';
   }
 
   async getPrincipalGroupIds(

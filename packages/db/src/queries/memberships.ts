@@ -32,6 +32,26 @@ export interface ProjectMembershipWithUser extends ProjectMembership {
   display_name: string | null;
 }
 
+/**
+ * SQL condition: the user holds a binding on project `p` itself, directly or
+ * through an access group. Org-wide bindings do not count.
+ */
+export function projectBindingExists(db: Db, userId: string) {
+  return db`
+    EXISTS (
+      SELECT 1 FROM access_bindings b
+      WHERE b.project_id = p.id
+        AND (
+          (b.principal_type = 'user' AND b.principal_id = ${userId})
+          OR (b.principal_type = 'group' AND b.principal_id IN (
+            SELECT gm.group_id FROM access_group_members gm
+            WHERE gm.principal_type = 'user' AND gm.principal_id = ${userId}
+          ))
+        )
+    )
+  `;
+}
+
 export function membershipQueries(db: Db) {
   return {
     async findOrgMembership(userId: string, orgId: string): Promise<OrgMembership | null> {
@@ -134,36 +154,45 @@ export function membershipQueries(db: Db) {
       `;
     },
 
+    /**
+     * Projects a user reaches by project membership or org membership, each
+     * marked `implicit_access` when only the org member role reaches it (no
+     * project membership, no binding on the project). Under a strict profile
+     * (the project's, else its org's, else `instance_profile`) the org member
+     * role reaches nothing, so those projects are left out.
+     */
     async listProjectsForUser(
       userId: string,
-      options: { include_deleted?: boolean; limit?: number; offset?: number; org_id?: string },
-    ): Promise<Project[]> {
+      options: {
+        include_deleted?: boolean;
+        limit?: number;
+        offset?: number;
+        org_id?: string;
+        instance_profile?: string | null;
+      },
+    ): Promise<Array<Project & { implicit_access: boolean }>> {
       const limit = options.limit ?? 10;
       const offset = options.offset ?? 0;
       const includeDeleted = options.include_deleted ?? false;
-      const orgId = options.org_id;
-      const orgIdParam = orgId ?? null;
+      const orgIdParam = options.org_id ?? null;
+      const instanceProfile = options.instance_profile ?? null;
 
-      if (includeDeleted) {
-        return db<Project[]>`
-          SELECT DISTINCT p.*
-          FROM projects p
-          LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = ${userId}
-          LEFT JOIN org_memberships om ON om.org_id = p.org_id AND om.user_id = ${userId}
-          WHERE (pm.user_id IS NOT NULL OR om.user_id IS NOT NULL)
-            AND (${orgIdParam}::text IS NULL OR p.org_id = ${orgIdParam})
-          ORDER BY p.created_at DESC
-          LIMIT ${limit} OFFSET ${offset}
-        `;
-      }
-
-      return db<Project[]>`
-        SELECT DISTINCT p.*
+      return db<Array<Project & { implicit_access: boolean }>>`
+        SELECT p.*, a.implicit_access
         FROM projects p
-        LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = ${userId}
-        LEFT JOIN org_memberships om ON om.org_id = p.org_id AND om.user_id = ${userId}
-        WHERE (pm.user_id IS NOT NULL OR om.user_id IS NOT NULL)
-          AND p.deleted_at IS NULL
+        JOIN orgs o ON o.id = p.org_id
+        CROSS JOIN LATERAL (
+          SELECT
+            EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id = p.id AND pm.user_id = ${userId}) AS via_project,
+            (SELECT om.role FROM org_memberships om WHERE om.org_id = p.org_id AND om.user_id = ${userId}) AS org_role,
+            ${projectBindingExists(db, userId)} AS via_binding
+        ) r
+        CROSS JOIN LATERAL (
+          SELECT (NOT r.via_project AND r.org_role = 'member' AND NOT r.via_binding) AS implicit_access
+        ) a
+        WHERE (r.via_project OR r.org_role IS NOT NULL)
+          AND NOT (a.implicit_access AND COALESCE(p.security_profile, o.security_profile, ${instanceProfile}::text, 'legacy') = 'strict')
+          AND (${includeDeleted}::boolean OR p.deleted_at IS NULL)
           AND (${orgIdParam}::text IS NULL OR p.org_id = ${orgIdParam})
         ORDER BY p.created_at DESC
         LIMIT ${limit} OFFSET ${offset}

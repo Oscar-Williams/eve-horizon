@@ -318,6 +318,10 @@ export class ChatService {
         };
       }
     }
+    const refusal = await this.senderRefusal(projectId, data, ctx);
+    if (refusal) {
+      return this.refused(thread, eventId, route.id, route.target, refusal);
+    }
     const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
 
     return {
@@ -389,6 +393,10 @@ export class ChatService {
       }
     }
 
+    const refusal = await this.senderRefusal(projectId, data, ctx);
+    if (refusal) {
+      return this.refused(thread, eventId, route.id, route.target, refusal);
+    }
     const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
     return {
       thread_id: thread.id,
@@ -505,6 +513,10 @@ export class ChatService {
       }
     }
 
+    const refusal = await this.senderRefusal(projectId, data, ctx);
+    if (refusal) {
+      return this.refused(thread, eventId, route.id, route.target, refusal);
+    }
     const jobIds = await this.dispatchRouteTarget(projectId, config, thread.id, data, route, hints, ctx);
     return {
       thread_id: thread.id,
@@ -548,6 +560,11 @@ export class ChatService {
       target: `agent:${agent.id}`,
       agent_slug: options.agent_slug ?? null,
     });
+
+    const refusal = await this.senderRefusal(projectId, data, ctx);
+    if (refusal) {
+      return this.refused(thread, eventId, null, `agent:${agent.id}`, refusal);
+    }
 
     // Load thread history for multi-turn context
     const threadContext = await this.buildThreadContext(thread.id);
@@ -620,6 +637,11 @@ export class ChatService {
       kind: 'team',
       target: `team:${teamId}`,
     });
+
+    const refusal = await this.senderRefusal(projectId, data, ctx);
+    if (refusal) {
+      return this.refused(thread, eventId, null, `team:${teamId}`, refusal);
+    }
 
     const threadContext = await this.buildThreadContext(thread.id);
     const threadHints = threadContext
@@ -959,6 +981,10 @@ export class ChatService {
       const config = await this.agentConfigs.findLatestByProject(projectId);
       if (!config) {
         this.logger.warn(`Agents config missing for project ${projectId}; skipping listener dispatch.`);
+        continue;
+      }
+
+      if (await this.senderRefusal(projectId, data)) {
         continue;
       }
 
@@ -1448,6 +1474,46 @@ export class ChatService {
       if (refsAnySecret) needs.push('secrets:read');
     }
     await this.rbac.requirePermissions(user, projectId, needs);
+  }
+
+  /**
+   * Chat starts agent work for whoever sent the message: the authenticated
+   * caller when there is one, else the Eve user the gateway mapped the sender
+   * to. Under the project's strict profile that sender must hold `jobs:write`
+   * there (see RbacService.chatSenderMayStartWork). Returns the reason to
+   * give when the sender is refused, else null.
+   */
+  private async senderRefusal(
+    projectId: string,
+    data: ChatRouteRequest | ChatDispatchRequest,
+    ctx?: ChatDispatchContext,
+  ): Promise<string | null> {
+    const sender = ctx?.user ?? this.resolveMetadataPrincipal(data);
+    if (await this.rbac.chatSenderMayStartWork(projectId, sender, { provider: data.provider })) {
+      return null;
+    }
+    return sender
+      ? 'You need access to this project to start agent work. Ask a project admin to add you.'
+      : 'Link your chat account to an Eve user with access to this project to start agent work.';
+  }
+
+  private refused(
+    thread: { id: string; key: string },
+    eventId: string | null,
+    routeId: string | null,
+    target: string,
+    reason: string,
+  ): ChatRouteResponse {
+    return {
+      thread_id: thread.id,
+      thread_key: thread.key,
+      route_id: routeId,
+      target,
+      job_ids: [],
+      event_id: eventId,
+      denied: true,
+      denial_reason: reason,
+    };
   }
 
   private resolveMetadataPrincipal(data: ChatRouteRequest): AuthUser | undefined {
