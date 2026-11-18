@@ -35,6 +35,62 @@ export interface EveTokenClaims {
   permissions?: string[];
   is_admin?: boolean;
   role?: string;
+  /**
+   * Set on an app audience token: the token Eve's SSO gives a deployed app
+   * (`eve-app:<project_id>:<env>`, or `eve-app:<project_id>`). It carries no
+   * `orgs` claim; read the person's orgs from Eve `/auth/app-access`.
+   */
+  aud?: string;
+}
+
+export interface EveTokenVerifyOptions {
+  /** Audiences this app accepts. Defaults to eveAppAudiences(). */
+  audiences?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// App audiences
+// ---------------------------------------------------------------------------
+
+/** The header an app sends Eve with an app audience token, naming its audience. */
+export const EVE_AUDIENCE_HEADER = 'X-Eve-Audience';
+
+/**
+ * The audiences this app accepts, from its injected EVE_PROJECT_ID and
+ * EVE_ENV_NAME: `eve-app:<project>:<env>` and `eve-app:<project>`. None
+ * outside a deployed app.
+ */
+export function eveAppAudiences(options?: { projectId?: string; envName?: string }): string[] {
+  const projectId = options?.projectId ?? process.env.EVE_PROJECT_ID;
+  if (!projectId) return [];
+  const envName = options?.envName ?? process.env.EVE_ENV_NAME;
+  return envName ? [`eve-app:${projectId}:${envName}`, `eve-app:${projectId}`] : [`eve-app:${projectId}`];
+}
+
+/** A token's `aud`, when it is one this app accepts; throws for any other audience. */
+function ownAudience(aud: unknown, options?: EveTokenVerifyOptions): string | undefined {
+  if (aud === undefined) return undefined;
+  const allowed = options?.audiences ?? eveAppAudiences();
+  if (typeof aud !== 'string' || !allowed.includes(aud)) {
+    throw new Error('Token audience is not this app');
+  }
+  return aud;
+}
+
+/**
+ * Headers to send Eve with this token: X-Eve-Audience when it is an app
+ * audience token for this app. Throws for a token meant for another app.
+ */
+export function eveAudienceHeaders(token: string, options?: EveTokenVerifyOptions): Record<string, string> {
+  let aud: unknown;
+  try {
+    const payloadB64 = token.split('.')[1] ?? '';
+    aud = (JSON.parse(base64UrlDecode(payloadB64).toString()) as { aud?: unknown }).aud;
+  } catch {
+    return {};
+  }
+  const own = ownAudience(aud, options);
+  return own ? { [EVE_AUDIENCE_HEADER]: own } : {};
 }
 
 export interface JwksKey {
@@ -61,15 +117,18 @@ interface JwksResponse {
 export async function verifyEveTokenRemote(
   token: string,
   eveApiUrl?: string,
+  options?: EveTokenVerifyOptions,
 ): Promise<EveTokenClaims> {
   const baseUrl = eveApiUrl ?? process.env.EVE_API_URL;
   if (!baseUrl) {
     throw new Error('EVE_API_URL is required (pass eveApiUrl or set EVE_API_URL env)');
   }
 
+  // An app audience token is checked against this app before Eve is asked.
+  const audienceHeaders = eveAudienceHeaders(token, options);
   const url = `${baseUrl.replace(/\/$/, '')}/auth/token/verify`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...audienceHeaders },
   });
 
   if (!res.ok) {
@@ -77,7 +136,9 @@ export async function verifyEveTokenRemote(
     throw new Error(`Token verification failed (${res.status}): ${body}`);
   }
 
-  return res.json() as Promise<EveTokenClaims>;
+  const claims = (await res.json()) as EveTokenClaims;
+  const aud = audienceHeaders[EVE_AUDIENCE_HEADER];
+  return aud ? { ...claims, aud } : claims;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +221,7 @@ function jwkToPem(key: JwksKey): string {
 export async function verifyEveToken(
   token: string,
   eveApiUrl?: string,
+  options?: EveTokenVerifyOptions,
 ): Promise<EveTokenClaims> {
   const baseUrl = eveApiUrl ?? process.env.EVE_API_URL;
   if (!baseUrl) {
@@ -213,6 +275,7 @@ export async function verifyEveToken(
     role?: string;
     exp?: number;
     nbf?: number;
+    aud?: unknown;
   };
 
   const now = Math.floor(Date.now() / 1000);
@@ -222,6 +285,7 @@ export async function verifyEveToken(
   if (payload.nbf && payload.nbf > now + 60) {
     throw new Error('Token not yet valid');
   }
+  const aud = ownAudience(payload.aud, options);
 
   return {
     valid: true,
@@ -236,6 +300,7 @@ export async function verifyEveToken(
     ...(payload.permissions ? { permissions: payload.permissions } : {}),
     ...(payload.is_admin !== undefined ? { is_admin: payload.is_admin } : {}),
     ...(payload.role ? { role: payload.role } : {}),
+    ...(aud ? { aud } : {}),
   };
 }
 

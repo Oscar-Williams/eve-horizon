@@ -10,7 +10,7 @@
  */
 
 import { verifyEveToken, verifyEveTokenRemote, type EveTokenClaims } from './index.js';
-import type { EveAppAccess } from './user.js';
+import { fetchAppAccess, orgsForClaims, type EveAppAccess } from './user.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,11 +88,12 @@ export function eveAuth(options?: {
     const targetOrgId = options?.orgId ?? process.env.EVE_ORG_ID;
 
     if (claims.type === 'user') {
-      if (!targetOrgId || !claims.orgs) {
+      const orgs = await orgsForClaims(claims, token, options?.eveApiUrl);
+      if (!targetOrgId || !orgs) {
         next();
         return;
       }
-      const membership = claims.orgs.find((o) => o.id === targetOrgId);
+      const membership = orgs.find((o) => o.id === targetOrgId);
       if (!membership) {
         next();
         return;
@@ -264,20 +265,4 @@ function extractHeader(req: RequestLike, name: string): string | undefined {
 function extractQueryValue(req: RequestLike, name: string): string | undefined {
   const value = req.query?.[name];
   return typeof value === 'string' ? value : Array.isArray(value) ? value[0] : undefined;
-}
-
-async function fetchAppAccess(
-  eveApiUrl: string,
-  token: string,
-  projectId: string,
-): Promise<EveAppAccess> {
-  const url = `${eveApiUrl.replace(/\/$/, '')}/auth/app-access?project_id=${encodeURIComponent(projectId)}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`App access lookup failed (${res.status}): ${body}`);
-  }
-  return res.json() as Promise<EveAppAccess>;
 }

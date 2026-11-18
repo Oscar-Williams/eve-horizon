@@ -8,7 +8,7 @@
  *   app.get('/protected', eveAuthGuard(), handler);
  */
 
-import { verifyEveToken, verifyEveTokenRemote, type EveTokenClaims } from './index.js';
+import { eveAudienceHeaders, verifyEveToken, verifyEveTokenRemote, type EveTokenClaims } from './index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,12 +95,13 @@ export function eveUserAuth(options?: {
     }
 
     const targetOrgId = options?.orgId ?? process.env.EVE_ORG_ID;
-    if (!targetOrgId || !claims.orgs) {
+    const orgs = await orgsForClaims(claims, token, options?.eveApiUrl);
+    if (!targetOrgId || !orgs) {
       next();
       return;
     }
 
-    const membership = claims.orgs.find((o) => o.id === targetOrgId);
+    const membership = orgs.find((o) => o.id === targetOrgId);
     if (!membership) {
       next();
       return;
@@ -226,17 +227,33 @@ export function eveAuthMe(options?: {
       ? extractHeader(req, projectHeaderName)
       : undefined;
 
-    if (projectId && eveApiUrl) {
+    // An app audience token carries no orgs claim, so Eve is asked; a token
+    // meant for another app is not taken at all.
+    let audienceHeaders: Record<string, string>;
+    try {
+      audienceHeaders = eveAudienceHeaders(token);
+    } catch {
+      res.status(200).json({ authenticated: false });
+      return;
+    }
+    const appAudienceToken = Object.keys(audienceHeaders).length > 0;
+
+    if ((projectId || appAudienceToken) && eveApiUrl) {
       try {
         const apiRes = await fetch(`${eveApiUrl.replace(/\/$/, '')}/auth/me`, {
           headers: {
             Authorization: `Bearer ${token}`,
-            'X-Eve-Project-Id': projectId,
+            ...(projectId ? { 'X-Eve-Project-Id': projectId } : {}),
+            ...audienceHeaders,
           },
         });
         if (apiRes.ok) {
           const data = await apiRes.json();
           res.status(200).json(data);
+          return;
+        }
+        if (appAudienceToken) {
+          res.status(200).json({ authenticated: false });
           return;
         }
       } catch {
@@ -338,14 +355,37 @@ function extractQueryValue(req: RequestLike, name: string): string | undefined {
   return typeof value === 'string' ? value : Array.isArray(value) ? value[0] : undefined;
 }
 
-async function fetchAppAccess(
+/**
+ * The orgs a user token's person belongs to: its `orgs` claim, or, for an
+ * app audience token (which has none), the orgs Eve's /auth/app-access lets
+ * them enter this app through.
+ */
+export async function orgsForClaims(
+  claims: EveTokenClaims,
+  token: string,
+  eveApiUrlOption: string | undefined,
+): Promise<Array<{ id: string; role: string }> | undefined> {
+  if (!claims.aud) return claims.orgs;
+  const projectId = process.env.EVE_PROJECT_ID;
+  const eveApiUrl = eveApiUrlOption ?? process.env.EVE_API_URL;
+  if (!projectId || !eveApiUrl) return undefined;
+  try {
+    const access = await fetchAppAccess(eveApiUrl, token, projectId);
+    return access.orgs.map((org) => ({ id: org.id, role: org.role }));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Ask Eve which orgs this token's person may enter the app through. */
+export async function fetchAppAccess(
   eveApiUrl: string,
   token: string,
   projectId: string,
 ): Promise<EveAppAccess> {
   const url = `${eveApiUrl.replace(/\/$/, '')}/auth/app-access?project_id=${encodeURIComponent(projectId)}`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...eveAudienceHeaders(token) },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');

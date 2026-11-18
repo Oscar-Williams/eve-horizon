@@ -28,7 +28,8 @@ export type WebChatTokenVerification =
 /**
  * Verify a webchat connection token for the integration's org. Only a user
  * token is accepted, and only for `expectedOrgId`: the token's org_id when
- * it names one, otherwise its org memberships.
+ * it names one, otherwise its org memberships. A token with an audience
+ * (one the SSO gave an app) is never accepted here.
  */
 export async function verifyWebChatToken(
   token: string,
@@ -36,7 +37,8 @@ export async function verifyWebChatToken(
   expectedOrgId: string,
 ): Promise<WebChatTokenVerification> {
   try {
-    const claims: EveTokenClaims = await verifyEveToken(token, eveApiUrl);
+    // No audience is accepted: verification fails for any token with an aud.
+    const claims: EveTokenClaims = await verifyEveToken(token, eveApiUrl, { audiences: [] });
     const inOrg = claims.org_id
       ? claims.org_id === expectedOrgId
       : Boolean(claims.orgs?.some((org: { id: string }) => org.id === expectedOrgId));
