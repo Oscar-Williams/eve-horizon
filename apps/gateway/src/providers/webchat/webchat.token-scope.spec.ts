@@ -44,6 +44,17 @@ describe('verifyWebChatToken scope', () => {
     await expect(verifyWebChatToken(sign(payload), API_URL, INTEGRATION_ORG)).resolves.toEqual(refused);
   });
 
+  it.each([
+    [
+      'an app audience token, even one naming this org',
+      { sub: 'user_1', type: 'user', aud: 'eve-app:proj_1:prod', orgs: [{ id: INTEGRATION_ORG, role: 'member' }] },
+    ],
+    ['an app audience token with no orgs claim', { sub: 'user_1', type: 'user', aud: 'eve-app:proj_1', org_id: INTEGRATION_ORG }],
+    ['a token for any other audience', { sub: 'user_1', type: 'user', aud: 'eve-registry', orgs: [{ id: INTEGRATION_ORG, role: 'member' }] }],
+  ])('refuses %s', async (_label, payload) => {
+    await expect(verifyWebChatToken(sign(payload), API_URL, INTEGRATION_ORG)).resolves.toEqual(refused);
+  });
+
   it('refuses any token when the integration org is missing', async () => {
     const token = sign({ sub: 'user_1', type: 'user', org_id: INTEGRATION_ORG });
     await expect(verifyWebChatToken(token, API_URL, '')).resolves.toEqual(refused);

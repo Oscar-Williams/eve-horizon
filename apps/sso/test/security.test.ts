@@ -212,10 +212,16 @@ describe('wrap CSRF signing', () => {
     expect(sec2.signWrapCsrf(WRAP)).not.toBe(a);
   });
 
-  it('falls back to a fixed key when EVE_INTERNAL_API_KEY is unset', async () => {
+  it('refuses to sign when EVE_INTERNAL_API_KEY is unset', async () => {
     const sec = await loadSecurity();
-    const nonce = sec.signWrapCsrf(WRAP);
-    expect(sec.verifyWrapCsrf(WRAP, nonce)).toBe(true);
+    expect(() => sec.signWrapCsrf(WRAP)).toThrow();
+  });
+
+  it('accepts no nonce when EVE_INTERNAL_API_KEY is unset', async () => {
+    const keyed = await loadSecurity({ EVE_INTERNAL_API_KEY: 'test-key' });
+    const nonce = keyed.signWrapCsrf(WRAP);
+    const sec = await loadSecurity();
+    expect(sec.verifyWrapCsrf(WRAP, nonce)).toBe(false);
   });
 
   it('rejects tampered, truncated, and non-hex nonces', async () => {
