@@ -937,9 +937,25 @@ effective step job value is merged by key with this precedence:
 3. Workflow-level YAML defaults.
 
 Values may be literals or `${secret.KEY}` placeholders. Other `${...}`
-expressions are rejected, reserved platform variables such as `EVE_*`, `PATH`,
-and `HOME` cannot be overridden, and the merged object must fit the job
-`env_overrides` size limit. The root workflow job remains metadata-only;
+expressions are rejected, and the merged object must fit the job
+`env_overrides` size limit. Some names are reserved, matched in any case:
+
+- platform variables such as `EVE_*`, `PATH`, `HOME` and `NODE_OPTIONS`, and
+  model provider credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_AUTH_JSON`,
+  `CODEX_OAUTH_ACCESS_TOKEN`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
+  `Z_AI_API_KEY`, `ZAI_API_KEY`) cannot be overridden: a job gets provider
+  keys from secrets;
+- model routing names (any name ending `_BASE_URL`, `OPENAI_API_BASE`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`) may
+  be set only to a single `${secret.KEY}`, and at run time that secret must
+  come from the project or its org. A literal value, or a user secret, is
+  refused.
+
+The same rule applies to job, chat, pipeline and workflow overrides, and the
+worker strips reserved names again at run time. The root workflow job remains metadata-only;
 executable step jobs persist the merged `env_overrides`, and the existing
 worker/agent-runtime secret interpolation injects resolved values only inside
 the harness process.

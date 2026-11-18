@@ -1,11 +1,13 @@
-import { Injectable, Inject, Logger, BadRequestException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Inject, Logger, BadRequestException, NotFoundException, InternalServerErrorException, Optional } from '@nestjs/common';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { Db } from '@eve/db';
 import { secretQueries, projectQueries, orgQueries, projectManifestQueries, type SecretScopeType, type SecretType } from '@eve/db';
-import { ManifestSchema, getManifestRequiredSecrets, generateSecretId, findClosestMatches, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretValidationResult, type UpdateSecretRequest, loadConfig } from '@eve/shared';
+import { ManifestSchema, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isUserSecretWithheldKey, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretValidationResult, type UpdateSecretRequest, loadConfig } from '@eve/shared';
 import * as yaml from 'yaml';
+import { SecurityService } from '../security/security.service.js';
+import type { AuthUser } from '../auth/auth.types.js';
 
 const MASK_VISIBLE_CHARS = 4;
 const SAFE_SECRET_ALLOWLIST = new Set(['GITHUB_WEBHOOK_SECRET']);
@@ -19,7 +21,10 @@ export class SecretsService {
   private manifests: ReturnType<typeof projectManifestQueries>;
   private masterKey: Buffer | null;
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    @Optional() private readonly security?: SecurityService,
+  ) {
     this.secrets = secretQueries(this.db);
     this.projects = projectQueries(this.db);
     this.orgs = orgQueries(this.db);
@@ -235,7 +240,7 @@ export class SecretsService {
     // 3. Layer user secrets on top (user overrides org)
     if (userId) {
       const userSecrets = await this.secrets.listByScope('user', userId, { limit: 500, offset: 0 });
-      this.decryptSecrets(userSecrets, resolved, 'user', userId);
+      this.decryptSecrets(await this.withholdUserRoutingSecrets(projectId, userId, userSecrets), resolved, 'user', userId);
     }
 
     // 4. Layer project secrets on top (highest priority, project wins)
@@ -249,6 +254,30 @@ export class SecretsService {
       scope_type: entry.scope_type,
       scope_id: entry.scope_id,
     }));
+  }
+
+  /**
+   * A user's own secrets must not choose where model traffic goes, or load
+   * code into the job, because the job also holds the project's and org's
+   * provider keys. Under the project's `strict` profile such user secrets are
+   * left out (a project or org secret of the same name then applies); under
+   * `audit` they are kept and recorded. A user's own provider key is kept.
+   */
+  private async withholdUserRoutingSecrets<T extends { key: string }>(
+    projectId: string,
+    userId: string,
+    userSecrets: T[],
+  ): Promise<T[]> {
+    const withheld = userSecrets.filter((secret) => isUserSecretWithheldKey(secret.key));
+    if (withheld.length === 0 || !this.security) return userSecrets;
+    const profile = await this.security.decide('harness.user_secret_routing', {
+      projectId,
+      governing: 'project',
+      actor: { user_id: userId } as AuthUser,
+      detail: { secrets: withheld.map((secret) => secret.key).sort().join(',') },
+    });
+    if (profile !== 'strict') return userSecrets;
+    return userSecrets.filter((secret) => !isUserSecretWithheldKey(secret.key));
   }
 
   async validateRequiredSecrets(projectId: string, requiredKeys: string[], userId?: string): Promise<SecretValidationResult> {

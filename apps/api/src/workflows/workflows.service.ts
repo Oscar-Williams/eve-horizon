@@ -1,10 +1,12 @@
-import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException } from '@nestjs/common';
+import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException, Optional } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
 import { assertCanUseJobScope, type WorkStartOptions } from '../auth/token-scope.js';
 import { intersectScopes } from './scope-algebra.js';
+import { SecurityService } from '../security/security.service.js';
+import type { AuthUser } from '../auth/auth.types.js';
 import * as yaml from 'yaml';
 
 const VALID_TOOLCHAIN_SET = new Set<string>(VALID_TOOLCHAINS);
@@ -33,6 +35,7 @@ export class WorkflowsService {
   constructor(
     @Inject('DB') private readonly db: Db,
     private readonly accessService: AccessService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.manifests = projectManifestQueries(db);
     this.projects = projectQueries(db);
@@ -880,6 +883,7 @@ export class WorkflowsService {
       }
       return execution;
     });
+    await this.checkStepAgentsExist(projectId, workflowName, workflow.definition, userId);
 
     // 3. Prepare shared context
     const rawWorkflowHints = this.extractWorkflowHints(workflow.definition, projectId);
@@ -1721,6 +1725,30 @@ export class WorkflowsService {
   // ============================================================================
   // Per-step agent resolution
   // ============================================================================
+
+  /**
+   * A step that names an agent runs with that agent's policies and secret
+   * allowlist, so the agent must exist. The project's `strict` profile
+   * refuses the run before any job is created; `audit` records it and the
+   * step runs with no agent, as before.
+   */
+  private async checkStepAgentsExist(
+    projectId: string,
+    workflowName: string,
+    definition: Record<string, unknown>,
+    userId?: string,
+  ): Promise<void> {
+    if (!this.security) return;
+    const agentIds = new Set((await this.agents.listByProject(projectId)).map((agent) => agent.id));
+    const gaps = findUndeclaredHarnessNames({ workflows: { [workflowName]: definition }, agentIds });
+    if (gaps.length === 0) return;
+    await this.security.gate('harness.missing_agent', {
+      projectId,
+      governing: 'project',
+      actor: hasUserActor(userId) ? ({ user_id: userId } as AuthUser) : null,
+      detail: { workflow: workflowName, step: gaps[0].step ?? null, agent: gaps[0].name },
+    }, `Workflow refused: ${describeHarnessNameGaps(gaps)}`);
+  }
 
   /**
    * Resolve agent config from a single workflow step's agent reference.

@@ -77,27 +77,42 @@ export interface ResolvedProfile {
 
 type Profiles = Record<string, unknown[]>;
 
-function readProfilesFromXEve(xEveYaml: string | null | undefined): Profiles | undefined {
-  if (!xEveYaml) return undefined;
-  try {
-    const parsed = yaml.parse(xEveYaml) as Record<string, unknown> | undefined;
-    const agentsSection = parsed?.agents as Record<string, unknown> | undefined;
-    return agentsSection?.profiles as Profiles | undefined;
-  } catch {
-    return undefined;
-  }
+function profilesOf(agentsSection: unknown): Profiles | undefined {
+  const profiles = (agentsSection as Record<string, unknown> | undefined)?.profiles;
+  return profiles && typeof profiles === 'object' && !Array.isArray(profiles) ? profiles as Profiles : undefined;
 }
 
-function readProfilesFromManifest(manifestYaml: string | null | undefined): Profiles | undefined {
-  if (!manifestYaml) return undefined;
-  try {
-    const parsed = yaml.parse(manifestYaml) as Record<string, unknown> | undefined;
-    const xEve = (parsed?.x_eve ?? parsed?.['x-eve']) as Record<string, unknown> | undefined;
-    const agentsConfig = xEve?.agents as Record<string, unknown> | undefined;
-    return agentsConfig?.profiles as Profiles | undefined;
-  } catch {
-    return undefined;
+/**
+ * The harness profiles a project declares, read the way dispatch reads them:
+ * the agents config's x-eve `agents.profiles` when it has any, else the
+ * manifest's. `error` names a document that could not be parsed; profiles
+ * from the other document are still returned.
+ */
+export function readDeclaredProfiles(docs: {
+  xEveYaml?: string | null;
+  manifestYaml?: string | null;
+}): { profiles?: Profiles; error?: string } {
+  let error: string | undefined;
+  if (docs.xEveYaml) {
+    try {
+      const parsed = yaml.parse(docs.xEveYaml) as Record<string, unknown> | undefined;
+      const profiles = profilesOf(parsed?.agents);
+      if (profiles) return { profiles };
+    } catch {
+      error = 'the agents config x-eve could not be parsed';
+    }
   }
+  if (docs.manifestYaml) {
+    try {
+      const parsed = yaml.parse(docs.manifestYaml) as Record<string, unknown> | undefined;
+      const xEve = (parsed?.x_eve ?? parsed?.['x-eve']) as Record<string, unknown> | undefined;
+      const profiles = profilesOf(xEve?.agents);
+      return { profiles, error };
+    } catch {
+      return { error: error ?? 'the manifest could not be parsed' };
+    }
+  }
+  return { error };
 }
 
 function projectProfileTarget(target: Record<string, unknown>): {
@@ -116,31 +131,69 @@ function projectProfileTarget(target: Record<string, unknown>): {
   return out;
 }
 
+/** Load the declared profiles, reading the manifest only when the agents config declares none. */
+async function loadDeclaredProfiles(
+  deps: ResolverDeps,
+  projectId: string,
+): Promise<{ profiles?: Profiles; error?: string }> {
+  const agentConfig = await deps.agentConfigs.findLatestByProject(projectId);
+  const fromXEve = readDeclaredProfiles({ xEveYaml: agentConfig?.x_eve_yaml });
+  if (fromXEve.profiles) return fromXEve;
+  const manifest = await deps.manifests.findLatestByProject(projectId);
+  const fromManifest = readDeclaredProfiles({ manifestYaml: manifest?.manifest_yaml });
+  return { profiles: fromManifest.profiles, error: fromXEve.error ?? fromManifest.error };
+}
+
+export type HarnessProfileLookup =
+  | { status: 'found'; harness?: string; harness_options?: JobHarnessOptions }
+  | { status: 'missing' }
+  | { status: 'error'; message: string };
+
+/**
+ * Find a named profile via x-eve.agents.profiles with manifest fallback,
+ * saying whether it was found, is missing, or could not be read.
+ */
+export async function findHarnessProfile(
+  deps: ResolverDeps,
+  projectId: string,
+  profileName: string,
+): Promise<HarnessProfileLookup> {
+  let declared: { profiles?: Profiles; error?: string };
+  try {
+    declared = await loadDeclaredProfiles(deps, projectId);
+  } catch (error) {
+    return { status: 'error', message: error instanceof Error ? error.message : String(error) };
+  }
+  if (declared.error) return { status: 'error', message: declared.error };
+  const targets = declared.profiles?.[profileName];
+  const target = Array.isArray(targets) ? targets[0] : null;
+  if (!target || typeof target !== 'object') return { status: 'missing' };
+  return { status: 'found', ...projectProfileTarget(target as Record<string, unknown>) };
+}
+
 /**
  * Look a profile name up via x-eve.agents.profiles with manifest fallback.
- * Returns `{}` on miss so callers can fall back to the next source.
+ * Returns `{}` on a miss or a read error so callers can fall back to the next
+ * source; dispatch (findHarnessProfile) decides whether that may run.
  */
 export async function lookupProfile(
   deps: ResolverDeps,
   projectId: string,
   profileName: string,
 ): Promise<{ harness?: string; harness_options?: JobHarnessOptions }> {
+  let declared: { profiles?: Profiles; error?: string };
   try {
-    const agentConfig = await deps.agentConfigs.findLatestByProject(projectId);
-    let profiles = readProfilesFromXEve(agentConfig?.x_eve_yaml);
-    if (!profiles) {
-      const manifest = await deps.manifests.findLatestByProject(projectId);
-      profiles = readProfilesFromManifest(manifest?.manifest_yaml);
-    }
-    if (!profiles) return {};
-    const targets = profiles[profileName];
-    const target = Array.isArray(targets) ? (targets[0] as Record<string, unknown>) : null;
-    if (!target) return {};
-    return projectProfileTarget(target);
+    declared = await loadDeclaredProfiles(deps, projectId);
   } catch {
-    deps.logger?.warn(`Failed to resolve harness profile "${profileName}" for project ${projectId}`);
-    return {};
+    declared = { error: 'lookup failed' };
   }
+  if (declared.error) {
+    deps.logger?.warn(`Failed to resolve harness profile "${profileName}" for project ${projectId}: ${declared.error}`);
+  }
+  const targets = declared.profiles?.[profileName];
+  const target = Array.isArray(targets) ? (targets[0] as Record<string, unknown>) : null;
+  if (!target) return {};
+  return projectProfileTarget(target);
 }
 
 function normalizeBundleForHash(bundle: InlineProfileBundle): string {
@@ -265,4 +318,64 @@ export async function resolveHarnessProfile(
     source: 'agent_default',
     warnings,
   };
+}
+
+export interface HarnessNameGap {
+  kind: 'profile' | 'agent';
+  name: string;
+  /** Where the name is used, e.g. `agent "triage"` or `workflow "w" step "s"`. */
+  where: string;
+  workflow?: string;
+  step?: string;
+}
+
+/**
+ * Harness profile and agent names that are used but not declared. Only
+ * literal names are checked; a templated name (`${...}`) is resolved at run
+ * time. Pass `profiles` to check profile names, `agentIds` to check the
+ * agents workflow steps name.
+ */
+export function findUndeclaredHarnessNames(input: {
+  workflows?: Record<string, unknown> | null;
+  agents?: Record<string, { harness_profile?: unknown }> | null;
+  profiles?: ReadonlySet<string> | null;
+  agentIds?: ReadonlySet<string> | null;
+}): HarnessNameGap[] {
+  const gaps: HarnessNameGap[] = [];
+  const literal = (value: unknown): value is string =>
+    typeof value === 'string' && value.length > 0 && !value.includes('${');
+
+  if (input.profiles) {
+    for (const [agentId, agent] of Object.entries(input.agents ?? {})) {
+      const profile = agent?.harness_profile;
+      if (literal(profile) && !input.profiles.has(profile)) {
+        gaps.push({ kind: 'profile', name: profile, where: `agent "${agentId}"` });
+      }
+    }
+  }
+
+  for (const [workflowName, workflow] of Object.entries(input.workflows ?? {})) {
+    const steps = (workflow as { steps?: unknown } | null)?.steps;
+    if (!Array.isArray(steps)) continue;
+    steps.forEach((step: Record<string, unknown> | null, index) => {
+      if (!step || typeof step !== 'object') return;
+      const stepName = typeof step.name === 'string' ? step.name : `step-${index + 1}`;
+      const at = { where: `workflow "${workflowName}" step "${stepName}"`, workflow: workflowName, step: stepName };
+      if (input.profiles && literal(step.harness_profile) && !input.profiles.has(step.harness_profile)) {
+        gaps.push({ kind: 'profile', name: step.harness_profile, ...at });
+      }
+      const agentName = (step.agent as { name?: unknown } | undefined)?.name;
+      if (input.agentIds && literal(agentName) && !input.agentIds.has(agentName)) {
+        gaps.push({ kind: 'agent', name: agentName, ...at });
+      }
+    });
+  }
+  return gaps;
+}
+
+/** A one-line description of name gaps, for errors and warnings. */
+export function describeHarnessNameGaps(gaps: HarnessNameGap[]): string {
+  return gaps
+    .map((gap) => `${gap.where} names ${gap.kind === 'profile' ? 'harness profile' : 'agent'} "${gap.name}", which is not declared`)
+    .join('; ');
 }

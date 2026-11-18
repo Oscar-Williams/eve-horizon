@@ -13,6 +13,8 @@ import {
   generateEventId,
   resolveHarnessName,
   selectAvailableHarness,
+  getHarnessAuthStatus,
+  findHarnessProfile,
   SecretResolveResponseSchema,
   type SecretResolveItem,
   type ResourceRef,
@@ -47,7 +49,9 @@ import {
 } from '@eve/shared';
 import {
   accessRoleQueries,
+  agentConfigQueries,
   agentQueries,
+  decideSecurityRule,
   findJobAgent,
   eventQueries,
   gateQueries,
@@ -2038,16 +2042,31 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
   ): Promise<{ harnessSpec: string; profileHash: string | null; profileSource: string | null }> {
     const manifestDefaults = await this.getManifestDefaults(job.project_id);
     const systemPreference = await this.getSystemHarnessPreference();
+    const explicit = attempt.harness ?? job.harness ?? undefined;
+    const projectPreference = manifestDefaults?.harness_preference as string[] | undefined;
+
+    await this.checkNamedHarnessProfile(job);
+    if (!explicit && !projectPreference && !systemPreference) {
+      await this.enforceHarnessRule(
+        job,
+        'harness.no_preference',
+        {},
+        'no harness configured: name a harness or profile, set x-eve.defaults.harness_preference, or set the instance harness_preference',
+      );
+    }
 
     // Resolve secrets from all scopes (system -> org -> project -> user) for harness selection
     const resolvedSecrets = await this.resolveSecretsForHarnessSelection(job.project_id);
 
     const selection = selectAvailableHarness({
-      explicit: attempt.harness ?? job.harness ?? undefined,
-      projectPreference: manifestDefaults?.harness_preference as string[] | undefined,
+      explicit,
+      projectPreference,
       systemPreference,
       env: resolvedSecrets,
     });
+    if (selection.source === 'explicit') {
+      await this.checkExplicitHarnessCredential(job, selection.harness, resolvedSecrets);
+    }
 
     const harnessSpec = selection.harness;
     this.logger.log(
@@ -2081,6 +2100,74 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     }).catch(err => this.logger.warn(`Failed to log routing decision: ${err}`));
 
     return { harnessSpec, profileHash, profileSource };
+  }
+
+  /**
+   * Under the project's `strict` profile, refuse to dispatch; under `audit`,
+   * record and carry on. Called only when the job breaks the rule.
+   */
+  private async enforceHarnessRule(
+    job: Job,
+    rule: string,
+    detail: Record<string, string>,
+    refusal: string,
+  ): Promise<void> {
+    const actorUserId = hasUserActor(job.actor_user_id) ? job.actor_user_id : null;
+    const profile = await decideSecurityRule(this.db, rule, {
+      projectId: job.project_id,
+      governing: 'project',
+      actorType: actorUserId ? 'user' : 'none',
+      actorId: actorUserId ?? 'none',
+      detail: { job_id: job.id, ...detail },
+    });
+    if (profile === 'strict') {
+      throw new Error(`${refusal} (rule ${rule})`);
+    }
+  }
+
+  /** A job that names a harness profile needs that profile to exist and be readable. */
+  private async checkNamedHarnessProfile(job: Job): Promise<void> {
+    const name = job.harness_profile;
+    const source = (job as { harness_profile_source?: string | null }).harness_profile_source ?? null;
+    // An inline bundle chose the harness; the agent's named profile was not used.
+    if (!name || source === 'inline_override' || source === 'workflow_template') return;
+    const lookup = await findHarnessProfile(
+      { agentConfigs: agentConfigQueries(this.db), manifests: projectManifestQueries(this.db) },
+      job.project_id,
+      name,
+    );
+    if (lookup.status === 'found') return;
+    await this.enforceHarnessRule(
+      job,
+      'harness.missing_profile',
+      { profile: name, status: lookup.status },
+      lookup.status === 'missing'
+        ? `harness profile "${name}" is not declared in x-eve.agents.profiles`
+        : `harness profile "${name}" could not be read: ${lookup.message}`,
+    );
+  }
+
+  /**
+   * An explicit harness (named on the job or chosen by its profile) needs a
+   * credential. The job actor's own secrets count, as they reach the job.
+   */
+  private async checkExplicitHarnessCredential(
+    job: Job,
+    harness: HarnessName,
+    projectSecrets: Record<string, string>,
+  ): Promise<void> {
+    if (getHarnessAuthStatus(harness, projectSecrets).available) return;
+    const userId = secretsUserIdForJob(job);
+    if (userId) {
+      const withUser = await this.resolveSecretsForHarnessSelection(job.project_id, userId);
+      if (getHarnessAuthStatus(harness, withUser).available) return;
+    }
+    await this.enforceHarnessRule(
+      job,
+      'harness.missing_credential',
+      { harness },
+      `harness ${harness} has no credential: set its provider key as a project or org secret`,
+    );
   }
 
   /**

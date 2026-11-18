@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import {
   projectQueries,
@@ -26,8 +26,13 @@ import {
   getHarnessCapability,
   isReservedAgentAlias,
   isValidPermission,
+  readDeclaredProfiles,
+  findUndeclaredHarnessNames,
+  describeHarnessNameGaps,
+  type HarnessNameGap,
 } from '@eve/shared';
 import * as yaml from 'yaml';
+import { SecurityService } from '../security/security.service.js';
 
 @Injectable()
 export class AgentsConfigService {
@@ -39,7 +44,10 @@ export class AgentsConfigService {
   private teams: ReturnType<typeof teamQueries>;
   private teamMembers: ReturnType<typeof teamMemberQueries>;
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    @Optional() private readonly security?: SecurityService,
+  ) {
     this.projects = projectQueries(db);
     this.orgs = orgQueries(db);
     this.manifests = projectManifestQueries(db);
@@ -205,6 +213,7 @@ export class AgentsConfigService {
     }
 
     await this.validateAgentAccessAgainstManifest(projectId, agentEntries);
+    await this.checkHarnessNames(projectId, agentEntries, data.x_eve_yaml);
 
     // Validate agent-declared permissions against the permission catalog
     for (const [agentId, agent] of Object.entries(agentEntries)) {
@@ -650,6 +659,63 @@ export class AgentsConfigService {
 
   private toTarget(value: string): string {
     return value.includes(':') ? value : `agent:${value}`;
+  }
+
+  /**
+   * Agents' harness profiles, and the agents and profiles workflow steps
+   * name, must be declared. Profiles are read as dispatch reads them: this
+   * sync's x-eve when it declares any, else the synced manifest's. The
+   * project's `strict` profile refuses the sync; `audit` records it.
+   */
+  private async checkHarnessNames(
+    projectId: string,
+    agents: Record<string, { harness_profile?: unknown }>,
+    xEveYaml: string | undefined,
+  ): Promise<void> {
+    if (!this.security) return;
+    const manifest = await this.manifests.findLatestByProject(projectId);
+    const declared = readDeclaredProfiles({ xEveYaml, manifestYaml: manifest?.manifest_yaml });
+    let workflows: Record<string, unknown> | undefined;
+    try {
+      const parsed = manifest ? yaml.parse(manifest.manifest_yaml) as Record<string, unknown> | null : null;
+      workflows = parsed?.workflows as Record<string, unknown> | undefined;
+    } catch {
+      workflows = undefined;
+    }
+    const gaps = findUndeclaredHarnessNames({
+      workflows,
+      agents,
+      profiles: new Set(Object.keys(declared.profiles ?? {})),
+      agentIds: new Set(Object.keys(agents)),
+    });
+
+    const profileGaps = gaps.filter((gap) => gap.kind === 'profile');
+    if (profileGaps.length > 0 || declared.error) {
+      const message = [declared.error ? `harness profiles could not be read: ${declared.error}` : null,
+        profileGaps.length > 0 ? describeHarnessNameGaps(profileGaps) : null].filter(Boolean).join('; ');
+      await this.gateHarnessNames('harness.missing_profile', projectId, profileGaps, message, declared.error);
+    }
+    const agentGaps = gaps.filter((gap) => gap.kind === 'agent');
+    if (agentGaps.length > 0) {
+      await this.gateHarnessNames('harness.missing_agent', projectId, agentGaps, describeHarnessNameGaps(agentGaps));
+    }
+  }
+
+  private async gateHarnessNames(
+    rule: string,
+    projectId: string,
+    gaps: HarnessNameGap[],
+    message: string,
+    readError?: string,
+  ): Promise<void> {
+    await this.security?.gate(rule, {
+      projectId,
+      governing: 'project',
+      detail: {
+        names: [...new Set(gaps.map((gap) => gap.name))].sort().join(','),
+        ...(readError ? { status: 'error' } : {}),
+      },
+    }, `Agents config refused: ${message}`);
   }
 
   private async validateAgentAccessAgainstManifest(

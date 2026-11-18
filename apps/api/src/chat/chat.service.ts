@@ -18,6 +18,7 @@ import {
   generateEventId,
   loadConfig,
   resolveHarnessProfile as sharedResolveHarnessProfile,
+  ChatHintsSchema,
   type ChatDispatchRequest,
   type ChatDispatchResponse,
   type ChatHints,
@@ -1399,9 +1400,22 @@ export class ChatService {
     }
     const metadataHints = data.metadata?.hints as Partial<ChatHints> | undefined;
     if (!metadataHints || typeof metadataHints !== 'object') return {};
+    // Legacy hints arrive inside free-form metadata, so they get the same
+    // validation as the typed field.
+    const parsed = ChatHintsSchema.safeParse({
+      ...(metadataHints.harness_profile_override !== undefined
+        ? { harness_profile_override: metadataHints.harness_profile_override }
+        : {}),
+      ...(metadataHints.env_overrides !== undefined ? { env_overrides: metadataHints.env_overrides } : {}),
+    });
+    if (!parsed.success) {
+      throw new BadRequestException(
+        `Invalid metadata.hints: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
+      );
+    }
     return {
-      harness_profile_override: metadataHints.harness_profile_override as InlineProfileBundle | undefined,
-      env_overrides: metadataHints.env_overrides as EnvOverrides | undefined,
+      harness_profile_override: parsed.data.harness_profile_override,
+      env_overrides: parsed.data.env_overrides,
     };
   }
 

@@ -42,9 +42,10 @@ export const InlineProfileBundleSchema = z
 
 export type InlineProfileBundle = z.infer<typeof InlineProfileBundleSchema>;
 
-// Env variables Eve reserves for its own runtime control — callers must not shadow.
+// Env variables Eve reserves — callers must not shadow. Names match case-insensitively.
 const RESERVED_ENV_PREFIXES = ['EVE_'];
 const RESERVED_ENV_KEYS = new Set([
+  // Eve's own runtime control.
   'PATH',
   'HOME',
   'SHELL',
@@ -54,17 +55,80 @@ const RESERVED_ENV_KEYS = new Set([
   'CLAUDE_CONFIG_DIR',
   'CODEX_HOME',
   'PI_HOME',
+  // Model provider credentials: a job uses the ones its secrets provide.
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'CODEX_AUTH_JSON',
+  'CODEX_OAUTH_ACCESS_TOKEN',
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'Z_AI_API_KEY',
+  'ZAI_API_KEY',
 ]);
+
+// Where model traffic goes and which TLS it trusts. Any name ending _BASE_URL counts.
+const MODEL_ROUTING_ENV_KEYS = new Set([
+  'OPENAI_API_BASE',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+]);
+const MODEL_ROUTING_ENV_SUFFIX = '_BASE_URL';
+
+// Names that make a process load code before it starts.
+const CODE_LOADING_ENV_KEYS = new Set(['NODE_OPTIONS', 'LD_PRELOAD', 'BASH_ENV']);
 
 // Only ${secret.KEY} placeholders are permitted inside env override values.
 // Match any ${...} and verify it starts with `secret.` with an uppercase identifier.
 const EXPR_SCAN = /\$\{([^}]*)\}/g;
 const SECRET_EXPR = /^secret\.[A-Z_][A-Z0-9_]*$/;
+const WHOLE_SECRET_REF = /^\$\{secret\.([A-Z_][A-Z0-9_]*)\}$/;
+
+/** Whether a name sets where model traffic goes or which TLS it trusts. */
+export function isModelRoutingEnvKey(key: string): boolean {
+  const name = key.toUpperCase();
+  return MODEL_ROUTING_ENV_KEYS.has(name) || name.endsWith(MODEL_ROUTING_ENV_SUFFIX);
+}
+
+/**
+ * Whether a user's own secret by this name stays out of a job under the
+ * `strict` profile: the routing names, and names that load code.
+ */
+export function isUserSecretWithheldKey(key: string): boolean {
+  return isModelRoutingEnvKey(key) || CODE_LOADING_ENV_KEYS.has(key.toUpperCase());
+}
+
+function isEveOwnedEnvKey(name: string): boolean {
+  return RESERVED_ENV_KEYS.has(name) || RESERVED_ENV_PREFIXES.some(prefix => name.startsWith(prefix));
+}
 
 export function isReservedEnvKey(key: string): boolean {
-  if (RESERVED_ENV_KEYS.has(key)) return true;
-  return RESERVED_ENV_PREFIXES.some(prefix => key.startsWith(prefix));
+  const name = key.toUpperCase();
+  return isEveOwnedEnvKey(name) || isModelRoutingEnvKey(name);
 }
+
+/**
+ * The secret a routing override may name. A routing name is allowed as an
+ * override only when its whole value is a single `${secret.KEY}`; at run time
+ * that secret must come from the project or its org. Null for any other name
+ * or value.
+ */
+export function routingOverrideSecretRef(key: string, value: string): string | null {
+  const name = key.toUpperCase();
+  if (!isModelRoutingEnvKey(name) || isEveOwnedEnvKey(name)) return null;
+  return WHOLE_SECRET_REF.exec(value)?.[1] ?? null;
+}
+
+/** Secret scopes a routing override may draw from. */
+export const ROUTING_OVERRIDE_SECRET_SCOPES: ReadonlySet<string> = new Set(['project', 'org']);
 
 const EnvOverridesShape = z.record(
   z.string().regex(/^[A-Z_][A-Z0-9_]*$/, 'env key must be UPPER_SNAKE_CASE'),
@@ -76,11 +140,13 @@ export const EnvOverridesSchema = EnvOverridesShape.superRefine((raw, ctx) => {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'env_overrides exceeds 4KB' });
   }
   for (const [key, value] of Object.entries(raw)) {
-    if (isReservedEnvKey(key)) {
+    if (isReservedEnvKey(key) && !routingOverrideSecretRef(key, value)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
-        message: `env key ${key} is reserved by Eve and cannot be overridden`,
+        message: isModelRoutingEnvKey(key)
+          ? `env key ${key} is reserved by Eve: set it to a single \${secret.KEY} held by the project or org`
+          : `env key ${key} is reserved by Eve and cannot be overridden`,
       });
       continue;
     }

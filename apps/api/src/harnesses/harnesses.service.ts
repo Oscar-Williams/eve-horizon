@@ -7,6 +7,8 @@ import {
   listHarnessVariants,
   resolveHarnessName,
   extractSecretRefs,
+  routingOverrideSecretRef,
+  ROUTING_OVERRIDE_SECRET_SCOPES,
   type EnvOverrides,
   type HarnessProfileValidateRequest,
   type HarnessProfileValidateResponse,
@@ -115,9 +117,23 @@ export class HarnessesService {
       };
     });
 
+    // A routing name takes its value only from a project or org secret; run
+    // time strips it otherwise.
+    let routingOk = true;
+    for (const [envKey, value] of Object.entries(envOverrides ?? {})) {
+      const ref = routingOverrideSecretRef(envKey, value);
+      const scope = ref ? resolvedScope.get(ref) : undefined;
+      if (!ref || !scope || ROUTING_OVERRIDE_SECRET_SCOPES.has(scope)) continue;
+      routingOk = false;
+      warnings.push({
+        code: 'env_overrides.secret_scope',
+        message: `${envKey} names secret ${ref}, which resolves from the ${scope} scope; it must be a project or org secret.`,
+      });
+    }
+
     const authOk = override ? harnessReport.auth?.available === true : true;
     const harnessKnown = override ? canonicalName !== null : true;
-    const envOk = envReports.every((r) => r.status === 'resolved');
+    const envOk = envReports.every((r) => r.status === 'resolved') && routingOk;
 
     return {
       ok: harnessKnown && authOk && envOk,

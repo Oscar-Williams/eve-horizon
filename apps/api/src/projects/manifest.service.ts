@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException, Optional } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import {
   projectQueries,
@@ -10,6 +10,7 @@ import {
   appLinkGrantQueries,
   appLinkSubscriptionQueries,
   membershipQueries,
+  agentConfigQueries,
   type Project,
   type ProjectAppLinkGrant,
 } from '@eve/db';
@@ -51,6 +52,9 @@ import {
   validateWorkflowTemplates,
   assertNoUnresolvedManifestReferences,
   getManifestAppLinks,
+  readDeclaredProfiles,
+  findUndeclaredHarnessNames,
+  describeHarnessNameGaps,
   type AppLinks,
   type Service,
 } from '@eve/shared';
@@ -60,6 +64,7 @@ import { SecretsService } from '../secrets/secrets.service.js';
 import { ensureManifestEnvironment } from '../environments/manifest-environment.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { assertMayDeclareAuthOrgReferences } from './app-auth-org-references.js';
+import { SecurityService } from '../security/security.service.js';
 
 type PreparedAppLinkGrant = {
   producer_project_id: string;
@@ -107,10 +112,12 @@ export class ManifestService {
   private appLinkGrants: ReturnType<typeof appLinkGrantQueries>;
   private appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
   private memberships: ReturnType<typeof membershipQueries>;
+  private agentConfigs: ReturnType<typeof agentConfigQueries>;
 
   constructor(
     @Inject('DB') private readonly db: Db,
     private readonly secretsService: SecretsService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.projects = projectQueries(db);
     this.orgs = orgQueries(db);
@@ -121,6 +128,7 @@ export class ManifestService {
     this.appLinkGrants = appLinkGrantQueries(db);
     this.appLinkSubscriptions = appLinkSubscriptionQueries(db);
     this.memberships = membershipQueries(db);
+    this.agentConfigs = agentConfigQueries(db);
   }
 
   async syncManifest(
@@ -309,6 +317,11 @@ export class ManifestService {
       authEnabled: loadConfig().EVE_AUTH_ENABLED,
     });
 
+    const profileWarnings = await this.checkWorkflowHarnessProfiles(projectId, validatedManifest, caller);
+    if (profileWarnings.length > 0) {
+      warnings = [...(warnings ?? []), ...profileWarnings];
+    }
+
     // Hash the manifest content
     const manifestHash = crypto
       .createHash('sha256')
@@ -374,6 +387,42 @@ export class ManifestService {
     if (secretValidation) response.secret_validation = secretValidation;
     if (warnings) response.warnings = warnings;
     return response;
+  }
+
+  /**
+   * Workflow steps that name a harness profile need it declared, in this
+   * manifest or in the synced agents config. Agent names are checked at the
+   * agents sync, which runs after this one. The project's `strict` profile
+   * refuses the sync; `audit` records it and returns a warning.
+   */
+  private async checkWorkflowHarnessProfiles(
+    projectId: string,
+    manifest: Manifest,
+    caller?: AuthUser,
+  ): Promise<string[]> {
+    const workflows = manifest.workflows as Record<string, unknown> | undefined;
+    if (!workflows || !this.security) return [];
+    const manifestProfiles = getManifestAgents(manifest)?.profiles;
+    const declared = new Set(
+      manifestProfiles && typeof manifestProfiles === 'object' ? Object.keys(manifestProfiles) : [],
+    );
+    let gaps = findUndeclaredHarnessNames({ workflows, profiles: declared });
+    if (gaps.length > 0) {
+      const agentConfig = await this.agentConfigs.findLatestByProject(projectId);
+      for (const name of Object.keys(readDeclaredProfiles({ xEveYaml: agentConfig?.x_eve_yaml }).profiles ?? {})) {
+        declared.add(name);
+      }
+      gaps = findUndeclaredHarnessNames({ workflows, profiles: declared });
+    }
+    if (gaps.length === 0) return [];
+    const message = describeHarnessNameGaps(gaps);
+    await this.security.gate('harness.missing_profile', {
+      projectId,
+      governing: 'project',
+      actor: caller,
+      detail: { profiles: [...new Set(gaps.map((gap) => gap.name))].sort().join(',') },
+    }, `Manifest refused: ${message}`);
+    return [message];
   }
 
   async getLatestManifest(projectId: string): Promise<ManifestResponse | null> {
