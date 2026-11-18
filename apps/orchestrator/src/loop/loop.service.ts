@@ -1078,7 +1078,11 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
    * Evaluate a workflow step's condition (if any) against the referenced step's result.
    * Returns null if the job has no condition (i.e., unconditional execution).
    * Returns { shouldRun: true } if the condition evaluates to true.
-   * Returns { shouldRun: false, reason } if the condition evaluates to false.
+   * Returns { shouldRun: false, reason } if the condition evaluates to false,
+   * and also whenever it cannot be evaluated: the condition is evaluated only
+   * against a source step of the same run that is done with a completed latest
+   * attempt. A step is never left waiting on its condition, since it would
+   * keep its place in the ready scan.
    */
   private async evaluateStepCondition(
     jobs: ReturnType<typeof jobQueries>,
@@ -1093,13 +1097,19 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
+    const notMet = (why: string) => {
+      const reason = `Condition "${condition}" not met: ${why}`;
+      this.logger.warn(`[workflow] Step "${job.step_name}" (${job.id}): ${reason} — skipping`);
+      return { shouldRun: false, reason };
+    };
+
     // Parse the condition: step_name.status == 'value' or step_name.status != 'value'
+    // (the format workflow sync accepts).
     const match = condition.match(
       /^(\w[\w-]*)\s*\.\s*status\s*(==|!=)\s*['"]([^'"]*)['"]\s*$/,
     );
     if (!match) {
-      this.logger.warn(`[workflow] Job ${job.id} has unparseable condition "${condition}" — running unconditionally`);
-      return null;
+      return notMet('it cannot be read');
     }
 
     const [, refStepName, operator, expectedValue] = match;
@@ -1113,31 +1123,30 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       dependencies.find((dep) => dep.step_name === refStepName)
       ?? await jobs.findSiblingByStepName(job.parent_id, refStepName);
     if (!siblingJob) {
-      this.logger.warn(`[workflow] Job ${job.id} condition references step "${refStepName}" but sibling not found — running unconditionally`);
-      return null;
+      return notMet(`step "${refStepName}" was not found in this run`);
     }
 
     // A step that now runs as someone other than this step's actor or the
     // run's does not decide whether this step runs.
     const run = await jobs.findById(job.parent_id);
     if (!mayFeedStep(job, run, siblingJob)) {
-      const reason = `Condition "${condition}" not met: step "${refStepName}" (${siblingJob.id}) runs as someone other than this step's actor or the run's`;
-      this.logger.warn(`[workflow] Step "${job.step_name}" (${job.id}): ${reason} — skipping`);
-      return { shouldRun: false, reason };
+      return notMet(`step "${refStepName}" (${siblingJob.id}) runs as someone other than this step's actor or the run's`);
     }
 
-    // The referenced step must be done for us to evaluate the condition
-    if (siblingJob.phase !== 'done' && siblingJob.phase !== 'cancelled') {
-      // Dependency not yet complete — this shouldn't happen since depends_on
-      // gates readiness, but guard against it
-      this.logger.warn(`[workflow] Job ${job.id} condition step "${refStepName}" is still in phase "${siblingJob.phase}" — deferring`);
-      return null;
+    // Only a source step that finished its work decides: done, with a
+    // completed latest attempt. A cancelled step, or one closed as done
+    // without completing an attempt, reports nothing.
+    if (siblingJob.phase !== 'done') {
+      return notMet(`step "${refStepName}" (${siblingJob.id}) is ${siblingJob.phase}, not done`);
+    }
+    const latestAttempt = await jobs.getLatestAttempt(siblingJob.id);
+    if (latestAttempt?.status !== 'succeeded') {
+      return notMet(`step "${refStepName}" (${siblingJob.id}) has no completed attempt`);
     }
 
     // Extract the status from the referenced step's latest attempt result_json.eve.status
     let actualStatus: string | undefined;
-    const latestAttempt = await jobs.getLatestAttempt(siblingJob.id);
-    if (latestAttempt?.result_json) {
+    if (latestAttempt.result_json) {
       // result_json may be a parsed object OR a JSON string — handle both
       let parsed = latestAttempt.result_json as Record<string, unknown>;
       if (typeof parsed === 'string') {
