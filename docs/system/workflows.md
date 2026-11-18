@@ -128,15 +128,31 @@ started count as one actor, whether recorded with no actor or as `system`). A
 condition that names a step it may not read this way is not met, and the step
 is skipped with a reason saying so.
 
+A condition is evaluated only when the step it names is `done` and that step's
+latest attempt completed (`succeeded`). In every other case the condition is not
+met and the step is skipped (`close_reason: condition_not_met`), never run and
+never left waiting: the named step was cancelled or failed, was closed as done
+without completing an attempt (for example skipped by its own condition), has
+not finished, cannot be found in the run, or the condition cannot be read.
+
 The root and compiled steps of a run keep the actor they were created with:
 only that actor can change what they run or their attachments, and anyone else
 is refused with 403 (see "Job Actor on Update" in `job-api.md`). To run a step
 again as yourself, use workflow retry; a retrier's replacement steps run as the
 retrier and still read the run's original steps, which run as the invoker.
 
-A dependency added to a step later, for example with
-`POST /jobs/{job_id}/dependencies`, still gates when the step runs, but feeds
-it nothing unless it names a step that may feed it under these rules.
+A compiled step's dependencies come from the workflow definition: adding or
+removing one through `POST /jobs/{job_id}/dependencies` or
+`DELETE /jobs/{job_id}/dependencies/{related_job_id}` is refused with 409.
+
+Under the project's `strict` security profile (rule `jobs.run_step_change`, see
+`security-profiles.md`), a run's root and steps change only through the run:
+moving them to another phase (including done or cancelled), changing
+`review_required`, claim, release, submit, approve, reject, and changes to what
+they run are accepted only from the run's actor with their own user token, a job
+token of one of the run's compiled steps, or a project admin (`jobs:admin`).
+Anyone else gets 403; under `audit` the change is allowed and recorded. Under
+`strict`, cancelling a step also cancels the steps after it, as a failure does.
 
 ### Job Tree
 

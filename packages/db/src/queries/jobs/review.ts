@@ -329,9 +329,16 @@ export function jobReviewQueries(db: Db) {
      *
      * @param jobId - Job ID
      * @param reason - Optional cancellation reason
+     * @param options.cascade - Also cancel the jobs that depend on this one,
+     *   transitively, as a failure does
      * @returns Updated job or null if not found
      */
-    async cancelJob(this: JobLifecycleContext, jobId: string, reason?: string): Promise<Job | null> {
+    async cancelJob(
+      this: JobLifecycleContext,
+      jobId: string,
+      reason?: string,
+      options: { cascade?: boolean } = {},
+    ): Promise<Job | null> {
       const job = await this.findById(jobId);
       if (!job) return null;
       if (job.phase === 'cancelled' || job.phase === 'done') return job;
@@ -369,6 +376,10 @@ export function jobReviewQueries(db: Db) {
         SET blocked_on_gates = '{}', updated_at = NOW()
         WHERE id = ${jobId}
       `;
+
+      if (updatedJob && options.cascade) {
+        await cancelDownstream(db, jobId, `Upstream job ${jobId} cancelled`, 'cancelled');
+      }
 
       // Cancel backlog children (staged dispatch members that were never promoted)
       if (updatedJob) {
@@ -444,50 +455,10 @@ export function jobReviewQueries(db: Db) {
         WHERE id = ${jobId}
       `;
 
-      // Cascade-cancel downstream jobs that transitively depend on this one.
-      // Uses a recursive CTE to walk the dependency graph in a single query,
-      // preventing orphaned jobs from accumulating in 'ready' phase.
+      // Cascade-cancel downstream jobs that transitively depend on this one,
+      // so they are never left orphaned in 'ready' phase.
       if (updatedJob) {
-        const cascadeReason = `Upstream job ${jobId} failed`;
-        const cancelled = await db<{ id: string }[]>`
-          WITH RECURSIVE downstream AS (
-            SELECT r.job_id AS id
-            FROM job_relations r
-            WHERE r.related_job_id = ${jobId}
-              AND r.relation_type IN ('blocks', 'conditional_blocks', 'waits_for')
-            UNION
-            SELECT r.job_id AS id
-            FROM job_relations r
-            JOIN downstream d ON r.related_job_id = d.id
-            WHERE r.relation_type IN ('blocks', 'conditional_blocks', 'waits_for')
-          )
-          UPDATE jobs
-          SET
-            phase = 'cancelled',
-            closed_at = NOW(),
-            close_reason = ${cascadeReason},
-            failure_disposition = 'upstream_failed',
-            updated_at = NOW()
-          WHERE id IN (SELECT id FROM downstream)
-            AND phase NOT IN ('done', 'cancelled')
-          RETURNING id
-        `;
-
-        if (cancelled.length > 0) {
-          const cancelledIds = cancelled.map((row) => row.id);
-          await db`DELETE FROM job_gates WHERE job_id = ANY(${cancelledIds})`;
-          await db`
-            UPDATE jobs
-            SET blocked_on_gates = '{}', updated_at = NOW()
-            WHERE id = ANY(${cancelledIds})
-          `;
-        }
-
-        if (cancelled.length > 0) {
-          console.log(
-            `Cascade-cancelled ${cancelled.length} downstream job(s) for ${jobId}: ${cancelled.map(j => j.id).join(', ')}`,
-          );
-        }
+        await cancelDownstream(db, jobId, `Upstream job ${jobId} failed`, 'upstream_failed');
       }
 
       // Cancel backlog children (staged dispatch members that were never promoted)
@@ -563,4 +534,49 @@ export function jobReviewQueries(db: Db) {
       `;
     },
   };
+}
+
+/**
+ * Cancel every open job that depends on `jobId`, transitively, in one
+ * recursive query, and clear their gate locks.
+ */
+async function cancelDownstream(
+  db: Db,
+  jobId: string,
+  reason: string,
+  disposition: 'cancelled' | 'upstream_failed',
+): Promise<void> {
+  const cancelled = await db<{ id: string }[]>`
+    WITH RECURSIVE downstream AS (
+      SELECT r.job_id AS id
+      FROM job_relations r
+      WHERE r.related_job_id = ${jobId}
+        AND r.relation_type IN ('blocks', 'conditional_blocks', 'waits_for')
+      UNION
+      SELECT r.job_id AS id
+      FROM job_relations r
+      JOIN downstream d ON r.related_job_id = d.id
+      WHERE r.relation_type IN ('blocks', 'conditional_blocks', 'waits_for')
+    )
+    UPDATE jobs
+    SET
+      phase = 'cancelled',
+      closed_at = NOW(),
+      close_reason = ${reason},
+      failure_disposition = ${disposition},
+      updated_at = NOW()
+    WHERE id IN (SELECT id FROM downstream)
+      AND phase NOT IN ('done', 'cancelled')
+    RETURNING id
+  `;
+  if (cancelled.length === 0) return;
+
+  const cancelledIds = cancelled.map((row) => row.id);
+  await db`DELETE FROM job_gates WHERE job_id = ANY(${cancelledIds})`;
+  await db`
+    UPDATE jobs
+    SET blocked_on_gates = '{}', updated_at = NOW()
+    WHERE id = ANY(${cancelledIds})
+  `;
+  console.log(`Cascade-cancelled ${cancelled.length} downstream job(s) for ${jobId}: ${cancelledIds.join(', ')}`);
 }

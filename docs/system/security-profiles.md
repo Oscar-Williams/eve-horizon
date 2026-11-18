@@ -59,4 +59,4 @@ changes. Rules are added release by release.
 
 | Rule | Governs | Under `strict` |
 |---|---|---|
-| (none yet) | | |
+| `jobs.run_step_change` | Project | The jobs of a workflow or pipeline run (root and compiled steps) change only through the run: changes to what they run, phase moves (including done and cancelled), `review_required`, claim, release, submit, approve and reject come only from the run's actor with their own user token, a job token of one of the run's compiled steps, or a project admin (`jobs:admin`). Cancelling a compiled step also cancels the steps after it. |

@@ -1,0 +1,39 @@
+import type { Job } from '@eve/db';
+import type { AuthUser } from '../auth/auth.types.js';
+import { describeActor } from '../security/security.service.js';
+
+/** Security rule: a run's jobs change only through their run (governed by the project). */
+export const RUN_STEP_CHANGE_RULE = 'jobs.run_step_change';
+
+/**
+ * The workflow or pipeline run a job belongs to, read from its record, never
+ * from its id. `key` names the run; `rootId` is the workflow run's root job
+ * (null for a pipeline run, which has none).
+ */
+export interface RunRef {
+  key: string;
+  rootId: string | null;
+}
+
+/**
+ * The run of a job from its record: a compiled step (its `step_name`, which
+ * only the workflow and pipeline expanders set) belongs to its pipeline run or
+ * to the workflow run whose root is its parent; a job with compiled steps
+ * under it (`isRoot`) is that workflow run's root. Any other job is in no run.
+ */
+export function runOfRecord(
+  job: Pick<Job, 'id' | 'parent_id' | 'run_id' | 'step_name'>,
+  isRoot: boolean,
+): RunRef | null {
+  if (job.step_name) {
+    if (job.run_id) return { key: `pipeline:${job.run_id}`, rootId: null };
+    if (job.parent_id) return { key: `workflow:${job.parent_id}`, rootId: job.parent_id };
+    return { key: `job:${job.id}`, rootId: null };
+  }
+  return isRoot ? { key: `workflow:${job.id}`, rootId: job.id } : null;
+}
+
+/** True for a person's own token: not a job, service, service-principal or app-link token. */
+export function isUserToken(caller: AuthUser): boolean {
+  return describeActor(caller)[0] === 'user';
+}

@@ -347,6 +347,17 @@ are the same actor. An edit by such a token to a job no user started keeps the
 job as it is, and work no user started that becomes the actor of a person's job
 is recorded as no actor, never as `system`.
 
+Under the project's `strict` security profile (rule `jobs.run_step_change`),
+the jobs of a run change only through the run. Changes to what they run, moves
+to another phase (including `done` and `cancelled`), `review_required` changes,
+claim, release, submit, approve and reject are accepted only from the run's
+actor with their own user token (whoever started the run, or the retry the step
+belongs to), a job token of one of the run's compiled steps, or a project admin
+(`jobs:admin`). Anyone else gets 403, including the actor's agents outside the
+run and a no-user token of another run. Under `audit` the change is allowed and
+recorded as a finding. Under `strict`, cancelling a compiled step also cancels
+the jobs that depend on it, transitively, as a failure does.
+
 The body is validated against `UpdateJobRequest` (for example `title` is at
 most 500 characters and `priority` is 0-4); an invalid body is refused with 400.
 
@@ -383,6 +394,19 @@ Jobs are linked only within one project: a `parent_id` on create, or a
 same project (403 otherwise, 404 if it does not exist). Dependencies, context
 (parent, siblings, children) and the tree only ever list jobs from the job's own
 project.
+
+A job created with `parent_id` joins its parent's tree (its coordination
+thread, its run, and the wake-ups of a parent waiting on its children), so only
+callers the parent already belongs to may create one: the parent's actor (with
+their own token or their agents' job tokens); for a job token of work no user
+started, the parent job itself or a job of the parent's run (its root or one of
+its compiled steps, judged from the job records); or a project admin
+(`jobs:admin`). Anyone else gets 403.
+
+The dependencies of a compiled workflow or pipeline step (`step_name` set) come
+from its definition: adding or removing one through the dependency routes is
+refused with 409. Edges between other jobs, including a job that depends on a
+run step, are unaffected.
 
 Workflow invocation creates every step in `backlog`, wires all blocking
 relations, then releases the complete graph to `ready`. A wiring failure does

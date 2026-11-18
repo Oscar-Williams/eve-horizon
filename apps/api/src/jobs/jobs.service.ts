@@ -11,7 +11,10 @@ import { JobReceiptsService } from './job-receipts.service.js';
 import { JobBatchService } from './job-batch.service.js';
 import { assertCanGrantJobPermissions, assertCanUseJobScope, workStartOptions, type WorkStartOptions } from '../auth/token-scope.js';
 import { AccessService } from '../auth/access.service.js';
+import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import { SecurityService } from '../security/security.service.js';
+import { RUN_STEP_CHANGE_RULE, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
 // Request/Response Types (inline - the new model)
@@ -251,6 +254,14 @@ function changesWhatRuns(job: Job, updates: UpdateJobRequest): boolean {
   );
 }
 
+/** True when an update moves the job to another phase or changes whether it needs review. */
+function changesProgress(job: Job, updates: UpdateJobRequest): boolean {
+  return Boolean(
+    (updates.phase && updates.phase !== job.phase)
+    || (updates.review_required !== undefined && updates.review_required !== job.review_required),
+  );
+}
+
 @Injectable()
 export class JobsService {
   private jobs: ReturnType<typeof jobQueries>;
@@ -272,6 +283,8 @@ export class JobsService {
     private readonly jobReceiptsService: JobReceiptsService,
     private readonly jobBatchService: JobBatchService,
     private readonly accessService: AccessService,
+    @Inject(SecurityService) private readonly security?: SecurityService,
+    @Inject(RbacService) private readonly rbac?: RbacService,
   ) {
     this.jobs = jobQueries(db);
     this.projects = projectQueries(db);
@@ -596,6 +609,15 @@ export class JobsService {
   // --------------------------------------------------------------------------
   // Project-scoped operations
   // --------------------------------------------------------------------------
+
+  /**
+   * Refuse (403) a caller who may not add a job under `parentId` in the
+   * project (see assertMayAddUnder). The jobs route calls this before create.
+   */
+  async assertMayCreateUnder(projectId: string, parentId: string, caller: AuthUser): Promise<void> {
+    const parent = await this.requireJobInProject(parentId, await this.resolveProject(projectId));
+    await this.assertMayAddUnder(parent, caller);
+  }
 
   /**
    * Create a new job in a project
@@ -976,10 +998,14 @@ export class JobsService {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
 
-    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates);
+    const cascade = updates.phase === 'cancelled' && await this.cancelCascades(currentJob);
+    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade });
     if (caller && changesWhatRuns(currentJob, updates)) {
       await this.changeWhatJobRuns(currentJob, caller, apply);
     } else {
+      if (changesProgress(currentJob, updates)) {
+        await this.guardRunJob(currentJob, caller, 'change the phase or review of');
+      }
       // One transaction: the phase and fields change together or not at all.
       await this.db.begin((rawTx) => apply(rawTx as unknown as Db));
     }
@@ -996,8 +1022,9 @@ export class JobsService {
   /**
    * Applies `change` to what `job` runs, on behalf of `caller`, in one
    * transaction; used by PATCH and by attachment changes. On the jobs of a
-   * workflow or pipeline run only the actor may do this (403 otherwise). On
-   * other jobs the caller becomes the actor when they are not (see
+   * workflow or pipeline run only the actor may do this (403 otherwise), and
+   * the project's security profile may hold it to the run too (guardRunJob).
+   * On other jobs the caller becomes the actor when they are not (see
    * actorForChange: 400 if they could not grant the job's permissions or hold
    * its token scope). The row is locked while its actor is still the one
    * judged (409 otherwise), and `change` runs in the same transaction, so
@@ -1010,6 +1037,7 @@ export class JobsService {
         'retry the workflow (eve workflow retry) or start a new run instead',
       );
     }
+    await this.guardRunJob(job, caller, 'change what runs in');
     const nextActor = await this.actorForChange(job, caller);
     const result = await this.db.begin(async (rawTx) => {
       const tx = rawTx as unknown as Db;
@@ -1033,23 +1061,142 @@ export class JobsService {
    * their own actors or the run's, so these actors never move to someone else.
    */
   private async isRunJob(job: Job): Promise<boolean> {
+    return (await this.runOf(job)) !== null;
+  }
+
+  /** The run a job belongs to, judged from its record (see runOfRecord). */
+  private async runOf(job: Job): Promise<RunRef | null> {
     if (job.step_name) {
-      return true;
+      return runOfRecord(job, false);
     }
     const [compiledChild] = await this.db<Array<{ id: string }>>`
       SELECT id FROM jobs WHERE parent_id = ${job.id} AND step_name IS NOT NULL LIMIT 1
     `;
-    return Boolean(compiledChild);
+    return runOfRecord(job, Boolean(compiledChild));
+  }
+
+  /**
+   * The run of the job a job token was minted for, when that job is in
+   * `projectId`. With `compiledStepsOnly`, only a compiled step's token
+   * counts, not the run root's.
+   */
+  private async callerRun(caller: AuthUser, projectId: string, compiledStepsOnly: boolean): Promise<RunRef | null> {
+    if (!caller.is_job_token || !caller.job_id) {
+      return null;
+    }
+    const own = await this.jobs.findById(caller.job_id);
+    if (!own || own.project_id !== projectId || (compiledStepsOnly && !own.step_name)) {
+      return null;
+    }
+    return this.runOf(own);
+  }
+
+  /** True for a system admin, or a caller holding jobs:admin in the project. */
+  private async holdsJobsAdmin(caller: AuthUser, projectId: string): Promise<boolean> {
+    if (caller.is_admin) {
+      return true;
+    }
+    return (await this.rbac!.resolveEffectivePermissions(caller, projectId)).has('jobs:admin');
+  }
+
+  /**
+   * A new job joins its parent's tree: the parent's coordination thread, the
+   * parent's run when it is in one, and the wake-ups of a parent waiting on
+   * its children. Only those the parent already belongs to may add it: the
+   * parent's actor; for a caller with no user, the parent job's own token or
+   * a job token of the parent's run (its root or a compiled step, judged from
+   * the job records); or a project admin (jobs:admin). 403 otherwise.
+   */
+  private async assertMayAddUnder(parent: Job, caller: AuthUser): Promise<void> {
+    if (hasUserActor(caller.user_id)) {
+      if (caller.user_id === parent.actor_user_id) {
+        return;
+      }
+    } else if (caller.is_job_token && caller.job_id) {
+      if (caller.job_id === parent.id) {
+        return;
+      }
+      const parentRun = await this.runOf(parent);
+      if (parentRun && parentRun.key === (await this.callerRun(caller, parent.project_id, false))?.key) {
+        return;
+      }
+    }
+    if (await this.holdsJobsAdmin(caller, parent.project_id)) {
+      return;
+    }
+    throw new ForbiddenException(
+      `Job ${parent.id} belongs to someone else: only its actor, a job of its own run or a project admin (jobs:admin) can add jobs under it`,
+    );
+  }
+
+  /**
+   * Holds a change to the jobs of a workflow or pipeline run to the run, under
+   * the project's security profile (rule jobs.run_step_change). The run
+   * accepts its actor with their own token (whoever started the run, or the
+   * retry the step belongs to), a job token of one of its compiled steps, and
+   * a project admin (jobs:admin). Anyone else is allowed under `legacy`,
+   * allowed and recorded under `audit`, and refused with 403 under `strict`.
+   * Jobs outside a run, and calls with no caller, are not held.
+   */
+  private async guardRunJob(job: Job, caller: AuthUser | undefined, change: string): Promise<void> {
+    if (!caller) {
+      return;
+    }
+    if (isUserToken(caller) && hasUserActor(caller.user_id) && caller.user_id === job.actor_user_id) {
+      return;
+    }
+    const run = await this.runOf(job);
+    if (!run || await this.mayChangeRun(run, job.project_id, caller)) {
+      return;
+    }
+    await this.security!.gate(
+      RUN_STEP_CHANGE_RULE,
+      { governing: 'project', projectId: job.project_id, actor: caller, detail: { job_id: job.id, change } },
+      `Job ${job.id} is part of a workflow or pipeline run: only the run's actor, a step of the same run or a project admin (jobs:admin) can ${change} it`,
+    );
+  }
+
+  private async mayChangeRun(run: RunRef, projectId: string, caller: AuthUser): Promise<boolean> {
+    if (isUserToken(caller) && hasUserActor(caller.user_id) && run.rootId) {
+      const root = await this.jobs.findById(run.rootId);
+      if (root && caller.user_id === root.actor_user_id) {
+        return true;
+      }
+    }
+    if ((await this.callerRun(caller, projectId, true))?.key === run.key) {
+      return true;
+    }
+    return this.holdsJobsAdmin(caller, projectId);
+  }
+
+  /**
+   * Under the project's `strict` profile, cancelling a compiled run step also
+   * cancels the steps after it, as a failure does.
+   */
+  private async cancelCascades(job: Job): Promise<boolean> {
+    if (!job.step_name || job.phase === 'cancelled' || job.phase === 'done') {
+      return false;
+    }
+    return (await this.security!.effectiveProfile({ projectId: job.project_id }, 'project')) === 'strict';
+  }
+
+  /** A compiled step's dependencies come from its workflow or pipeline definition. */
+  private assertEdgesFromDefinition(job: Job): void {
+    if (job.step_name) {
+      throw new ConflictException(
+        `Job ${job.id} is a step of a workflow or pipeline run; its dependencies come from the definition and cannot be changed here`,
+      );
+    }
   }
 
   /** The phase transition and field changes of a PATCH, inside its transaction. */
-  private async applyUpdate(tx: Db, job: Job, updates: UpdateJobRequest): Promise<void> {
+  private async applyUpdate(tx: Db, job: Job, updates: UpdateJobRequest, options: { cascade: boolean }): Promise<void> {
     const txJobs = jobQueries(tx);
 
     // Handle phase transitions through updatePhase for validation
     if (updates.phase && updates.phase !== job.phase) {
       if (updates.phase === 'cancelled') {
-        const cancelled = await txJobs.cancelJob(job.id, updates.close_reason ?? undefined);
+        const cancelled = await txJobs.cancelJob(job.id, updates.close_reason ?? undefined, { cascade: options.cascade });
         if (!cancelled) {
           throw new NotFoundException(`Job ${job.id} not found`);
         }
@@ -1537,6 +1684,7 @@ export class JobsService {
     if (!job) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
+    this.assertEdgesFromDefinition(job);
     await this.requireJobInProject(data.related_job_id, job.project_id);
     await this.jobs.addDependency(jobId, data.related_job_id, data.relation_type ?? 'blocks');
     return { success: true, message: `Added dependency: ${jobId} depends on ${data.related_job_id}` };
@@ -1546,6 +1694,11 @@ export class JobsService {
    * Remove a dependency from a job
    */
   async removeDependency(jobId: string, relatedJobId: string): Promise<{ success: boolean; message: string }> {
+    const job = await this.jobs.findById(jobId);
+    if (!job) {
+      throw new NotFoundException(`Job ${jobId} not found`);
+    }
+    this.assertEdgesFromDefinition(job);
     const removed = await this.jobs.removeDependency(jobId, relatedJobId);
     if (!removed) {
       throw new NotFoundException(`Dependency from ${jobId} to ${relatedJobId} not found`);
@@ -1599,12 +1752,13 @@ export class JobsService {
    *
    * If gates are blocked, returns a 409 Conflict with blocked_on_gates info.
    */
-  async claim(jobId: string, data: ClaimRequest): Promise<{ attempt: JobAttemptResponse }> {
+  async claim(jobId: string, data: ClaimRequest, caller?: AuthUser): Promise<{ attempt: JobAttemptResponse }> {
     // First get the job to check for gates
     const job = await this.jobs.findById(jobId);
     if (!job) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
+    await this.guardRunJob(job, caller, 'claim');
 
     const claimHarness = data.harness ?? job.harness ?? undefined;
 
@@ -1661,6 +1815,12 @@ export class JobsService {
    * Also releases any gates held by the job.
    */
   async release(jobId: string, data: ReleaseRequest, caller?: AuthUser): Promise<{ job: JobResponse }> {
+    const job = await this.jobs.findById(jobId);
+    if (!job) {
+      throw new NotFoundException(`Job ${jobId} not found`);
+    }
+    await this.guardRunJob(job, caller, 'release');
+
     // Release any gates held by this job
     await this.gates.releaseGates(jobId);
 
@@ -1765,12 +1925,13 @@ export class JobsService {
   /**
    * Submit a job for review
    */
-  async submit(jobId: string, data: SubmitRequest): Promise<JobResponse> {
+  async submit(jobId: string, data: SubmitRequest, caller?: AuthUser): Promise<JobResponse> {
     // Get the current job to find assignee for agent_id
     const currentJob = await this.jobs.findById(jobId);
     if (!currentJob) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
+    await this.guardRunJob(currentJob, caller, 'submit');
 
     const agentId = data.agent_id ?? currentJob.assignee ?? 'unknown';
     try {
@@ -1784,7 +1945,12 @@ export class JobsService {
   /**
    * Approve a job in review
    */
-  async approve(jobId: string, data: ApproveRequest): Promise<JobResponse> {
+  async approve(jobId: string, data: ApproveRequest, caller?: AuthUser): Promise<JobResponse> {
+    const current = await this.jobs.findById(jobId);
+    if (!current) {
+      throw new NotFoundException(`Job ${jobId} not found`);
+    }
+    await this.guardRunJob(current, caller, 'approve');
     try {
       const job = await this.jobs.approveReview(jobId, data.reviewer_id, data.comment);
       return this.toJobResponse(job);
@@ -1816,6 +1982,11 @@ export class JobsService {
    * job to it, so rejecting cannot re-run work that receives more secrets.
    */
   async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
+    const current = await this.jobs.findById(jobId);
+    if (!current) {
+      throw new NotFoundException(`Job ${jobId} not found`);
+    }
+    await this.guardRunJob(current, caller, 'reject');
     try {
       const job = await this.db.begin(async (rawTx) => {
         const tx = rawTx as unknown as Db;

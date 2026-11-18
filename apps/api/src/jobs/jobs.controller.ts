@@ -145,6 +145,9 @@ export class JobsController {
         await this.rbac.requirePermissions(caller, projectId, needs);
       }
     }
+    if (caller && body.parent_id) {
+      await this.jobsService.assertMayCreateUnder(projectId, body.parent_id, caller);
+    }
     return this.jobsService.create(projectId, body, caller?.user_id, correlationId, workStartOptions(caller));
   }
 
@@ -493,9 +496,10 @@ export class JobsController {
   })
   async claim(
     @Param('job_id') jobId: string,
-    @Body() body: ClaimRequest
+    @Body() body: ClaimRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<{ attempt: JobAttemptResponse }> {
-    return this.jobsService.claim(jobId, body);
+    return this.jobsService.claim(jobId, body, caller);
   }
 
   @RequirePermission('jobs:write')
@@ -678,9 +682,10 @@ export class JobsController {
   })
   async submit(
     @Param('job_id') jobId: string,
-    @Body() body: SubmitRequest
+    @Body() body: SubmitRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<JobResponse> {
-    return this.jobsService.submit(jobId, body);
+    return this.jobsService.submit(jobId, body, caller);
   }
 
   @RequirePermission('jobs:write')
@@ -694,9 +699,10 @@ export class JobsController {
   })
   async approve(
     @Param('job_id') jobId: string,
-    @Body() body: ApproveRequest
+    @Body() body: ApproveRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<JobResponse> {
-    return this.jobsService.approve(jobId, body);
+    return this.jobsService.approve(jobId, body, caller);
   }
 
   @RequirePermission('jobs:write')
