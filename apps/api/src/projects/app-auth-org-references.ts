@@ -67,14 +67,18 @@ export async function assertMayDeclareAuthOrgReferences(params: {
   previous: unknown;
   next: ProjectAuthConfig | null;
   findOrgRole: (userId: string, orgId: string) => Promise<string | null>;
+  /** With sign-in disabled (local development) there is no caller and the guard allows all. */
+  authEnabled: boolean;
 }): Promise<void> {
   const orgIds = newAuthOrgReferences(params.projectOrgId, params.previous, params.next);
   if (orgIds.length === 0) return;
 
   const { caller } = params;
+  if (!caller && !params.authEnabled) return;
   if (!caller || isScopedToken(caller) || caller.is_app_link_token) {
     throw new ForbiddenException(
-      'Only a person can change which orgs an app signs people into (x-eve.auth.org_access)',
+      'Only a person can change which orgs an app signs people into (x-eve.auth.org_access): '
+      + 'an admin of each named org must run the sync once (eve project sync)',
     );
   }
 

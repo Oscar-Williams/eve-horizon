@@ -306,6 +306,7 @@ export class ManifestService {
       next: parsedAuthConfig,
       findOrgRole: async (userId, orgId) =>
         (await this.memberships.findOrgMembership(userId, orgId))?.role ?? null,
+      authEnabled: loadConfig().EVE_AUTH_ENABLED,
     });
 
     // Hash the manifest content
