@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import { EVE_API_URL, SIGNUP_ALLOWED_DOMAINS, SUPABASE_ANON_KEY, SUPABASE_AUTH_URL } from '../config.js';
+import { readRefreshToken, startSignInFlow } from '../cookies.js';
 import { fetchAppContext } from '../gotrue-client.js';
 import { isAllowedRedirect, isSignupEmailAllowed } from '../security.js';
 import { buildQuery, ssoOrigin } from '../urls.js';
@@ -20,7 +21,7 @@ export function registerLoginRoutes(app: Express): void {
     // If the user already has a session and the request carries a validated
     // redirect target, bypass the login form entirely. The form is a dead end
     // for a signed-in user otherwise.
-    if (req.cookies?.eve_sso_rt && redirectTo) {
+    if (readRefreshToken(req) && redirectTo) {
       const allowedOrigins = context?.auth?.allowed_redirect_origins ?? [];
       if (isAllowedRedirect(redirectTo, { allowedOrigins })) {
         res.redirect(302, redirectTo);
@@ -28,6 +29,8 @@ export function registerLoginRoutes(app: Express): void {
       }
     }
 
+    // A sign-in that comes back to /callback in this browser was started here.
+    startSignInFlow(res);
     res.type('html').send(loginPageHtml(redirectTo, mode, error, context));
   });
 

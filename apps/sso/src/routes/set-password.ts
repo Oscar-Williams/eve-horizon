@@ -1,6 +1,6 @@
 import type { Express } from 'express';
 import { SUPABASE_ANON_KEY, SUPABASE_AUTH_URL } from '../config.js';
-import { setSessionCookies } from '../cookies.js';
+import { readRefreshToken, setSessionCookies } from '../cookies.js';
 import { refreshSupabaseSession } from '../gotrue-client.js';
 import { setPasswordPageHtml } from '../views/set-password.js';
 
@@ -20,7 +20,7 @@ export function registerSetPasswordRoutes(app: Express): void {
   // -------------------------------------------------------------------------
 
   app.post('/auth/update-password', async (req, res) => {
-    const refreshToken = req.cookies?.eve_sso_rt;
+    const refreshToken = readRefreshToken(req);
     if (!refreshToken) {
       res.status(401).json({ error: 'No session. Please start the invite flow again.' });
       return;

@@ -1,7 +1,17 @@
 import type { Express } from 'express';
-import { clearSessionCookies, setSessionCookies } from '../cookies.js';
-import { decodeJwtPayload, exchangeForEveToken, refreshSupabaseSession } from '../gotrue-client.js';
-import { applyCorsHeaders } from '../security.js';
+import { clearSessionCookies, readRefreshToken, setSessionCookies } from '../cookies.js';
+import {
+  SessionRefusedError,
+  decodeJwtPayload,
+  endSupabaseSession,
+  issueSessionToken,
+  refreshSupabaseSession,
+} from '../gotrue-client.js';
+import { admitSessionOrigin } from '../security.js';
+
+function requestOrigin(origin: string | string[] | undefined): string | null {
+  return typeof origin === 'string' && origin ? origin : null;
+}
 
 export function registerSessionRoutes(app: Express): void {
   // -------------------------------------------------------------------------
@@ -9,31 +19,31 @@ export function registerSessionRoutes(app: Express): void {
   // -------------------------------------------------------------------------
 
   app.options('/session', async (req, res) => {
-    if (await applyCorsHeaders(req, res)) {
+    if (await admitSessionOrigin(req, res, 'session')) {
       res.status(204).end();
     }
   });
 
   app.get('/session', async (req, res) => {
-    if (!await applyCorsHeaders(req, res)) return;
+    if (!await admitSessionOrigin(req, res, 'session')) return;
 
-    const refreshToken = req.cookies?.eve_sso_rt;
+    const refreshToken = readRefreshToken(req);
     if (!refreshToken) {
       res.status(401).json({ error: 'No session' });
       return;
     }
 
     try {
-      // Refresh the Supabase session
+      // Refresh the Supabase session; GoTrue rotates the refresh token.
       const supabase = await refreshSupabaseSession(refreshToken);
-
-      // Update the refresh token cookie (GoTrue may rotate it)
       setSessionCookies(res, supabase.refresh_token);
 
-      // Exchange for Eve RS256 token
-      const eve = await exchangeForEveToken(supabase.access_token);
+      // The API decides what token this origin gets (see /auth/sso/session).
+      const eve = await issueSessionToken(supabase.access_token, {
+        origin: requestOrigin(req.headers.origin),
+        project_id: typeof req.query.project_id === 'string' && req.query.project_id ? req.query.project_id : null,
+      });
 
-      // Decode user info from the Supabase token for convenience
       const claims = decodeJwtPayload(supabase.access_token);
       const email = (claims?.email as string) || '';
 
@@ -46,6 +56,11 @@ export function registerSessionRoutes(app: Express): void {
         },
       });
     } catch (err) {
+      if (err instanceof SessionRefusedError) {
+        // Refused for this app or visitor; the session itself stays.
+        res.status(403).json({ error: 'Not allowed for this app' });
+        return;
+      }
       const message = err instanceof Error ? err.message : 'Session refresh failed';
       console.error('[session] Error:', message);
 
@@ -60,13 +75,25 @@ export function registerSessionRoutes(app: Express): void {
   // -------------------------------------------------------------------------
 
   app.options('/logout', async (req, res) => {
-    if (await applyCorsHeaders(req, res)) {
+    if (await admitSessionOrigin(req, res, 'logout')) {
       res.status(204).end();
     }
   });
 
   app.post('/logout', async (req, res) => {
-    if (!await applyCorsHeaders(req, res)) return;
+    if (!await admitSessionOrigin(req, res, 'logout')) return;
+
+    // End this GoTrue session, not just the cookies. GoTrue's logout needs an
+    // access token, so refresh once first.
+    const refreshToken = readRefreshToken(req);
+    if (refreshToken) {
+      try {
+        const supabase = await refreshSupabaseSession(refreshToken);
+        await endSupabaseSession(supabase.access_token);
+      } catch (err) {
+        console.warn('[logout] Could not end the GoTrue session:', err instanceof Error ? err.message : String(err));
+      }
+    }
 
     clearSessionCookies(res);
     res.json({ ok: true });

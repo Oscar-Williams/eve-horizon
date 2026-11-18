@@ -1,4 +1,4 @@
-import { escapeHtml, jsString, pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, escapeHtml, jsString, pageChrome } from './chrome.js';
 
 export function landingPageHtml(opts: {
   redirectTo: string;
@@ -67,18 +67,26 @@ export function landingPageHtml(opts: {
     const REDIRECT_TO = ${jsString(redirectTo)};
     const PROJECT_ID = ${jsString(projectId)};
 
-    // GoTrue redirects with tokens in the hash fragment.
-    // Extract them and forward to the server-side callback as query params.
-    const hash = window.location.hash;
-    const search = window.location.search;
-    if (hash && hash.length > 1) {
+${POST_TO_CALLBACK_SCRIPT}
+
+    // GoTrue redirects here with the tokens in the URL fragment: post them
+    // to /callback.
+    (function readFragment() {
+      const hash = window.location.hash;
+      if (!hash || hash.length < 2) return;
       const hashParams = new URLSearchParams(hash.substring(1));
-      const queryParams = new URLSearchParams(search);
-      for (const [key, value] of hashParams) queryParams.set(key, value);
-      if (REDIRECT_TO) queryParams.set('redirect_to', REDIRECT_TO);
-      if (PROJECT_ID) queryParams.set('project_id', PROJECT_ID);
-      window.location.replace('/callback?' + queryParams.toString());
-    }
+      const accessToken = hashParams.get('access_token');
+      const refreshToken = hashParams.get('refresh_token');
+      if (!accessToken || !refreshToken) return;
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      postToCallback({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        type: hashParams.get('type') || '',
+        redirect_to: REDIRECT_TO,
+        project_id: PROJECT_ID,
+      });
+    })();
 
     async function signOut() {
       const url = PROJECT_ID ? '/logout?project_id=' + encodeURIComponent(PROJECT_ID) : '/logout';

@@ -1,18 +1,36 @@
+import express from 'express';
 import type { Express } from 'express';
 import { SECURE_COOKIES } from '../config.js';
-import { setSessionCookies } from '../cookies.js';
-import { exchangeForEveToken, fetchAppContext } from '../gotrue-client.js';
+import {
+  askToConfirm,
+  clearSignInState,
+  confirmationMatches,
+  readSignInState,
+  setSessionCookies,
+} from '../cookies.js';
+import { decodeJwtPayload, exchangeForEveToken, fetchAppContext } from '../gotrue-client.js';
 import { isAllowedRedirect } from '../security.js';
-import { appendQueryParam, buildQuery } from '../urls.js';
+import { appendQueryParam, buildQuery, ssoOrigin } from '../urls.js';
 import { callbackExtractorHtml } from '../views/callback-extractor.js';
+import { continueAsHtml } from '../views/continue-as.js';
+
+const field = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 export function registerCallbackRoutes(app: Express): void {
-  app.get('/callback', async (req, res) => {
-    const accessToken = req.query.access_token as string | undefined;
-    const refreshToken = req.query.refresh_token as string | undefined;
-    const authType = (req.query.type as string) || '';
-    let projectId = (req.query.project_id as string) || '';
-    let redirectTo = (req.query.redirect_to as string) || '';
+  app.get('/callback', (req, res) => {
+    const projectId = field(req.query.project_id);
+    const redirectTo = field(req.query.redirect_to);
+
+    // Tokens are taken only in a POST from the SSO's own pages: a link must
+    // not be able to sign a browser in, and tokens must stay out of URLs.
+    if (req.query.access_token !== undefined || req.query.refresh_token !== undefined) {
+      res.redirect(302, `/login${buildQuery({
+        error: 'Sign-in failed. Please try again.',
+        redirect_to: redirectTo,
+        project_id: projectId,
+      })}`);
+      return;
+    }
 
     // GoTrue surfaces redemption failures via ?error= / ?error_code= query
     // params (or the hash fragment — handled in callbackExtractorHtml). Surface
@@ -32,13 +50,56 @@ export function registerCallbackRoutes(app: Express): void {
       return;
     }
 
-    // If tokens are not in query params, GoTrue may have put them in the hash.
-    // Serve a page that extracts hash fragments and redirects to this endpoint
-    // with them as query params.
-    if (!accessToken || !refreshToken) {
-      res.type('html').send(callbackExtractorHtml());
+    // GoTrue puts the tokens in the URL fragment; this page posts them back.
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(callbackExtractorHtml());
+  });
+
+  app.post('/callback', express.urlencoded({ extended: false }), async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+
+    if (req.headers.origin !== ssoOrigin(req)) {
+      res.status(403).type('text').send('Forbidden');
       return;
     }
+
+    const accessToken = field(req.body?.access_token);
+    const refreshToken = field(req.body?.refresh_token);
+    const authType = field(req.body?.type);
+    let projectId = field(req.body?.project_id);
+    let redirectTo = field(req.body?.redirect_to);
+
+    if (!accessToken || !refreshToken) {
+      res.redirect(302, `/login${buildQuery({
+        error: 'Sign-in failed. Please try again.',
+        redirect_to: redirectTo,
+        project_id: projectId,
+      })}`);
+      return;
+    }
+
+    // Set a session only for a sign-in this browser started, or one the
+    // person has just confirmed. Otherwise ask, so a planted link cannot sign
+    // a browser in as someone else.
+    const state = readSignInState(req);
+    if (state?.kind !== 'flow' && !confirmationMatches(state, req.body?.confirm)) {
+      const email = decodeJwtPayload(accessToken)?.email;
+      const confirm = askToConfirm(res);
+      res.status(200).type('html').send(continueAsHtml({
+        email: typeof email === 'string' && email ? email : null,
+        fields: {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          type: authType,
+          project_id: projectId,
+          redirect_to: redirectTo,
+          confirm,
+        },
+      }));
+      return;
+    }
+    clearSignInState(res);
 
     try {
       // Exchange the Supabase access token for an Eve RS256 token

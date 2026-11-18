@@ -1,7 +1,7 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { EVE_DEFAULT_DOMAIN, EVE_INTERNAL_API_KEY, SIGNUP_ALLOWED_DOMAINS } from './config.js';
-import { fetchAppContext } from './gotrue-client.js';
+import { checkSessionOrigin, fetchAppContext } from './gotrue-client.js';
 
 // Wrap tokens have the typeid('mlw') shape: lowercase prefix + 26-char base32.
 // Validating against this regex before hitting the API gives scanners crafting
@@ -90,11 +90,14 @@ export function signWrapCsrf(wrapToken: string): string {
   // Stateless CSRF: HMAC-SHA256 of the wrap_token using the internal API key.
   // Stored in a hidden form field. Defends against accidental cross-origin
   // form submissions; the wrap_token itself remains the bearer credential.
-  return createHmac('sha256', EVE_INTERNAL_API_KEY || 'unconfigured').update(wrapToken).digest('hex');
+  if (!EVE_INTERNAL_API_KEY) {
+    throw new Error('EVE_INTERNAL_API_KEY is required to sign sign-in link forms');
+  }
+  return createHmac('sha256', EVE_INTERNAL_API_KEY).update(wrapToken).digest('hex');
 }
 
 export function verifyWrapCsrf(wrapToken: string, nonce: string): boolean {
-  if (!nonce || nonce.length !== 64) return false;
+  if (!nonce || nonce.length !== 64 || !EVE_INTERNAL_API_KEY) return false;
   const expected = signWrapCsrf(wrapToken);
   try {
     return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(nonce, 'hex'));
@@ -123,11 +126,7 @@ export async function applyCorsHeaders(req: express.Request, res: express.Respon
   }
 
   if (isClusterDomainHost(parsed.hostname)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.setHeader('Vary', 'Origin');
+    setCorsHeaders(res, origin);
     return true;
   }
 
@@ -150,10 +149,47 @@ export async function applyCorsHeaders(req: express.Request, res: express.Respon
     return false;
   }
 
+  setCorsHeaders(res, origin);
+  return true;
+}
+
+function setCorsHeaders(res: express.Response, origin: string): void {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Vary', 'Origin');
+}
+
+/**
+ * Admit a /session or /logout request by its Origin. The Eve API decides
+ * under the instance security profile: under `strict` only the origins it
+ * allows are served (the dashboard, or a host of the named app); under
+ * `legacy` and `audit` the older rules above apply, and the API records what
+ * `strict` would refuse. Answers 403 or 503 itself and returns false when the
+ * request may not go on.
+ */
+export async function admitSessionOrigin(
+  req: express.Request,
+  res: express.Response,
+  purpose: 'session' | 'logout',
+): Promise<boolean> {
+  const rawOrigin = req.headers.origin;
+  const origin = typeof rawOrigin === 'string' && rawOrigin ? rawOrigin : null;
+  const projectId = typeof req.query.project_id === 'string' && req.query.project_id ? req.query.project_id : null;
+
+  const decision = await checkSessionOrigin({ origin, project_id: projectId, purpose });
+  if (!decision) {
+    res.status(503).json({ error: 'Sign-in service unavailable' });
+    return false;
+  }
+  if (decision.profile !== 'strict') {
+    return applyCorsHeaders(req, res);
+  }
+  if (!decision.allowed || !origin) {
+    res.status(403).json({ error: 'Origin not allowed' });
+    return false;
+  }
+  setCorsHeaders(res, origin);
   return true;
 }

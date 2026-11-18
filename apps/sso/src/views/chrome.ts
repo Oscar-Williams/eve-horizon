@@ -49,3 +49,25 @@ ${bodyHtml}
 </body>
 </html>`;
 }
+
+/**
+ * Page script: hand sign-in tokens to /callback in a POST body (a form
+ * submission from this origin), never in a URL. Takes the fields to send;
+ * empty values are left out.
+ */
+export const POST_TO_CALLBACK_SCRIPT = `    function postToCallback(fields) {
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = '/callback';
+      for (const name of Object.keys(fields)) {
+        const value = fields[name];
+        if (!value) continue;
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    }`;

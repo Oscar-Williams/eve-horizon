@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Express } from 'express';
+import { startSignInFlow } from '../cookies.js';
 import { fetchAppContext, internalApiPost } from '../gotrue-client.js';
 import { isAllowedRedirect, isValidWrapToken, signWrapCsrf, verifyWrapCsrf } from '../security.js';
 import type { WrapConsumeResponse, WrapInspectResponse } from '../types.js';
@@ -133,6 +134,9 @@ export function registerWrapRoutes(app: Express): void {
       return;
     }
     console.log(`[wrap.consume] mlw=${wrap.slice(0, 12)}... project=${result.project_id ?? 'none'} kind=${result.kind}`);
+    // The person confirmed the link in this browser: its return to /callback
+    // belongs to a flow started here.
+    startSignInFlow(res);
     res.redirect(302, result.gotrue_action_link);
   });
 }

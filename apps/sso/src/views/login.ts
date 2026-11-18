@@ -1,6 +1,6 @@
 import { SIGNUP_ALLOWED_DOMAINS } from '../config.js';
 import type { SsoLoginContext } from '../types.js';
-import { escapeHtml, isHttpsUrl, jsString, pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, escapeHtml, isHttpsUrl, jsString, pageChrome } from './chrome.js';
 
 export function loginPageHtml(
   redirectTo: string,
@@ -287,15 +287,16 @@ export function loginPageHtml(
       }
     }
 
+${POST_TO_CALLBACK_SCRIPT}
+
     function goToCallback(accessToken, refreshToken) {
-      const params = new URLSearchParams({
+      postToCallback({
         access_token: accessToken,
         refresh_token: refreshToken,
         type: 'auth',
+        redirect_to: REDIRECT_TO,
+        project_id: PROJECT_ID,
       });
-      if (REDIRECT_TO) params.set('redirect_to', REDIRECT_TO);
-      if (PROJECT_ID) params.set('project_id', PROJECT_ID);
-      window.location.href = '/callback?' + params.toString();
     }
 
     async function handleSubmit(e) {
@@ -393,14 +394,13 @@ export function loginPageHtml(
         // Clear hash to avoid re-processing
         history.replaceState(null, '', window.location.pathname + window.location.search);
         // Preserve the type (e.g. 'invite') so /callback can handle it
-        const cbParams = new URLSearchParams({
+        postToCallback({
           access_token: accessToken,
           refresh_token: refreshToken,
           type: type,
+          redirect_to: REDIRECT_TO,
+          project_id: PROJECT_ID,
         });
-        if (REDIRECT_TO) cbParams.set('redirect_to', REDIRECT_TO);
-        if (PROJECT_ID) cbParams.set('project_id', PROJECT_ID);
-        window.location.href = '/callback?' + cbParams.toString();
       }
     })();
   </script>`;

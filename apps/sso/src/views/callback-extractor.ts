@@ -1,4 +1,4 @@
-import { pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, pageChrome } from './chrome.js';
 
 export function callbackExtractorHtml(): string {
   const head = `  <title>Eve - Authenticating...</title>`;
@@ -20,36 +20,44 @@ export function callbackExtractorHtml(): string {
     <p>Please wait while we complete your sign-in.</p>
   </div>
   <script>
-    // GoTrue redirects with tokens in the hash fragment.
-    // Extract them and forward to the server-side callback as query params.
-    const hash = window.location.hash;
-    const search = window.location.search;
+${POST_TO_CALLBACK_SCRIPT}
 
-    if (hash && hash.length > 1) {
+    // GoTrue redirects here with the tokens (or an error) in the URL fragment.
+    (function readFragment() {
+      const hash = window.location.hash;
+      if (!hash || hash.length < 2) return;
       const hashParams = new URLSearchParams(hash.substring(1));
-      const queryParams = new URLSearchParams(search);
+      const queryParams = new URLSearchParams(window.location.search);
 
-      // GoTrue may surface a redemption failure via the hash fragment in the
-      // implicit flow (e.g. #error=access_denied&error_code=otp_expired).
-      // Forward the error to the server so /callback can redirect to /login
-      // with a friendly message instead of infinite-spinning.
+      // A redemption failure (e.g. #error=access_denied&error_code=otp_expired)
+      // goes to /callback without tokens, which sends the person to /login
+      // with a message instead of spinning here.
       const errorCode = hashParams.get('error_code') || hashParams.get('error');
       if (errorCode) {
-        queryParams.set('error_code', errorCode);
+        const errorParams = new URLSearchParams();
+        errorParams.set('error_code', errorCode);
         const description = hashParams.get('error_description');
-        if (description) queryParams.set('error_description', description);
-        window.location.replace('/callback?' + queryParams.toString());
+        if (description) errorParams.set('error_description', description);
+        for (const key of ['redirect_to', 'project_id']) {
+          const value = queryParams.get(key);
+          if (value) errorParams.set(key, value);
+        }
+        window.location.replace('/callback?' + errorParams.toString());
         return;
       }
 
-      // Merge hash params into query params
-      for (const [key, value] of hashParams) {
-        queryParams.set(key, value);
-      }
-
-      window.location.replace('/callback?' + queryParams.toString());
-    }
-    // If no hash, the page was loaded with query params already -- server handles it.
+      const accessToken = hashParams.get('access_token');
+      const refreshToken = hashParams.get('refresh_token');
+      if (!accessToken || !refreshToken) return;
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      postToCallback({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        type: hashParams.get('type') || '',
+        redirect_to: queryParams.get('redirect_to') || '',
+        project_id: queryParams.get('project_id') || '',
+      });
+    })();
   </script>`;
 
   return pageChrome(body, { head, css });

@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import { readRefreshToken } from '../cookies.js';
 import { fetchAppContext } from '../gotrue-client.js';
 import { isAllowedRedirect } from '../security.js';
 import { landingPageHtml } from '../views/landing.js';
@@ -12,7 +13,7 @@ export function registerLandingRoutes(app: Express): void {
   app.get('/', async (req, res) => {
     const redirectTo = (req.query.redirect_to as string) || '';
     const projectId = (req.query.project_id as string) || '';
-    const hasSession = Boolean(req.cookies?.eve_sso_rt);
+    const hasSession = Boolean(readRefreshToken(req));
 
     const context = projectId ? await fetchAppContext(projectId) : null;
     const allowedOrigins = context?.auth?.allowed_redirect_origins ?? [];
