@@ -310,6 +310,12 @@ are refused when there is none, and otherwise judged against that user before an
 job is created.
 The CLI does not expose `--scope-*` flags yet.
 
+Under the org's `strict` [security profile](./security-profiles.md), org files,
+docs and cloud-fs reach a step only through its scope: a step with no scope, or
+in a run no user started, gets none; each `orgfs`, `orgdocs` and `cloud_fs`
+entry (a `*` included) must sit inside the starting user's role bindings; and a
+project role does not imply a scope over org data. `audit` records each case.
+
 Step `permissions:` for the job token may only list permissions the invoking
 actor holds. Org-management permissions (`orgs:create`, `orgs:write`,
 `orgs:admin`, `orgs:invite`, `projects:create`, `integrations:write`,
