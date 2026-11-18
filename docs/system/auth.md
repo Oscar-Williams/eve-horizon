@@ -341,6 +341,11 @@ from this app". Domain ownership verification is a planned future enhancement.
 - Each rule's `target_org` (resolved from slug or canonical id) must
   appear in the project's effective `allowed_orgs`. Otherwise reject.
 - No duplicate `domain:` patterns within one block. Reject on conflict.
+- Adding an org other than the project's own to `allowed_orgs`, or adding a
+  `domain_signup` rule (for any org, the project's own included), needs a
+  user token from an admin or owner of that org, or a system admin. Job,
+  service and app-link tokens get 403. Re-syncing entries that are already
+  stored needs nothing extra.
 - `domain_signup.enabled = true` is invalid with `login_method: password`
   (there's no way to deliver the link). `magic_link` and
   `password_or_magic_link` both work.
