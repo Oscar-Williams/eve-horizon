@@ -64,6 +64,10 @@ export function generatePipelineStepRunId(): string {
   return typeid('pstep').toString();
 }
 
+export function generateSecurityFindingId(): string {
+  return typeid('secf').toString();
+}
+
 export function generateEventId(): string {
   return typeid('evt').toString();
 }

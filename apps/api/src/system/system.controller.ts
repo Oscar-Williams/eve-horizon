@@ -210,7 +210,7 @@ export class SystemController {
       role = 'org_admin';
     }
     const orgId = user.org_id;
-    const userId = (user as { id?: string }).id;
+    const userId = user.user_id;
 
     // Require admin scope (org_admin or system_admin)
     if (role !== 'org_admin' && role !== 'system_admin') {
@@ -231,7 +231,7 @@ export class SystemController {
 
     // Extract role and id from user
     const role = user.role;
-    const userId = (user as { id?: string }).id;
+    const userId = user.user_id;
 
     // Require system_admin scope
     if (role !== 'system_admin') {

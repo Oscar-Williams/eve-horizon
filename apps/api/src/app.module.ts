@@ -9,6 +9,7 @@ import { AttemptsModule } from './attempts/attempts.module';
 import { HarnessesModule } from './harnesses/harnesses.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { SystemModule } from './system/system.module';
+import { SecurityModule } from './security/security.module.js';
 import { EnvironmentsModule } from './environments/environments.module';
 import { PipelinesModule } from './pipelines/pipelines.module';
 import { WorkflowsModule } from './workflows/workflows.module';
@@ -48,6 +49,7 @@ import { AppLinksModule } from './app-links/app-links.module.js';
 @Module({
   imports: [
     DatabaseModule,
+    SecurityModule,
     AuthModule,
     HealthModule,
     OrgsModule,

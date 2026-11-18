@@ -702,13 +702,12 @@ async function handleSettings(
       throw new Error('Usage: eve system settings set <key> <value>');
     }
 
-    const body = { value };
     const response = await requestJson<SystemSetting>(
       context,
       `/system/settings/${key}`,
       {
         method: 'PUT',
-        body: JSON.stringify(body),
+        body: { value },
       },
     );
 

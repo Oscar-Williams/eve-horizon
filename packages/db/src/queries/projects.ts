@@ -9,6 +9,8 @@ export interface Project {
   branch: string;
   branding: Record<string, unknown> | null;
   auth_config: Record<string, unknown> | null;
+  /** legacy | audit | strict; null inherits the org profile */
+  security_profile?: string | null;
   deleted_at: Date | null;      // soft delete timestamp
   created_at: Date;
   updated_at: Date;

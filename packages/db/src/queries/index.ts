@@ -28,6 +28,7 @@ export * from './integrations.js';
 export * from './memberships.js';
 export * from './auth-challenges.js';
 export * from './system-settings.js';
+export * from './security.js';
 export * from './builds.js';
 export * from './pricing-rate-cards.js';
 export * from './exchange-rates.js';

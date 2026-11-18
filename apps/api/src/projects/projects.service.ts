@@ -1,7 +1,8 @@
-import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException, ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Inject, Optional, NotFoundException, ConflictException, BadRequestException, ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { resolveWorkerUrl, workerRequestHeaders } from '../common/worker-url';
 import { assertRepoUrlAllowed } from '../common/local-repo';
 import type { AuthUser } from '../auth/auth.types.js';
+import { SecurityService } from '../security/security.service.js';
 import type { Db } from '@eve/db';
 import {
   projectQueries,
@@ -98,6 +99,7 @@ export class ProjectsService {
     @Inject('DB') db: Db,
     private readonly manifestService: ManifestService,
     private readonly agentsConfigService: AgentsConfigService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.projects = projectQueries(db);
     this.orgs = orgQueries(db);
@@ -179,6 +181,7 @@ export class ProjectsService {
     });
 
     await this.assignOwner(project.id, actorUserId);
+    await this.security?.applyNewProjectProfile(project.id);
     return this.toResponse(project);
   }
 
@@ -282,6 +285,7 @@ export class ProjectsService {
     });
 
     await this.assignOwner(project.id, actorUserId);
+    await this.security?.applyNewProjectProfile(project.id);
     return this.toResponse(project);
   }
 

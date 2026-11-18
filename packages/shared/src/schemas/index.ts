@@ -44,3 +44,4 @@ export * from './notifications.js';
 export * from './chat-file.js';
 export * from './cloud-fs.js';
 export * from './private-endpoint.js';
+export * from './security.js';

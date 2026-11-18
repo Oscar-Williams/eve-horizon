@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  SECURITY_NEW_PROJECT_PROFILE_SETTING,
+  SECURITY_PROFILE_SETTING,
+  isSecurityProfile,
+} from '@eve/shared';
 import * as k8s from '@kubernetes/client-node';
 import { Inject } from '@nestjs/common';
 import type { Db } from '@eve/db';
@@ -594,6 +599,12 @@ export class SystemService {
    * Set a system setting
    */
   async setSetting(key: string, value: string, updatedBy: string, description?: string) {
+    if (
+      (key === SECURITY_PROFILE_SETTING || key === SECURITY_NEW_PROJECT_PROFILE_SETTING)
+      && !isSecurityProfile(value)
+    ) {
+      throw new BadRequestException(`${key} must be legacy, audit or strict`);
+    }
     const settings = systemSettingsQueries(this.db);
     return settings.set(key, value, updatedBy, description);
   }

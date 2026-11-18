@@ -6,6 +6,8 @@ export interface Org {
   slug: string;
   default_agent_slug: string | null;
   billing_config: Record<string, unknown> | null;
+  /** legacy | audit | strict; null inherits the instance profile */
+  security_profile?: string | null;
   deleted_at: Date | null;  // soft delete timestamp
   created_at: Date;
   updated_at: Date;
