@@ -71,3 +71,7 @@ changes. Rules are added release by release.
 | `access.implicit_project` | Project | An org `member` gets nothing on a project from the org role alone: rights there come from a project membership or bindings. Applies to permission checks, `eve access can`, project listing and org-wide job, event and agent queries. Org owners and admins are unchanged. |
 | `access.unresolved_project` | Project (the instance when the project cannot be found) | A permission check for a project that cannot be looked up refuses instead of granting the member set. |
 | `chat.sender_rights` | Project | Chat starts agent work only for a sender who maps to an Eve user holding `jobs:write` on the project; unmapped senders are refused. |
+| `access.org_data_unscoped` | Org that owns the data | A job token with no `scope` gets no org file, doc or cloud-fs access. |
+| `access.org_data_no_user` | Org that owns the data | A job token for work no user started (event, schedule or system runs) gets no org file, doc or cloud-fs access. |
+| `access.org_data_scope_wide` | Org that owns the data | Each org file, doc or cloud-fs entry of a job scope a user declares, `*` included, must sit inside that user's role bindings (direct or through a group, org-wide or on the project); built-in roles do not count. Otherwise 400. |
+| `access.org_data_role_wildcard` | Org that owns the data | A built-in project role (owner, admin, member) no longer carries a wildcard scope over the org's files, docs and cloud-fs mounts; its env-db scope stands. Org roles are unchanged. |

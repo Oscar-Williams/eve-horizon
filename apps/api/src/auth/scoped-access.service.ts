@@ -1,10 +1,17 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { hasUserActor } from '@eve/shared';
 import type { AuthUser } from './auth.service.js';
 import { AuthService } from './auth.service.js';
-import { AccessService } from './access.service.js';
+import { AccessService, isOrgDataPermission } from './access.service.js';
 import { RbacService } from './rbac.service.js';
 import { tokenMayAddressOrg, tokenMayAddressProject } from './token-scope.js';
 import { buildApiError } from '../system/api-errors.js';
+import { SecurityService } from '../security/security.service.js';
+
+/** A job token with no `scope` used org files, docs or cloud-fs (P1-6). */
+export const ORG_DATA_UNSCOPED_RULE = 'access.org_data_unscoped';
+/** A job token for work no user started used org files, docs or cloud-fs (P1-6). */
+export const ORG_DATA_NO_USER_RULE = 'access.org_data_no_user';
 
 export type ScopedResourceContext = {
   type: 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs';
@@ -23,6 +30,7 @@ export class ScopedAccessService {
     private readonly authService: AuthService,
     private readonly accessService: AccessService,
     private readonly rbacService: RbacService,
+    private readonly security?: SecurityService,
   ) {}
 
   async can(params: {
@@ -40,6 +48,9 @@ export class ScopedAccessService {
         return false;
       }
       if (!(await this.jobTokenMayAddress(params.user, params.org_id, params.project_id))) {
+        return false;
+      }
+      if (isOrgDataPermission(params.permission) && !(await this.jobMayUseOrgData(params.user, params.permission))) {
         return false;
       }
       if (!params.user.scope) {
@@ -97,6 +108,31 @@ export class ScopedAccessService {
         },
       },
     );
+  }
+
+  /**
+   * Org files, docs and cloud-fs belong to the org, whose profile decides
+   * whether a job reaches them without a scope or without a user who started
+   * the work: `strict` refuses, `audit` records, `legacy` allows. The token
+   * may only address its own org (checked before this), so that org governs.
+   */
+  private async jobMayUseOrgData(user: AuthUser, permission: string): Promise<boolean> {
+    const rule = !hasUserActor(user.user_id)
+      ? ORG_DATA_NO_USER_RULE
+      : !user.scope
+        ? ORG_DATA_UNSCOPED_RULE
+        : null;
+    if (!rule || !this.security) {
+      return true;
+    }
+    const profile = await this.security.decide(rule, {
+      governing: 'org',
+      orgId: user.org_id,
+      projectId: user.project_id,
+      actor: user,
+      detail: { permission },
+    });
+    return profile !== 'strict';
   }
 
   /** A lookup that fails (unknown or ambiguous org or project) counts as outside the token's scope. */

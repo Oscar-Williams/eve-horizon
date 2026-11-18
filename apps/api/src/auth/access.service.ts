@@ -25,6 +25,16 @@ import { RbacService, IMPLICIT_PROJECT_RULE } from './rbac.service.js';
 import { expandPermissions, allPermissions, type Permission } from './permissions.js';
 import { SecurityService } from '../security/security.service.js';
 
+/** A decision rested on a built-in project role's wildcard scope over org files, docs or cloud-fs (P1-6). */
+export const ORG_DATA_ROLE_WILDCARD_RULE = 'access.org_data_role_wildcard';
+/** A job scope a user declared reaches org files, docs or cloud-fs outside their role bindings (P1-6). */
+export const ORG_DATA_SCOPE_WIDE_RULE = 'access.org_data_scope_wide';
+
+/** Org data (P1-6): what the org owns, as opposed to a project's env-db. */
+export function isOrgDataPermission(permission: string): boolean {
+  return permission.startsWith('orgfs:') || permission.startsWith('orgdocs:') || permission.startsWith('cloud_fs:');
+}
+
 type AccessPrincipalType = 'user' | 'service_principal' | 'group';
 type AccessResourceType = 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs';
 type AccessResourceAction = 'read' | 'write' | 'admin';
@@ -220,6 +230,56 @@ export class AccessService {
     return this.membershipsForUser(params.org_id, params.principal_id);
   }
 
+  /**
+   * Judge the org files, docs and cloud-fs entries of a job scope a user
+   * declares (P1-6), under the profile of the org that owns them. Under
+   * `legacy` nothing is judged. Otherwise each entry, `*` included, must sit
+   * inside the user's role bindings (direct or through a group, org-wide or on
+   * the project); built-in roles do not count. Entries outside them are
+   * recorded (`access.org_data_scope_wide`) and, under `strict`, returned as
+   * refused.
+   */
+  async jobScopeOutsideBindings(params: {
+    orgId: string;
+    projectId: string;
+    userId: string;
+    entries: Array<{ permission: string; resource: AccessResourceContext }>;
+  }): Promise<string[]> {
+    const entries = params.entries.filter((entry) => isOrgDataPermission(entry.permission));
+    if (!this.security || entries.length === 0) {
+      return [];
+    }
+    const scope = { orgId: params.orgId, projectId: params.projectId };
+    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return [];
+    }
+    const project = await this.resolveProject(params.projectId);
+    const bindings = await this.accessRoles.listApplicableBindings({
+      orgId: params.orgId,
+      principalType: 'user',
+      principalId: params.userId,
+      projectId: project && project.org_id === params.orgId ? project.id : undefined,
+    });
+    const grants: RawGrant[] = bindings.map((binding) => ({
+      source: binding.role_name,
+      permissions: binding.role_permissions,
+      scope_json: this.asBindingScope(binding.scope_json),
+    }));
+    const outside = entries
+      .filter((entry) => !this.evaluatePermission(entry.permission, grants, entry.resource).allowed)
+      .map((entry) => `${entry.permission} ${entry.resource.id}`);
+    if (outside.length === 0) {
+      return [];
+    }
+    const profile = await this.security.decide(ORG_DATA_SCOPE_WIDE_RULE, {
+      ...scope,
+      governing: 'org',
+      actor: { user_id: params.userId },
+      detail: { entries: outside.join(', ') },
+    });
+    return profile === 'strict' ? outside : [];
+  }
+
   // ── User resolution ──────────────────────────────────────────────────
 
   private async canUser(
@@ -278,14 +338,24 @@ export class AccessService {
       ? await this.membershipStore.findProjectMembership(userId, project.id)
       : null;
     if (project && projectMembership) {
-      grants.push({
+      const grant: RawGrant = {
         source: `project membership (${project.id})`,
         role: projectMembership.role,
         permissions: [...expandPermissions(projectMembership.role)] as string[],
         scope_json: AccessService.BUILT_IN_ROLES.has(projectMembership.role)
           ? AccessService.BUILT_IN_ROLE_SCOPE
           : undefined,
-      });
+      };
+      // A project role's wildcard over the org's files, docs and mounts is
+      // withheld by the org's strict profile; its env-db scope stands.
+      if (grant.scope_json) {
+        grant.withheld = {
+          rule: ORG_DATA_ROLE_WILDCARD_RULE,
+          governing: 'org',
+          strict: { ...grant, scope_json: AccessService.BUILT_IN_PROJECT_ROLE_STRICT_SCOPE },
+        };
+      }
+      grants.push(grant);
     }
 
     const orgMembership = await this.membershipStore.findOrgMembership(userId, orgId);
@@ -690,6 +760,11 @@ export class AccessService {
     orgfs: { allow_prefixes: ['*'] },
     orgdocs: { allow_prefixes: ['*'] },
     cloud_fs: { allow_mount_ids: ['*'] },
+  };
+
+  /** A built-in project role's scope under the org's strict profile: its project's env-db only. */
+  private static readonly BUILT_IN_PROJECT_ROLE_STRICT_SCOPE: AccessBindingScope = {
+    envdb: { schemas: ['*'], tables: ['*'] },
   };
 
   private static readonly BUILT_IN_ROLES = new Set(['owner', 'admin', 'member']);

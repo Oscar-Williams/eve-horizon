@@ -225,11 +225,13 @@ export async function assertCanGrantJobPermissions(
  * A job token scope names the org-fs and org-docs prefixes, cloud-fs mounts
  * and env-db schemas and tables a job may reach, and its org-fs prefixes are
  * mounted into the job's workspace. The user a job runs as must hold each
- * resource the scope names, otherwise 400. Work no user started is not judged
+ * resource the scope names, otherwise 400. Under the org's strict profile
+ * the org-fs, org-docs and cloud-fs entries (a `*` included) must also sit
+ * inside the user's role bindings (P1-6). Work no user started is not judged
  * here; its callers refuse scopes that did not come from the manifest.
  */
 export async function assertCanUseJobScope(
-  access: Pick<AccessService, 'can'>,
+  access: Pick<AccessService, 'can' | 'jobScopeOutsideBindings'>,
   params: { orgId: string; projectId: string; userId: string | undefined; scope: AccessBindingScope | null; context: string },
 ): Promise<void> {
   const { orgId, projectId, userId, scope, context } = params;
@@ -270,5 +272,12 @@ export async function assertCanUseJobScope(
     if (!result.allowed) {
       throw new BadRequestException(`${context} is outside the invoking actor's access scope: ${check.permission} ${check.resource.id}`);
     }
+  }
+
+  const outsideBindings = await access.jobScopeOutsideBindings({ orgId, projectId, userId, entries: checks });
+  if (outsideBindings.length > 0) {
+    throw new BadRequestException(
+      `${context} reaches org data outside the invoking actor's role bindings: ${outsideBindings.join('; ')}`,
+    );
   }
 }

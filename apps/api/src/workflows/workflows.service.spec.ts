@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WorkflowsService, validateStepGraph, parseStepCondition } from './workflows.service.js';
 
 /** The step-permission ceiling is covered elsewhere; these tests let every check pass. */
-const allowAllAccess = { can: async () => ({ allowed: true, source: 'test' }) } as never;
+const allowAllAccess = { can: async () => ({ allowed: true, source: 'test' }), jobScopeOutsideBindings: async () => [] } as never;
 
 // Capture what jobs.create receives. `capturedJobCreate` is the *last* job
 // created (most commonly the last step). `allCreatedJobs` holds every call in
@@ -923,7 +923,7 @@ workflows:
       - name: score
         agent:
           prompt: "Score today's notices"
-        secrets: [ANTHROPIC_API_KEY, OPPS_SIGNING_KEY]
+        secrets: [ANTHROPIC_API_KEY, SHOP_SIGNING_KEY]
       - name: summarise
         depends_on: [score]
         agent:
@@ -938,7 +938,7 @@ workflows:
       const score = allCreatedJobs.find((job) => job.step_name === 'score');
       const summarise = allCreatedJobs.find((job) => job.step_name === 'summarise');
       const root = allCreatedJobs.find((job) => job.parent_id === null);
-      expect(score?.secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+      expect(score?.secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
       expect(summarise?.secrets_allowlist ?? null).toBeNull();
       expect(root?.secrets_allowlist ?? null).toBeNull();
     });
