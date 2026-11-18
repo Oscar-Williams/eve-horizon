@@ -47,7 +47,8 @@ import {
 import { loadConfig } from '@eve/shared';
 import { zodSchemaToOpenApi } from '../openapi.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
-import { Public } from './auth.decorator.js';
+import { AcceptsAppAudience, Public } from './auth.decorator.js';
+import { APP_AUDIENCE_HEADER } from './app-audience.js';
 import { ScopeNarrowed } from './permission.decorator.js';
 import { AuthService } from './auth.service.js';
 import { RbacService } from './rbac.service.js';
@@ -68,6 +69,7 @@ export class AuthController {
 
   @Get('me')
   @Public()
+  @AcceptsAppAudience()
   @ApiOperation({ summary: 'Get current auth status' })
   @ApiOkResponse({
     description: 'Auth status',
@@ -76,6 +78,7 @@ export class AuthController {
   async me(
     @Headers('authorization') authorization?: string | string[],
     @Headers('x-eve-project-id') projectIdHeader?: string | string[],
+    @Headers(APP_AUDIENCE_HEADER) audienceHeader?: string | string[],
   ): Promise<AuthStatusResponse> {
     if (!this.authService.isEnabled()) {
       return { auth_enabled: false, authenticated: false };
@@ -86,7 +89,10 @@ export class AuthController {
       return { auth_enabled: true, authenticated: false };
     }
 
-    const user = await this.authService.verifyAuthorizationHeader(header);
+    const user = await this.authService.verifyAuthorizationHeader(header, {
+      header: Array.isArray(audienceHeader) ? audienceHeader[0] : audienceHeader,
+      projectIds: [projectIdHeader].flat().filter((id): id is string => Boolean(id)),
+    });
     const type = user.is_job_token
       ? 'job'
       : user.is_service_token
@@ -152,20 +158,27 @@ export class AuthController {
 
   @Get('token/verify')
   @Public()
+  @AcceptsAppAudience()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify a Bearer token and return its claims' })
   @ApiOkResponse({
     description: 'Token claims',
     schema: zodSchemaToOpenApi(AuthTokenVerifyResponseSchema, 'AuthTokenVerifyResponse'),
   })
-  async tokenVerify(@Headers('authorization') authorization?: string | string[]): Promise<AuthTokenVerifyResponse> {
+  async tokenVerify(
+    @Headers('authorization') authorization?: string | string[],
+    @Headers(APP_AUDIENCE_HEADER) audienceHeader?: string | string[],
+  ): Promise<AuthTokenVerifyResponse> {
     const header = Array.isArray(authorization) ? authorization[0] : authorization;
     if (!header) {
       throw new UnauthorizedException('Authorization header required');
     }
 
     try {
-      const user = await this.authService.verifyAuthorizationHeader(header);
+      const user = await this.authService.verifyAuthorizationHeader(header, {
+        header: Array.isArray(audienceHeader) ? audienceHeader[0] : audienceHeader,
+        projectIds: [],
+      });
 
       const response: AuthTokenVerifyResponse = {
         valid: true,
@@ -449,6 +462,7 @@ export class AuthController {
 
   @Get('app-access')
   @ScopeNarrowed()
+  @AcceptsAppAudience()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Get authenticated app org access',
@@ -484,6 +498,7 @@ export class AuthController {
   }
 
   @Post('app-invites')
+  @AcceptsAppAudience()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create an app-scoped org member invite',

@@ -1,7 +1,8 @@
 import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthService } from './auth.service.js';
-import { IS_PUBLIC_KEY } from './auth.decorator.js';
+import { ACCEPTS_APP_AUDIENCE_KEY, IS_PUBLIC_KEY } from './auth.decorator.js';
+import { appAudienceRequestFrom } from './app-audience.js';
 import { IdentityProviderRegistry } from './providers/index.js';
 
 @Injectable()
@@ -33,7 +34,14 @@ export class AuthGuard implements CanActivate {
 
     // 1. Bearer JWT (existing path)
     if (header?.toLowerCase().startsWith('bearer ')) {
-      request.user = await this.authService.verifyAuthorizationHeader(header);
+      const acceptsAppAudience = this.reflector.getAllAndOverride<boolean>(ACCEPTS_APP_AUDIENCE_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      request.user = await this.authService.verifyAuthorizationHeader(
+        header,
+        acceptsAppAudience ? appAudienceRequestFrom(request) : undefined,
+      );
       return true;
     }
 

@@ -36,6 +36,7 @@ import {
   hashEmail,
 } from './auth.util.js';
 import type { AuthUser, JobTokenPayload, ServiceTokenPayload } from './auth.types.js';
+import { parseAppAudience, type AppAudienceRequest } from './app-audience.js';
 
 /**
  * GoTrue sign-in methods (`amr` claim) that prove the caller controls the
@@ -137,7 +138,11 @@ export class TokenVerifierService {
     return this.jobQueriesCache;
   }
 
-  async verifyAuthorizationHeader(header: string): Promise<AuthUser> {
+  /**
+   * Resolve a bearer token. `appAudience` is given only by the routes that
+   * take app audience tokens; without it such a token is refused.
+   */
+  async verifyAuthorizationHeader(header: string, appAudience?: AppAudienceRequest): Promise<AuthUser> {
     if (!this.enabled) {
       throw new UnauthorizedException('Auth is disabled');
     }
@@ -163,7 +168,7 @@ export class TokenVerifierService {
     // Dual-mode verification by algorithm: RS256 is an Eve user token, HS256 a
     // GoTrue (Supabase) one.
     if (this.hasInternalKeys && readJwtAlgorithm(token) === 'RS256') {
-      return this.resolveInternalUserToken(token);
+      return this.resolveInternalUserToken(token, appAudience);
     }
     if (this.supabaseSecret) {
       return await this.resolveSupabaseToken(token);
@@ -177,7 +182,7 @@ export class TokenVerifierService {
    * Uses live DB memberships (not stale JWT claims) so that role/org
    * changes made after token issuance are reflected immediately.
    */
-  private async resolveInternalUserToken(token: string): Promise<AuthUser> {
+  private async resolveInternalUserToken(token: string, appAudience?: AppAudienceRequest): Promise<AuthUser> {
     const claims = this.verifyUserToken(token);
     // Typed tokens other than user tokens were routed to their own verifier;
     // older user tokens carry no type.
@@ -187,6 +192,9 @@ export class TokenVerifierService {
     if (!claims.sub) {
       throw new UnauthorizedException('Token subject missing');
     }
+    if (claims.aud !== undefined) {
+      assertAppAudienceRequest(claims.aud, appAudience);
+    }
 
     const user = await this.users.findById(claims.sub);
     if (!user) {
@@ -194,6 +202,9 @@ export class TokenVerifierService {
     }
 
     const authUser = await this.authUserFromUser(user);
+    if (claims.aud !== undefined) {
+      return { ...authUser, app_audience: claims.aud as string };
+    }
     if (claims.bound_org_id === undefined) {
       return authUser;
     }
@@ -717,6 +728,27 @@ export class TokenVerifierService {
       throw new UnauthorizedException('Authorization header must be a Bearer token');
     }
     return token;
+  }
+}
+
+/**
+ * A user token with an `aud` is an app audience token. It is taken only where
+ * the route accepts app tokens, with an X-Eve-Audience header equal to the
+ * token's audience, and when every project the request names is the token's.
+ */
+function assertAppAudienceRequest(aud: unknown, request: AppAudienceRequest | undefined): void {
+  const audience = parseAppAudience(aud);
+  if (!audience) {
+    throw new UnauthorizedException('Unsupported token audience');
+  }
+  if (!request) {
+    throw new UnauthorizedException('App tokens are accepted only on the app sign-in routes');
+  }
+  if (request.header !== aud) {
+    throw new UnauthorizedException('X-Eve-Audience must name the token audience');
+  }
+  if (request.projectIds.some((projectId) => projectId !== audience.projectId)) {
+    throw new UnauthorizedException("App tokens are accepted only for the app's own project");
   }
 }
 

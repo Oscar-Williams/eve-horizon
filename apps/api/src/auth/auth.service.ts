@@ -41,6 +41,7 @@ import { MagicLinkService } from './magic-link.service.js';
 import { AppAuthService } from './app-auth.service.js';
 import { TokenVerifierService } from './token-verifier.service.js';
 import { BootstrapService } from './bootstrap.service.js';
+import type { AppAudienceRequest } from './app-audience.js';
 
 import type { KeyEntry } from './auth.util.js';
 import {
@@ -117,8 +118,8 @@ export class AuthService {
     return this.enabled;
   }
 
-  async verifyAuthorizationHeader(header: string): Promise<AuthUser> {
-    return this.tokenVerifier.verifyAuthorizationHeader(header);
+  async verifyAuthorizationHeader(header: string, appAudience?: AppAudienceRequest): Promise<AuthUser> {
+    return this.tokenVerifier.verifyAuthorizationHeader(header, appAudience);
   }
 
   async autoApplyOrgInviteByEmail(
@@ -251,6 +252,10 @@ export class AuthService {
 
   async mintUserToken(userId: string, email?: string, ttlSeconds?: number): Promise<{ access_token: string; token_type: string; expires_at: number }> {
     return this.appAuth.mintUserToken(userId, email, ttlSeconds);
+  }
+
+  async mintAppUserToken(userId: string, email: string | undefined, audience: string): Promise<{ access_token: string; token_type: string; expires_at: number }> {
+    return this.appAuth.mintAppUserToken(userId, email, audience);
   }
 
   async mintUserTokenForAdmin(

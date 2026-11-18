@@ -41,6 +41,7 @@ import {
   parseProjectBranding,
 } from './auth.util.js';
 import type { AuthUser, AppLinkTokenPayload } from './auth.types.js';
+import { APP_AUDIENCE_TOKEN_TTL_SECONDS } from './app-audience.js';
 
 /**
  * App-facing auth context, app invites, user-token minting, and app-link
@@ -313,6 +314,36 @@ export class AppAuthService {
       type: 'user',
     };
 
+    return {
+      access_token: createJwtRs256(payload, this.signerKey),
+      token_type: 'bearer',
+      expires_at: exp,
+    };
+  }
+
+  /**
+   * Mint the token the SSO gives a deployed app under the strict instance
+   * profile: a user token whose `aud` names the app, valid for an hour, with
+   * no `orgs` claim. The app reads the person's orgs from /auth/app-access.
+   */
+  async mintAppUserToken(
+    userId: string,
+    email: string | undefined,
+    audience: string,
+  ): Promise<{ access_token: string; token_type: string; expires_at: number }> {
+    if (!this.signerKey?.privateKey) {
+      throw new Error('Signing key not configured');
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const exp = now + APP_AUDIENCE_TOKEN_TTL_SECONDS;
+    const payload: Record<string, unknown> = {
+      sub: userId,
+      ...(email ? { email } : {}),
+      aud: audience,
+      iat: now,
+      exp,
+      type: 'user',
+    };
     return {
       access_token: createJwtRs256(payload, this.signerKey),
       token_type: 'bearer',

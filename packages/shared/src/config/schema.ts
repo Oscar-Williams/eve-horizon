@@ -116,6 +116,7 @@ export const configSchema = z.object({
   SUPABASE_AUTH_SERVICE_KEY: z.string().optional(), // HS256 JWT with service_role claim, signed with SUPABASE_JWT_SECRET
   SUPABASE_ANON_KEY: z.string().optional(), // HS256 JWT with anon claim, signed with SUPABASE_JWT_SECRET
   EVE_SSO_URL: z.string().url().optional(), // Public SSO URL (e.g., http://sso.eve.lvh.me)
+  EVE_DASHBOARD_URL: z.string().url().optional(), // Public dashboard URL; defaults to the SSO URL with sso. replaced by dashboard.
   EVE_AUTH_ADMIN_PASSWORD: z.string().optional(), // GoTrue DB role password
   EVE_GITHUB_WEBHOOK_SECRET: z.string().optional(),
   EVE_GITHUB_TOKEN: z.string().optional(),

@@ -54,6 +54,12 @@ export type AuthUser = {
    * starts or changes may receive only these secrets too.
    */
   secrets_allowlist?: string[];
+  /**
+   * Set for an app audience token (`aud` eve-app:<project>[:<env>]): the token
+   * the SSO gives a deployed app. Such a token is accepted only on the app
+   * sign-in routes; see app-audience.ts.
+   */
+  app_audience?: string;
   /** Per-org membership roles (populated for user tokens) */
   memberships?: Array<{ org_id: string; role: string; org_name?: string; org_slug?: string }>;
   /** Redirect URL from a just-applied org invite (used by SSO callback) */
