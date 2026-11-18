@@ -71,6 +71,27 @@ export function isSupabaseEmailProven(claims: JwtPayload): boolean {
   });
 }
 
+/** The audience and role GoTrue gives a signed-in user's access token. */
+const GOTRUE_USER_AUDIENCE = 'authenticated';
+const GOTRUE_USER_ROLE = 'authenticated';
+
+/** True when a JWT `aud` claim (a string or a list) names `audience`. */
+function hasAudience(aud: unknown, audience: string): boolean {
+  return aud === audience || (Array.isArray(aud) && aud.includes(audience));
+}
+
+/** The `alg` a JWT's header names, read without verifying anything. */
+function readJwtAlgorithm(token: string): string | undefined {
+  const [encodedHeader] = token.split('.');
+  try {
+    const header = JSON.parse(Buffer.from(encodedHeader ?? '', 'base64url').toString('utf8')) as unknown;
+    const alg = (header as { alg?: unknown } | null)?.alg;
+    return typeof alg === 'string' ? alg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Bearer-token verification for the auth hot path: routes job / service /
  * app-link / service-principal / user / Supabase tokens to their verifiers
@@ -139,18 +160,11 @@ export class TokenVerifierService {
       return this.resolveServicePrincipalTokenAuth(token);
     }
 
-    // Dual-mode verification: try RS256 (internal Eve token) first, then HS256 (Supabase).
-    // RS256 is tried first because it's the "native" Eve token format and avoids
-    // an unnecessary DB lookup when the caller already has an Eve token.
-    if (this.hasInternalKeys) {
-      try {
-        return await this.resolveInternalUserToken(token);
-      } catch {
-        // Not a valid RS256 token — fall through to Supabase verification
-      }
+    // Dual-mode verification by algorithm: RS256 is an Eve user token, HS256 a
+    // GoTrue (Supabase) one.
+    if (this.hasInternalKeys && readJwtAlgorithm(token) === 'RS256') {
+      return this.resolveInternalUserToken(token);
     }
-
-    // Try HS256 (Supabase token)
     if (this.supabaseSecret) {
       return await this.resolveSupabaseToken(token);
     }
@@ -165,6 +179,11 @@ export class TokenVerifierService {
    */
   private async resolveInternalUserToken(token: string): Promise<AuthUser> {
     const claims = this.verifyUserToken(token);
+    // Typed tokens other than user tokens were routed to their own verifier;
+    // older user tokens carry no type.
+    if (claims.type !== undefined && claims.type !== 'user') {
+      throw new UnauthorizedException('Unsupported token type');
+    }
     if (!claims.sub) {
       throw new UnauthorizedException('Token subject missing');
     }
@@ -676,12 +695,20 @@ export class TokenVerifierService {
     return verifyJwtRs256(token, this.keys);
   }
 
+  /**
+   * Verify a GoTrue access token. Only a signed-in user's token is accepted:
+   * GoTrue gives those `aud` and `role` "authenticated"; its anon and
+   * service keys, and tokens for other roles, are refused.
+   */
   private verifySupabaseToken(token: string): JwtPayload {
-    const secret = this.supabaseSecret ?? loadConfig().EVE_AUTH_JWT_SECRET;
-    if (!secret) {
+    if (!this.supabaseSecret) {
       throw new UnauthorizedException('Supabase JWT secret not configured');
     }
-    return verifyJwtHs256(token, secret);
+    const claims = verifyJwtHs256(token, this.supabaseSecret);
+    if (!hasAudience(claims.aud, GOTRUE_USER_AUDIENCE) || claims.role !== GOTRUE_USER_ROLE) {
+      throw new UnauthorizedException('Not a signed-in user token');
+    }
+    return claims;
   }
 
   private extractBearerToken(header: string): string {
