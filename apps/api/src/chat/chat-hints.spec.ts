@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BadRequestException } from '@nestjs/common';
 import { ChatService } from './chat.service.js';
 import { ThreadChatRequestSchema } from '@eve/shared';
 import type { Db } from '@eve/db';
@@ -78,6 +79,34 @@ describe('ChatService chat hints', () => {
       metadata: { hints: { harness_profile_override: { harness: 'gemini' } } },
     });
     expect(resolved.harness_profile_override).toEqual({ harness: 'gemini' });
+  });
+
+  it('validates legacy metadata.hints env overrides against the reserved names', () => {
+    const service = makeService() as unknown as Priv;
+    for (const env_overrides of [
+      { ANTHROPIC_BASE_URL: 'https://models.example.test' },
+      { HTTPS_PROXY: 'http://proxy.example.test:3128' },
+      { https_proxy: 'http://proxy.example.test:3128' },
+      { EVE_JOB_TOKEN: 'x' },
+    ]) {
+      expect(() => service.resolveChatHints({ metadata: { hints: { env_overrides } } }), JSON.stringify(env_overrides))
+        .toThrow(BadRequestException);
+    }
+  });
+
+  it('validates the legacy metadata.hints profile override', () => {
+    const service = makeService() as unknown as Priv;
+    expect(() => service.resolveChatHints({
+      metadata: { hints: { harness_profile_override: { harness: 'zai', permission_policy: 'yolo' } } },
+    })).toThrow(BadRequestException);
+  });
+
+  it('keeps a secret-backed routing override in legacy metadata.hints', () => {
+    const service = makeService() as unknown as Priv;
+    const resolved = service.resolveChatHints({
+      metadata: { hints: { env_overrides: { ANTHROPIC_BASE_URL: '${secret.EDEN_TEST_BASE_URL}' } } },
+    });
+    expect(resolved.env_overrides).toEqual({ ANTHROPIC_BASE_URL: '${secret.EDEN_TEST_BASE_URL}' });
   });
 
   it('prefers typed hints over legacy metadata.hints when both are set', () => {

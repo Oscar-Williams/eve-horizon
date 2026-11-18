@@ -209,3 +209,77 @@ describe('applyEnvOverrides', () => {
     });
   });
 });
+
+describe('applyEnvOverrides: model credentials and routing at run time', () => {
+  function scoped(key: string, value: string, scope_type: SecretResolveItem['scope_type']): SecretResolveItem {
+    return { key, value, type: 'env_var', scope_type, scope_id: `${scope_type}_1` };
+  }
+
+  it('strips routing and credential names a stored job still carries', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: {
+        ANTHROPIC_BASE_URL: 'https://models.example.test',
+        https_proxy: 'http://proxy.example.test:3128',
+        NODE_TLS_REJECT_UNAUTHORIZED: '0',
+        OPENAI_API_KEY: 'sk-literal',
+        FIRECRAWL_API_KEY: 'fc-1',
+      },
+      resolvedSecrets: [],
+      baseEnv: {},
+    });
+
+    expect(result.env).toEqual({ FIRECRAWL_API_KEY: 'fc-1' });
+    expect(result.strippedKeys.sort()).toEqual(
+      ['ANTHROPIC_BASE_URL', 'NODE_TLS_REJECT_UNAUTHORIZED', 'OPENAI_API_KEY', 'https_proxy'],
+    );
+  });
+
+  it('applies a routing name that is one project or org secret', async () => {
+    const project = await applyEnvOverrides({
+      envOverrides: { ANTHROPIC_BASE_URL: '${secret.EDEN_TEST_BASE_URL}' },
+      resolvedSecrets: [scoped('EDEN_TEST_BASE_URL', 'https://eden.example.test', 'project')],
+      baseEnv: {},
+    });
+    const org = await applyEnvOverrides({
+      envOverrides: { HTTPS_PROXY: '${secret.EGRESS_PROXY}' },
+      resolvedSecrets: [scoped('EGRESS_PROXY', 'http://egress.example.test', 'org')],
+      baseEnv: {},
+    });
+
+    expect(project.env.ANTHROPIC_BASE_URL).toBe('https://eden.example.test');
+    expect(org.env.HTTPS_PROXY).toBe('http://egress.example.test');
+  });
+
+  it('strips a routing name whose secret resolves from the user scope', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: { ANTHROPIC_BASE_URL: '${secret.MY_BASE_URL}' },
+      resolvedSecrets: [scoped('MY_BASE_URL', 'https://elsewhere.example.test', 'user')],
+      baseEnv: { ANTHROPIC_BASE_URL: 'https://platform.example.test' },
+    });
+
+    expect(result.env.ANTHROPIC_BASE_URL).toBe('https://platform.example.test');
+    expect(result.strippedKeys).toEqual(['ANTHROPIC_BASE_URL']);
+  });
+
+  it('strips a routing name whose secret carries no scope', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: { ANTHROPIC_BASE_URL: '${secret.MY_BASE_URL}' },
+      resolvedSecrets: [secret('MY_BASE_URL', 'https://elsewhere.example.test')],
+      baseEnv: {},
+    });
+
+    expect(result.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(result.strippedKeys).toEqual(['ANTHROPIC_BASE_URL']);
+  });
+
+  it('strips a provider credential even when it names a project secret', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: { ANTHROPIC_API_KEY: '${secret.OTHER_KEY}' },
+      resolvedSecrets: [scoped('OTHER_KEY', 'sk-other', 'project')],
+      baseEnv: { ANTHROPIC_API_KEY: 'sk-project' },
+    });
+
+    expect(result.env.ANTHROPIC_API_KEY).toBe('sk-project');
+    expect(result.strippedKeys).toEqual(['ANTHROPIC_API_KEY']);
+  });
+});

@@ -110,4 +110,32 @@ describe('HarnessesService.validateInlineOverride', () => {
     expect(result.harness.auth).toBeNull();
     expect(result.ok).toBe(true);
   });
+  it('reports a routing override whose secret resolves from the user scope as not ok', async () => {
+    const secrets: ResolvedSecret[] = [
+      { key: 'MY_BASE_URL', value: 'https://p', type: 'env_var', scope_type: 'user', scope_id: 'user_1' },
+    ];
+    const service = new HarnessesService(makeSecretsService(secrets));
+    const result = await service.validateInlineOverride({
+      projectId: 'proj_1',
+      userId: 'user_1',
+      request: { env_overrides: { ANTHROPIC_BASE_URL: '${secret.MY_BASE_URL}' } },
+    });
+    expect(result.env_overrides[0]).toMatchObject({ key: 'MY_BASE_URL', status: 'resolved', resolved_at: 'user' });
+    expect(result.ok).toBe(false);
+    expect(result.warnings.find((w) => w.code === 'env_overrides.secret_scope')?.message).toMatch(/ANTHROPIC_BASE_URL/);
+  });
+
+  it('accepts a non-routing override that names a user secret', async () => {
+    const secrets: ResolvedSecret[] = [
+      { key: 'MY_TOOL_TOKEN', value: 't', type: 'env_var', scope_type: 'user', scope_id: 'user_1' },
+    ];
+    const service = new HarnessesService(makeSecretsService(secrets));
+    const result = await service.validateInlineOverride({
+      projectId: 'proj_1',
+      userId: 'user_1',
+      request: { env_overrides: { TOOL_TOKEN: '${secret.MY_TOOL_TOKEN}' } },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
 });
