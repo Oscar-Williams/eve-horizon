@@ -20323,21 +20323,44 @@ components:
       properties:
         reviewer_id:
           type: string
+          description: "Ignored: the decider recorded is the authenticated caller"
         comment:
           type: string
-      required:
-        - reviewer_id
       additionalProperties: false
     RejectRequest:
       type: object
       properties:
         reviewer_id:
           type: string
+          description: "Ignored: the decider recorded is the authenticated caller"
         reason:
           type: string
       required:
-        - reviewer_id
         - reason
+      additionalProperties: false
+    SetSecurityProfileRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum:
+            - instance
+            - new_projects
+            - org
+            - project
+        id:
+          type: string
+          minLength: 1
+        profile:
+          type: string
+          enum:
+            - legacy
+            - audit
+            - strict
+          nullable: true
+      required:
+        - scope
+        - profile
       additionalProperties: false
     AttemptResponse:
       type: object
@@ -20821,30 +20844,6 @@ components:
         - harness
         - env_overrides
         - warnings
-      additionalProperties: false
-    SetSecurityProfileRequest:
-      type: object
-      properties:
-        scope:
-          type: string
-          enum:
-            - instance
-            - new_projects
-            - org
-            - project
-        id:
-          type: string
-          minLength: 1
-        profile:
-          type: string
-          enum:
-            - legacy
-            - audit
-            - strict
-          nullable: true
-      required:
-        - scope
-        - profile
       additionalProperties: false
     CreateEnvironmentRequest:
       type: object

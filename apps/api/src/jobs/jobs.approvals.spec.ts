@@ -247,7 +247,8 @@ describe('job approvals under the strict profile', () => {
     await expect(route(c, 'update', 'solo-r', { review_required: 'none' }, OWNER_AGENT)).rejects.toBeInstanceOf(ForbiddenException);
 
     expect(m.jobQ.updatePhase).not.toHaveBeenCalled();
-    expect(findingsFor('jobs.approve_token')).toHaveLength(2);
+    // One finding row per rule, actor and day: the second refusal adds none.
+    expect(findingsFor('jobs.approve_token')).toHaveLength(1);
   });
 
   it("refuse a non-actor member's PATCH of a run step from review to done", async () => {

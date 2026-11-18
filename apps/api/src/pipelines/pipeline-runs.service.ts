@@ -21,6 +21,9 @@ import { interval, from, concatMap, switchMap, takeWhile, share } from 'rxjs';
 import type { MessageEvent } from '@nestjs/common';
 import { PipelineExpanderService, type PipelineRunWithJobsResponse } from './pipeline-expander.service.js';
 import type { WorkStartOptions } from '../auth/token-scope.js';
+import type { AuthUser } from '../auth/auth.types.js';
+import { SecurityService } from '../security/security.service.js';
+import { PIPELINE_APPROVE_TOKEN_RULE, deciderOf, isUserToken } from '../jobs/run-steps.js';
 
 const DEFAULT_WAIT_SECONDS = 60;
 const MIN_WAIT_SECONDS = 5;
@@ -43,6 +46,7 @@ export class PipelineRunsService {
     @Inject('DB') private readonly db: Db,
     @Inject(forwardRef(() => PipelineExpanderService))
     private readonly expander: PipelineExpanderService,
+    @Inject(SecurityService) private readonly security?: SecurityService,
   ) {
     this.runs = pipelineRunQueries(db);
     this.manifests = projectManifestQueries(db);
@@ -233,7 +237,14 @@ export class PipelineRunsService {
     }
   }
 
-  async approveRun(runId: string): Promise<PipelineRunDetailResponse> {
+  /**
+   * Approve a run awaiting approval. The decider is the caller (a job token is
+   * recorded as `job:<id>`), kept as the run's `approved_by` input and in the
+   * audit log. Under the project's security profile (rule
+   * pipelines.approve_token) a token other than a person's own is recorded
+   * under `audit` and refused under `strict`.
+   */
+  async approveRun(runId: string, caller?: AuthUser): Promise<PipelineRunDetailResponse> {
     const run = await this.runs.findRunById(runId);
     if (!run) {
       throw new NotFoundException(`Pipeline run ${runId} not found`);
@@ -247,6 +258,15 @@ export class PipelineRunsService {
       throw new BadRequestException(`Run ${runId} approval is not supported for job-based pipelines`);
     }
 
+    if (caller && !isUserToken(caller)) {
+      await this.security!.gate(
+        PIPELINE_APPROVE_TOKEN_RULE,
+        { governing: 'project', projectId: run.project_id, actor: caller, detail: { pipeline_run_id: runId } },
+        `Only a person, with their own token, can approve pipeline run ${runId}`,
+      );
+    }
+    const decider = deciderOf(caller);
+
     const approvedEnv = run.env_name ? [run.env_name] : [];
     const inputs = run.inputs_json ?? {};
     const existing = Array.isArray((inputs as Record<string, unknown>).approved_envs)
@@ -256,8 +276,20 @@ export class PipelineRunsService {
 
     await this.runs.updateRun(runId, {
       status: 'pending',
-      inputs_json: { ...inputs, approved_envs },
+      inputs_json: { ...inputs, approved_envs, approved_by: decider.id },
     });
+    await this.db`
+      INSERT INTO audit_log (entity_type, entity_id, action, actor, actor_type, changes, context)
+      VALUES (
+        ${'pipeline_run'},
+        ${runId},
+        'updated',
+        ${decider.id},
+        ${decider.type},
+        ${this.db.json({ status: { old: 'awaiting_approval', new: 'pending' } })},
+        ${this.db.json({ action: 'approve', approved_envs })}
+      )
+    `;
     const steps = await this.runs.listStepRuns(runId);
 
     for (const step of steps) {

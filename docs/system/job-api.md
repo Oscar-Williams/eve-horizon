@@ -315,6 +315,21 @@ interface UpdateJobRequest {
 - `approve`: optional `comment`
 - `reject`: requires `reason`
 
+The decider of an approve or reject is the authenticated caller, recorded as
+the job's `reviewer` and in the audit log; a `reviewer_id` in the body is
+ignored. A person's own token is recorded as their user id; a job token as
+`job:<job id>`, never as the person the job runs as; a service, service-principal
+or app-link token as its kind and id (`service:<name>`, and so on).
+
+Under the project's `strict` security profile (rule `jobs.approve_token`), only
+a person's own token may approve or reject: job, service, service-principal and
+app-link tokens get 403 (under `audit` they are allowed and recorded). On a
+workflow or pipeline run step the person must also be the run's actor or a
+project admin (rule `jobs.run_step_change`), so a step cannot approve itself or
+another step of its run. A `PATCH` that moves a job from `review` to `done`, or
+changes `review_required` while the job is in review, counts as an approval for
+both rules.
+
 ## Job Actor on Update
 
 A job runs as its actor (`actor_user_id`): their user-scope secrets, org-fs

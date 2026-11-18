@@ -122,14 +122,16 @@ export function jobReviewQueries(db: Db) {
      * Validates job is in 'review' phase and transitions to 'done' phase.
      *
      * @param jobId - Job ID
-     * @param reviewerId - Reviewer identifier
+     * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
      * @param comment - Optional approval comment
+     * @param reviewerType - The decider's actor type for the audit log
      * @returns Updated job
      */
     async approveReview(
       jobId: string,
       reviewerId: string,
       comment?: string,
+      reviewerType = 'user',
     ): Promise<Job> {
       // 1. Validate job is in 'review' phase
       const [currentJob] = await db<Job[]>`
@@ -176,7 +178,7 @@ export function jobReviewQueries(db: Db) {
           ${jobId},
           'updated',
           ${reviewerId},
-          'user',
+          ${reviewerType},
           ${db.json({
             phase: { old: 'review', new: 'done' },
             review_status: { old: 'pending', new: 'approved' },
@@ -199,14 +201,16 @@ export function jobReviewQueries(db: Db) {
      * and creates a new attempt automatically.
      *
      * @param jobId - Job ID
-     * @param reviewerId - Reviewer identifier
+     * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
      * @param reason - Rejection reason
+     * @param reviewerType - The decider's actor type for the audit log
      * @returns Updated job
      */
     async rejectReview(
       jobId: string,
       reviewerId: string,
       reason: string,
+      reviewerType = 'user',
     ): Promise<Job> {
       // 1. Validate job is in 'review' phase
       const [currentJob] = await db<Job[]>`
@@ -279,7 +283,7 @@ export function jobReviewQueries(db: Db) {
           ${jobId},
           'updated',
           ${reviewerId},
-          'user',
+          ${reviewerType},
           ${db.json({
             phase: { old: 'review', new: 'active' },
             review_status: { old: 'pending', new: 'rejected' },

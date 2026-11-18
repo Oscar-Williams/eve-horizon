@@ -212,6 +212,12 @@ eve pipeline cancel <run-id> [--reason <text>]
 eve pipeline logs <pipeline> <run-id> [--step <name>]
 ```
 
+Approving a run records the caller as the decider: in the run's inputs as
+`approved_by` (a job token as `job:<job id>`) and in the audit log. Under the
+project's `strict` security profile (rule `pipelines.approve_token`) only a
+person's own token may approve a run; job, service, service-principal and
+app-link tokens get 403.
+
 Notes:
 - Pipeline runs use the job-based engine by default.
 - `eve pipeline run --only <step>` builds a job graph from `steps` and runs a subset.

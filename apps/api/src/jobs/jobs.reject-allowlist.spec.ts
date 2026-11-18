@@ -30,13 +30,16 @@ const recorder = Object.assign(
 );
 const fakeDb = Object.assign(recorder, { begin: async <T>(work: (tx: unknown) => Promise<T>) => work(recorder) });
 
+/** The project's profile is legacy: approval rules allow every token. */
+const legacySecurity = { gate: vi.fn(async () => 'allowed') };
+
 function service(): JobsService {
-  return new JobsService(fakeDb as never, {} as never, {} as never, {} as never, new AccessService({} as never, fakeDb as never));
+  return new JobsService(fakeDb as never, {} as never, {} as never, {} as never, new AccessService({} as never, fakeDb as never), legacySecurity as never);
 }
 
 const RESTRICTED: AuthUser = {
-  user_id: 'user_owner', is_job_token: true, job_id: 'opps-1', project_id: 'proj_a',
-  permissions: ['jobs:write'], secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'],
+  user_id: 'user_owner', is_job_token: true, job_id: 'shop-1', project_id: 'proj_a',
+  permissions: ['jobs:write'], secrets_allowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'],
 } as AuthUser;
 
 function allowlistWrites(): unknown[] {
@@ -54,10 +57,10 @@ beforeEach(() => {
 
 describe('POST /jobs/:job_id/reject, which runs the job again', () => {
   it("narrows the job to a restricted rejecter's allowlist", async () => {
-    await service().reject('a-1', { reviewer_id: 'opps-1', reason: 'redo' } as never, RESTRICTED);
+    await service().reject('a-1', { reviewer_id: 'shop-1', reason: 'redo' } as never, RESTRICTED);
 
     expect(m.jobQ.rejectReview).toHaveBeenCalled();
-    expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']]);
+    expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']]);
     // The narrowing reads the stored list under a row lock.
     const lock = statements.findIndex((s) => /SELECT secrets_allowlist FROM jobs/.test(s.sql) && /FOR UPDATE/.test(s.sql));
     const write = statements.findIndex((s) => /UPDATE jobs SET secrets_allowlist = \?/.test(s.sql));
@@ -75,13 +78,13 @@ describe('POST /jobs/:job_id/reject, which runs the job again', () => {
 
 describe('POST /jobs/:job_id/release, which re-queues the job', () => {
   it("narrows the job to a restricted releaser's allowlist", async () => {
-    m.job = { ...m.job!, phase: 'active', secrets_allowlist: ['OPPS_SIGNING_KEY', 'GITHUB_TOKEN'] };
+    m.job = { ...m.job!, phase: 'active', secrets_allowlist: ['SHOP_SIGNING_KEY', 'GITHUB_TOKEN'] };
     const svc = service();
     (svc as any).gates = { releaseGates: vi.fn() };
 
-    await svc.release('a-1', { agent_id: 'opps-1', reason: 'retry' } as never, RESTRICTED);
+    await svc.release('a-1', { agent_id: 'shop-1', reason: 'retry' } as never, RESTRICTED);
 
     expect(m.jobQ.release).toHaveBeenCalled();
-    expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
+    expect(allowlistWrites()).toEqual([['SHOP_SIGNING_KEY']]);
   });
 });

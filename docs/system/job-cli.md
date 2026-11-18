@@ -279,6 +279,10 @@ eve job approve myproj-a3f2dd12 --comment "LGTM"
 eve job reject myproj-a3f2dd12 --reason "Missing tests"
 ```
 
+The reviewer recorded is whoever runs the command (their token), not a name
+passed on the command line. Under the project's `strict` security profile only a
+person's own token may approve or reject; see `job-api.md`.
+
 ### Job Dependencies
 
 ```bash

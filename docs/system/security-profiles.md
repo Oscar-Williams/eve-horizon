@@ -60,3 +60,5 @@ changes. Rules are added release by release.
 | Rule | Governs | Under `strict` |
 |---|---|---|
 | `jobs.run_step_change` | Project | The jobs of a workflow or pipeline run (root and compiled steps) change only through the run: changes to what they run, phase moves (including done and cancelled), `review_required`, claim, release, submit, approve and reject come only from the run's actor with their own user token, a job token of one of the run's compiled steps, or a project admin (`jobs:admin`). Cancelling a compiled step also cancels the steps after it. |
+| `jobs.approve_token` | Project | Job approve and reject, a `PATCH` from `review` to `done`, and a `review_required` change while in review need a person's own token: job, service, service-principal and app-link tokens get 403. |
+| `pipelines.approve_token` | Project | Pipeline-run approve needs a person's own token: job, service, service-principal and app-link tokens get 403. |

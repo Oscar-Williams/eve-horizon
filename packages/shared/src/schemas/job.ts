@@ -410,14 +410,16 @@ export const SubmitRequestSchema = z.object({
 export type SubmitRequest = z.infer<typeof SubmitRequestSchema>;
 
 export const ApproveRequestSchema = z.object({
-  reviewer_id: z.string(),
+  /** Ignored: the decider recorded is the authenticated caller. */
+  reviewer_id: z.string().optional().describe('Ignored: the decider recorded is the authenticated caller'),
   comment: z.string().optional(),
 });
 
 export type ApproveRequest = z.infer<typeof ApproveRequestSchema>;
 
 export const RejectRequestSchema = z.object({
-  reviewer_id: z.string(),
+  /** Ignored: the decider recorded is the authenticated caller. */
+  reviewer_id: z.string().optional().describe('Ignored: the decider recorded is the authenticated caller'),
   reason: z.string(),
 });
 

@@ -14,7 +14,7 @@ import { AccessService } from '../auth/access.service.js';
 import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
-import { RUN_STEP_CHANGE_RULE, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
+import { APPROVE_TOKEN_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
 // Request/Response Types (inline - the new model)
@@ -142,12 +142,14 @@ export interface SubmitRequest {
 }
 
 export interface ApproveRequest {
-  reviewer_id: string;
+  /** Ignored: the decider is the authenticated caller. */
+  reviewer_id?: string;
   comment?: string;
 }
 
 export interface RejectRequest {
-  reviewer_id: string;
+  /** Ignored: the decider is the authenticated caller. */
+  reviewer_id?: string;
   reason: string;
 }
 
@@ -251,6 +253,17 @@ function changesWhatRuns(job: Job, updates: UpdateJobRequest): boolean {
     updates.phase
     && updates.phase !== job.phase
     && (updates.phase === 'ready' || updates.phase === 'active'),
+  );
+}
+
+/**
+ * True when an update to a job in review decides the review without the
+ * approve route: moving it to done, or changing whether it needs review.
+ */
+function decidesReview(job: Job, updates: UpdateJobRequest): boolean {
+  return job.phase === 'review' && (
+    updates.phase === 'done'
+    || (updates.review_required !== undefined && updates.review_required !== job.review_required)
   );
 }
 
@@ -998,6 +1011,9 @@ export class JobsService {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
 
+    if (decidesReview(currentJob, updates)) {
+      await this.guardApprovalToken(currentJob, caller, 'approve');
+    }
     const cascade = updates.phase === 'cancelled' && await this.cancelCascades(currentJob);
     const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade });
     if (caller && changesWhatRuns(currentJob, updates)) {
@@ -1167,6 +1183,23 @@ export class JobsService {
       return true;
     }
     return this.holdsJobsAdmin(caller, projectId);
+  }
+
+  /**
+   * Holds an approval or rejection to a person's own token, under the
+   * project's security profile (rule jobs.approve_token): a job, service,
+   * service-principal or app-link token is allowed under `legacy`, allowed
+   * and recorded under `audit`, and refused with 403 under `strict`.
+   */
+  private async guardApprovalToken(job: Job, caller: AuthUser | undefined, action: string): Promise<void> {
+    if (!caller || isUserToken(caller)) {
+      return;
+    }
+    await this.security!.gate(
+      APPROVE_TOKEN_RULE,
+      { governing: 'project', projectId: job.project_id, actor: caller, detail: { job_id: job.id, action } },
+      `Only a person, with their own token, can ${action} job ${job.id}`,
+    );
   }
 
   /**
@@ -1943,16 +1976,19 @@ export class JobsService {
   }
 
   /**
-   * Approve a job in review
+   * Approve a job in review. The decider recorded is the caller (deciderOf),
+   * never a reviewer named in the body.
    */
   async approve(jobId: string, data: ApproveRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
     if (!current) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
+    await this.guardApprovalToken(current, caller, 'approve');
     await this.guardRunJob(current, caller, 'approve');
+    const decider = deciderOf(caller);
     try {
-      const job = await this.jobs.approveReview(jobId, data.reviewer_id, data.comment);
+      const job = await this.jobs.approveReview(jobId, decider.id, data.comment, decider.type);
       return this.toJobResponse(job);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : String(error));
@@ -1979,19 +2015,22 @@ export class JobsService {
   /**
    * Reject a job in review, which runs it again. The job keeps its actor, but
    * a rejecter with a secrets allowlist (a restricted job's token) narrows the
-   * job to it, so rejecting cannot re-run work that receives more secrets.
+   * job to it, so rejecting cannot re-run work that receives more secrets. The
+   * decider recorded is the caller, as on approve.
    */
   async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
     if (!current) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
+    await this.guardApprovalToken(current, caller, 'reject');
     await this.guardRunJob(current, caller, 'reject');
+    const decider = deciderOf(caller);
     try {
       const job = await this.db.begin(async (rawTx) => {
         const tx = rawTx as unknown as Db;
         await this.narrowToCallerAllowlist(tx, jobId, caller);
-        return jobQueries(tx).rejectReview(jobId, data.reviewer_id, data.reason);
+        return jobQueries(tx).rejectReview(jobId, decider.id, data.reason, decider.type);
       });
       return this.toJobResponse(job as Job);
     } catch (error) {

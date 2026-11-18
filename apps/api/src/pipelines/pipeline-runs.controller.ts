@@ -134,8 +134,11 @@ export class PipelineRunsController {
     description: 'Pipeline run approved',
     schema: zodSchemaToOpenApi(PipelineRunDetailResponseSchema, 'PipelineRunDetailResponse'),
   })
-  async approveRun(@Param('runId') runId: string): Promise<PipelineRunDetailResponse> {
-    return this.pipelineRunsService.approveRun(runId);
+  async approveRun(
+    @Param('runId') runId: string,
+    @CurrentUser() caller?: AuthUser,
+  ): Promise<PipelineRunDetailResponse> {
+    return this.pipelineRunsService.approveRun(runId, caller);
   }
 
   @RequirePermission('pipelines:write')
