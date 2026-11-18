@@ -2901,11 +2901,9 @@ async function handleApprove(
   }
 
   const comment = getStringFlag(flags, ['comment']);
-  const reviewerId = getStringFlag(flags, ['reviewer-id']) ?? 'cli-user';
 
-  const body: Record<string, unknown> = {
-    reviewer_id: reviewerId,
-  };
+  // The API records the caller as the reviewer.
+  const body: Record<string, unknown> = {};
 
   if (comment) {
     body.comment = comment;
@@ -2951,12 +2949,8 @@ async function handleReject(
     throw new Error('--reason is required');
   }
 
-  const reviewerId = getStringFlag(flags, ['reviewer-id']) ?? 'cli-user';
-
-  const body = {
-    reviewer_id: reviewerId,
-    reason,
-  };
+  // The API records the caller as the reviewer.
+  const body = { reason };
 
   const response = await requestJson<Job>(context, `/jobs/${jobId}/reject`, {
     method: 'POST',

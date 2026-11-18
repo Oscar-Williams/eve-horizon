@@ -188,12 +188,20 @@ export function JobDetail({ job, onClose, onNavigateJob }: JobDetailProps) {
 
   const handleReview = useCallback(async (action: 'approve' | 'reject') => {
     if (!job) return;
+    // A rejection runs the job again with the reason, so it needs one.
+    let body: Record<string, string> = {};
+    if (action === 'reject') {
+      const reason = window.prompt('Why reject? The job runs again with this reason.')?.trim();
+      if (!reason) return;
+      body = { reason };
+    }
     setReviewLoading(true);
     setReviewError(null);
     try {
-      await api(`/jobs/${job.id}/review`, {
+      // The API records the signed-in person as the decider.
+      await api(`/jobs/${job.id}/${action}`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify(body),
       });
       // Invalidate queries to refresh job state
       queryClient.invalidateQueries({ queryKey: ['job-detail', job.id] });
