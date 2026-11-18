@@ -1,4 +1,11 @@
 import type { Db } from '../client.js';
+import {
+  SECURITY_PROFILE_SETTING,
+  generateSecurityFindingId,
+  resolveSecurityProfile,
+  type SecurityGoverningScope,
+  type SecurityProfile,
+} from '@eve/shared';
 
 export interface SecurityFinding {
   id: string;
@@ -143,4 +150,55 @@ export function securityQueries(db: Db) {
       `;
     },
   };
+}
+
+/**
+ * Decide a security rule outside the API (orchestrator, worker): resolve the
+ * governing profile and record a finding under `audit` and `strict`. Returns
+ * the profile; the caller enforces when it is `strict`. Uncached: for code
+ * that runs once per job or deploy, not per request.
+ */
+export async function decideSecurityRule(
+  db: Db,
+  rule: string,
+  ctx: {
+    orgId?: string | null;
+    projectId?: string | null;
+    governing: SecurityGoverningScope;
+    actorType: string;
+    actorId: string;
+    detail?: Record<string, string | number | boolean | null>;
+  },
+): Promise<SecurityProfile> {
+  const [setting] = await db<{ value: string }[]>`
+    SELECT value FROM system_settings WHERE key = ${SECURITY_PROFILE_SETTING}
+  `;
+  const instance = setting?.value ?? null;
+  const row = ctx.projectId || ctx.orgId
+    ? await securityQueries(db).getProfiles({ orgId: ctx.orgId, projectId: ctx.projectId })
+    : null;
+  const profile = ctx.governing === 'instance'
+    ? resolveSecurityProfile({ instance })
+    : resolveSecurityProfile({
+        project: ctx.governing === 'project' ? row?.project_profile : null,
+        org: row?.org_profile,
+        instance,
+      });
+  if (profile !== 'legacy') {
+    try {
+      await securityQueries(db).recordFinding({
+        id: generateSecurityFindingId(),
+        rule,
+        profile,
+        org_id: row?.org_id ?? ctx.orgId ?? null,
+        project_id: ctx.projectId ?? null,
+        actor_type: ctx.actorType,
+        actor_id: ctx.actorId,
+        detail: ctx.detail ?? {},
+      });
+    } catch {
+      // A finding is evidence, not a control: never fail the work over it.
+    }
+  }
+  return profile;
 }

@@ -1,6 +1,82 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/system/security/report": {
+      "get": {
+        "operationId": "SecurityController_report",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "description": "Findings window in days (1-90, default 14)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Effective profiles per org and project, and findings by rule"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Security profiles and findings (system_admin only)",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/system/security/profile": {
+      "put": {
+        "operationId": "SecurityController_setProfile",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSecurityProfileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The profile now set"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Set the security profile of the instance, new projects, an org or a project (system_admin only)",
+        "tags": [
+          "system"
+        ]
+      }
+    },
     "/auth/me": {
       "get": {
         "operationId": "AuthController_me",
@@ -32588,6 +32664,38 @@
           "harness",
           "env_overrides",
           "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "SetSecurityProfileRequest": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "instance",
+              "new_projects",
+              "org",
+              "project"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "legacy",
+              "audit",
+              "strict"
+            ],
+            "nullable": true
+          }
+        },
+        "required": [
+          "scope",
+          "profile"
         ],
         "additionalProperties": false
       },

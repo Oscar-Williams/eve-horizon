@@ -14,6 +14,7 @@ import { handleHarness } from './commands/harness';
 import { handleProviders } from './commands/providers';
 import { handleSecrets } from './commands/secrets';
 import { handleSystem } from './commands/system';
+import { handleDoctor } from './commands/security';
 import { handleEnv } from './commands/env';
 import { handlePipeline } from './commands/pipeline';
 import { handleWorkflow } from './commands/workflow';
@@ -172,6 +173,9 @@ async function main(): Promise<void> {
       return;
     case 'system':
       await handleSystem(subcommand, rest, flags, context);
+      return;
+    case 'doctor':
+      await handleDoctor(subcommand, flags, context);
       return;
     case 'env':
       await handleEnv(subcommand, rest, flags, context);

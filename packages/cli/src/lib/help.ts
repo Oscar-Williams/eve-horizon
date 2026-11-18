@@ -523,7 +523,7 @@ Jobs default to 'ready' phase, making them immediately schedulable.`,
           '--json               Print the API response',
         ],
         examples: [
-          'export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)',
+          'export EVE_APP_LINK_SHOP_TOKEN=$(eve job app-link-token shop)',
           'eval "$(eve job app-link-token --env)"',
         ],
       },
@@ -2255,6 +2255,25 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
           'eve system settings set some-key some-value',
         ],
       },
+      security: {
+        description: 'Set the security profile of the instance, new projects, an org or a project (system admins only)',
+        usage: 'eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects]',
+        options: [
+          'legacy        Today\'s behaviour; hardening rules are not checked',
+          'audit         Today\'s behaviour, plus a finding for what strict would refuse',
+          'strict        Hardening rules are enforced',
+          'clear         Remove an override so the level above applies',
+          '--org <id>    Set an org (overrides the instance)',
+          '--project <id> Set a project (overrides its org)',
+          '--new-projects Set the profile written onto each new project',
+        ],
+        examples: [
+          'eve system security profile audit',
+          'eve system security profile strict --project proj_xxx',
+          'eve system security profile strict --new-projects',
+          'eve doctor security --project proj_xxx',
+        ],
+      },
       orchestrator: {
         description: 'Manage orchestrator concurrency settings',
         usage: 'eve system orchestrator <status|set-concurrency>',
@@ -3045,6 +3064,22 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
     ],
   },
 
+
+  doctor: {
+    description: 'Checks across the instance (system admins only).',
+    usage: 'eve doctor <subcommand>',
+    subcommands: {
+      security: {
+        description: 'Security profiles per org and project, and what strict refused or would refuse',
+        usage: 'eve doctor security [--org <id>] [--project <id>] [--days <n>] [--json]',
+        examples: [
+          'eve doctor security',
+          'eve doctor security --project proj_xxx --days 7',
+        ],
+      },
+    },
+    examples: ['eve doctor security'],
+  },
 
   migrate: {
     description: 'Migration helpers for upgrading config formats.',

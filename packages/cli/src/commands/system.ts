@@ -4,6 +4,7 @@ import type { ResolvedContext } from '../lib/context';
 import { requestJson, requestRaw } from '../lib/client';
 import { outputJson } from '../lib/output';
 import { buildQuery } from '../lib/format';
+import { handleSystemSecurity } from './security';
 
 // ============================================================================
 // Types
@@ -232,6 +233,9 @@ export async function handleSystem(
     case 'settings':
       return handleSettings(positionals, flags, context, json);
 
+    case 'security':
+      return handleSystemSecurity(positionals, flags, context, json);
+
     case 'orchestrator':
       return handleOrchestrator(positionals, flags, context, json);
 
@@ -245,7 +249,7 @@ export async function handleSystem(
       return handleCloudCost(context, flags);
 
     default:
-      throw new Error('Usage: eve system <status|health|jobs|envs|env-health|env-cost|cloud-cost|logs|pods|events|config|settings|orchestrator>');
+      throw new Error('Usage: eve system <status|health|jobs|envs|env-health|env-cost|cloud-cost|logs|pods|events|config|settings|security|orchestrator>');
   }
 }
 
