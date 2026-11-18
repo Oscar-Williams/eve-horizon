@@ -214,6 +214,19 @@ export function membershipQueries(db: Db) {
       `;
     },
 
+    /** Remove a user's memberships on every project of an org; returns how many. */
+    async removeProjectMembershipsInOrg(orgId: string, userId: string): Promise<number> {
+      const rows = await db<{ id: string }[]>`
+        DELETE FROM project_memberships pm
+        USING projects p
+        WHERE pm.project_id = p.id
+          AND p.org_id = ${orgId}
+          AND pm.user_id = ${userId}
+        RETURNING pm.id
+      `;
+      return rows.length;
+    },
+
     async removeProjectMembership(projectId: string, userId: string): Promise<boolean> {
       const rows = await db`
         DELETE FROM project_memberships

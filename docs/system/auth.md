@@ -1152,7 +1152,9 @@ Org membership:
 
 - `GET /orgs/:org_id/members`
 - `POST /orgs/:org_id/members` (by email or user_id)
-- `DELETE /orgs/:org_id/members/:user_id` (last-owner protection)
+- `DELETE /orgs/:org_id/members/:user_id` (last-owner protection). Removing a
+  member also removes their project memberships, role bindings and access
+  group memberships in that org.
 
 Project membership:
 

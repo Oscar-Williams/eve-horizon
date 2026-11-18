@@ -2,7 +2,7 @@ import { Injectable, Inject, BadRequestException, NotFoundException, ConflictExc
 import { resolveWorkerUrl, workerRequestHeaders } from '../common/worker-url';
 import { randomBytes } from 'crypto';
 import type { Db } from '@eve/db';
-import { orgQueries, type Org, membershipQueries, userQueries, agentQueries, spendQueries, projectQueries, environmentQueries, orgInviteQueries } from '@eve/db';
+import { orgQueries, type Org, membershipQueries, userQueries, agentQueries, spendQueries, projectQueries, environmentQueries, orgInviteQueries, accessRoleQueries, accessGroupQueries } from '@eve/db';
 import {
   generateOrgId,
   generateUserId,
@@ -417,7 +417,22 @@ export class OrgsService {
       throw new ForbiddenException('Cannot remove the last owner of an organization');
     }
 
-    const removed = await this.memberships.removeOrgMembership(orgId, userId);
+    // Leaving the org ends every access the org gave: project memberships,
+    // role bindings (org-wide and on projects) and access group memberships
+    // in it. One transaction, so a failure leaves the membership in place.
+    const removed = await this.db.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      if (!(await membershipQueries(tx).removeOrgMembership(orgId, userId))) {
+        return false;
+      }
+      await membershipQueries(tx).removeProjectMembershipsInOrg(orgId, userId);
+      await accessRoleQueries(tx).deleteBindingsForPrincipal(orgId, 'user', userId);
+      const groups = accessGroupQueries(tx);
+      for (const groupId of await groups.listGroupIdsForPrincipal(orgId, 'user', userId)) {
+        await groups.removeMember(groupId, 'user', userId);
+      }
+      return true;
+    });
     if (!removed) {
       throw new NotFoundException(`Member ${userId} not found in org ${orgId}`);
     }
