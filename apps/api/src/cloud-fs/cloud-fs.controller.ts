@@ -57,6 +57,7 @@ export class CloudFsController {
     @CurrentUser() caller: AuthUser | undefined,
     @Query('project_id') projectId?: string,
   ): Promise<CloudFsMountListResponse> {
+    await this.scopedAccess.assertJobMayUseOrgData({ org_id: orgId, permission: 'cloud_fs:read', user: caller });
     const mounts = await this.cloudFsService.listMounts(orgId, projectId);
     return { mounts: this.filterMountsForUser(mounts, caller) };
   }
@@ -371,6 +372,8 @@ export class CloudFsController {
       await this.assertMountAccess(orgId, requestedMountId, 'cloud_fs:read', 'read', user);
       return requestedMountId;
     }
+    // The default mount is still org data.
+    await this.scopedAccess.assertJobMayUseOrgData({ org_id: orgId, permission: 'cloud_fs:read', user });
     const allowed = user?.scope?.cloud_fs?.allow_mount_ids;
     if (!user?.is_job_token || !user.scope || !allowed || allowed.includes('*')) {
       return undefined;

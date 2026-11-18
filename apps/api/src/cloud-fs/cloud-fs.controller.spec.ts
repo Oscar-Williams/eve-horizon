@@ -17,6 +17,7 @@ describe('CloudFsController scoped access', () => {
     };
     const scopedAccess = {
       assert: vi.fn().mockResolvedValue(undefined),
+      assertJobMayUseOrgData: vi.fn().mockResolvedValue(undefined),
     };
     const controller = new CloudFsController(cloudFsService as never, scopedAccess as never);
     return { controller, cloudFsService, scopedAccess };

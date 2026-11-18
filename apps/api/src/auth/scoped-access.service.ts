@@ -111,6 +111,27 @@ export class ScopedAccessService {
   }
 
   /**
+   * For a route that reaches org data without naming one resource (listing
+   * cloud-fs mounts, reading the default mount): hold a job token to the org
+   * data rules alone. Other callers, and other permissions, pass.
+   */
+  async assertJobMayUseOrgData(params: {
+    org_id: string;
+    permission: string;
+    user?: AuthUser;
+    request_id?: string;
+  }): Promise<void> {
+    const { user, permission } = params;
+    if (!user?.is_job_token || !isOrgDataPermission(permission) || (await this.jobMayUseOrgData(user, permission))) {
+      return;
+    }
+    throw buildApiError(403, 'resource_access_denied', `Access denied for permission: ${permission}`, {
+      requestId: params.request_id,
+      details: { permission, resource: null },
+    });
+  }
+
+  /**
    * Org files, docs and cloud-fs belong to the org, whose profile decides
    * whether a job reaches them without a scope or without a user who started
    * the work: `strict` refuses, `audit` records, `legacy` allows. The token
