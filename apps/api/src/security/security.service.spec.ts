@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { SetSecurityProfileRequestSchema } from '@eve/shared';
 import { SecurityService } from './security.service';
 import type { AuthUser } from '../auth/auth.types';
 
@@ -13,6 +14,8 @@ const db = vi.hoisted(() => {
     projectRulesets: new Map<string, number | null>(),
     projectOrgs: new Map<string, string>(),
     findings: [] as Array<Record<string, unknown>>,
+    /** Stored credentials by format, as `eve system secrets reencrypt --dry-run` counts them. */
+    storage: { v1: 0, v2: 0, plainTokens: 0, plainClientSecrets: 0 },
   };
 
   const settings = {
@@ -69,7 +72,17 @@ const db = vi.hoisted(() => {
 
   const audit = { log: vi.fn(async (entry: Record<string, unknown>) => entry) };
 
-  return { state, settings, security, audit };
+  const secrets = {
+    countByFormat: vi.fn(async () => ({ v1: state.storage.v1, v2: state.storage.v2 })),
+  };
+  const integrations = {
+    countTokenFormats: vi.fn(async () => ({ plain: state.storage.plainTokens, sealed: 0 })),
+  };
+  const oauthAppConfigs = {
+    countClientSecretFormats: vi.fn(async () => ({ plain: state.storage.plainClientSecrets, sealed: 0 })),
+  };
+
+  return { state, settings, security, audit, secrets, integrations, oauthAppConfigs };
 });
 
 vi.mock('@eve/db', async (importOriginal) => {
@@ -79,6 +92,9 @@ vi.mock('@eve/db', async (importOriginal) => {
     systemSettingsQueries: vi.fn(() => db.settings),
     securityQueries: vi.fn(() => db.security),
     auditQueries: vi.fn(() => db.audit),
+    secretQueries: vi.fn(() => db.secrets),
+    integrationQueries: vi.fn(() => db.integrations),
+    oauthAppConfigQueries: vi.fn(() => db.oauthAppConfigs),
   };
 });
 
@@ -100,6 +116,7 @@ describe('SecurityService', () => {
     db.state.projectRulesets.clear();
     db.state.projectOrgs = new Map([[PROJECT, ORG]]);
     db.state.findings = [];
+    db.state.storage = { v1: 0, v2: 0, plainTokens: 0, plainClientSecrets: 0 };
   });
 
   describe('effectiveProfile', () => {
@@ -329,6 +346,55 @@ describe('SecurityService', () => {
         effective_ruleset: 1,
       });
       expect(report.orgs.find((o) => o.id === ORG)).toMatchObject({ effective: 'audit', effective_ruleset: null });
+    });
+  });
+  describe('the instance strict guard on legacy credentials', () => {
+    it('refuses the instance strict with 409 while v1 secrets or plain OAuth columns remain, naming the command and the count', async () => {
+      db.state.settings.set('security.profile', 'audit');
+      db.state.storage = { v1: 2, v2: 5, plainTokens: 1, plainClientSecrets: 1 };
+      const svc = build();
+
+      const refused = svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin');
+      await expect(refused).rejects.toBeInstanceOf(ConflictException);
+      await expect(svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toThrow(/eve system secrets reencrypt/);
+      await expect(svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toThrow(/\b4\b/);
+      expect(db.state.settings.get('security.profile')).toBe('audit');
+      expect(db.state.settings.has('security.profile_ruleset')).toBe(false);
+      expect(db.audit.log).not.toHaveBeenCalled();
+    });
+
+    it('sets the instance strict with force, and records that it was forced', async () => {
+      db.state.storage = { v1: 1, v2: 0, plainTokens: 0, plainClientSecrets: 0 };
+      await build().setProfile({ scope: 'instance' }, 'strict', 'user_admin', { force: true });
+      expect(db.state.settings.get('security.profile')).toBe('strict');
+      expect(db.audit.log).toHaveBeenCalledWith(expect.objectContaining({
+        entity_id: 'instance',
+        context: expect.objectContaining({ forced_with_legacy_credentials: 1 }),
+      }));
+    });
+
+    it('sets the instance strict when no legacy credentials remain', async () => {
+      db.state.storage = { v1: 0, v2: 3, plainTokens: 0, plainClientSecrets: 0 };
+      await build().setProfile({ scope: 'instance' }, 'strict', 'user_admin');
+      expect(db.state.settings.get('security.profile')).toBe('strict');
+    });
+
+    it('leaves org, project, new-project and non-strict instance changes alone', async () => {
+      db.state.storage = { v1: 3, v2: 0, plainTokens: 2, plainClientSecrets: 0 };
+      const svc = build();
+      await svc.setProfile({ scope: 'org', id: ORG }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'new_projects' }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, 'audit', 'user_admin');
+      expect(db.state.orgProfiles.get(ORG)).toBe('strict');
+      expect(db.state.projectProfiles.get(PROJECT)).toBe('strict');
+      expect(db.state.settings.get('security.profile')).toBe('audit');
+      expect(db.secrets.countByFormat).not.toHaveBeenCalled();
+    });
+
+    it('accepts force in the request body', () => {
+      expect(SetSecurityProfileRequestSchema.safeParse({ scope: 'instance', profile: 'strict', force: true }).success)
+        .toBe(true);
     });
   });
 });
