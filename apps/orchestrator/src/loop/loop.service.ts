@@ -80,6 +80,7 @@ import * as yaml from 'yaml';
 import { ConcurrencyLimiter } from './concurrency-limiter';
 import { ConcurrencyTuner, TunerConfig } from './concurrency-tuner';
 import { resolveRequiredJobGates } from './job-gates';
+import { holdJobOrgData, withoutOrgData } from './job-org-data';
 import { readPositiveInt, RecoveryService } from './recovery.service';
 
 export {
@@ -3297,6 +3298,10 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     const parsedScope = AccessBindingScopeSchema.safeParse(job.token_scope);
     if (job.token_scope !== null && job.token_scope !== undefined && parsedScope.success) {
       const tokenScope = parsedScope.data;
+      // Org data in a scope no user's judgement stands behind is decided under the org's profile.
+      if (await this.holdOrgData(job, orgId, tokenScope, false) === 'withhold') {
+        return { orgFsMount: NO_ORG_FS_MOUNT, tokenScope: withoutOrgData(tokenScope) };
+      }
       return {
         orgFsMount: deriveOrgFsMountContextFromTokenScope(tokenScope),
         tokenScope,
@@ -3308,10 +3313,27 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       return { orgFsMount: NO_ORG_FS_MOUNT, tokenScope: null };
     }
 
-    return {
-      orgFsMount: await this.resolveOrgFsMountContext(job, orgId),
-      tokenScope: null,
-    };
+    const orgFsMount = await this.resolveOrgFsMountContext(job, orgId);
+    if (orgFsMount.mode !== 'none' && await this.holdOrgData(job, orgId, null, true) === 'withhold') {
+      return { orgFsMount: NO_ORG_FS_MOUNT, tokenScope: null };
+    }
+    return { orgFsMount, tokenScope: null };
+  }
+
+  /** See holdJobOrgData: the org's profile decides org data the API did not judge. */
+  private holdOrgData(
+    job: Job,
+    orgId: string,
+    tokenScope: AccessBindingScope | null,
+    mountFromBindings: boolean,
+  ): Promise<'keep' | 'withhold'> {
+    return holdJobOrgData({
+      job,
+      orgId,
+      tokenScope,
+      mountFromBindings,
+      decide: (rule, ctx) => decideSecurityRule(this.db, rule, ctx),
+    });
   }
 
   private async getSystemHarnessPreference(): Promise<string[] | undefined> {
