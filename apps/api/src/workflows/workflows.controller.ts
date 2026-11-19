@@ -25,7 +25,7 @@ import { zodSchemaToOpenApi } from '../openapi.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { WorkflowsService } from './workflows.service.js';
 import { CurrentUser } from '../common/request-decorators.js';
-import { workStartOptions } from '../auth/token-scope.js';
+import { startedWorkOptions, workStartOptions } from '../auth/token-scope.js';
 
 @ApiTags('workflows')
 @ApiBearerAuth()
@@ -98,7 +98,7 @@ export class WorkflowsController {
     }
 
     const shouldWait = wait === 'true';
-    return this.workflowsService.invoke(projectId, name, body, shouldWait, caller?.user_id, workStartOptions(caller));
+    return this.workflowsService.invoke(projectId, name, body, shouldWait, caller?.user_id, startedWorkOptions(caller));
   }
 
   @RequirePermission('workflows:write')

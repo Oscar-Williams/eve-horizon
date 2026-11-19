@@ -18,12 +18,14 @@ export const ALL_PERMISSIONS = [
   'envs:read', 'envs:write', 'envs:admin',
   // Env DB
   'envdb:read', 'envdb:write',
+  'envdb:export',
   // Org filesystem data plane
   'orgfs:read', 'orgfs:write', 'orgfs:admin',
   // Org document data plane
   'orgdocs:read', 'orgdocs:write', 'orgdocs:admin',
   // Secrets
   'secrets:read', 'secrets:write', 'secrets:admin',
+  'secrets:use',
   // Builds
   'builds:read', 'builds:write', 'builds:admin',
   // Releases
@@ -67,6 +69,29 @@ export function allPermissions(): Permission[] {
 export function isValidPermission(s: string): s is Permission {
   return PERMISSION_SET.has(s);
 }
+
+/**
+ * Operator rights (rule `access.operator_rights`): `secrets:use` lets work a
+ * caller starts receive bound secrets, and `envdb:export` lets a caller take
+ * a database snapshot away. Admin and owner roles hold them, and bindings and
+ * custom roles may grant them; no member role or default token set does.
+ * Outside a project's `strict` profile each is implied by the read right
+ * named here, and each such use is recorded under `audit`.
+ */
+export const OPERATOR_RIGHT_IMPLIED_BY = {
+  'secrets:use': 'secrets:read',
+  'envdb:export': 'envdb:read',
+} as const satisfies Partial<Record<Permission, Permission>>;
+
+export type OperatorRight = keyof typeof OPERATOR_RIGHT_IMPLIED_BY;
+
+/**
+ * Permissions the member role carries only outside a project's `strict`
+ * profile (rule `access.operator_rights`); under `strict` they come only from
+ * admin or owner roles, bindings or custom roles. Default job permissions
+ * carry them under `strict` only when the job's agent declares them.
+ */
+export const MEMBER_OPERATOR_PERMISSIONS: readonly Permission[] = ['jobs:harness_override'];
 
 /** Default permissions granted to agent job tokens. */
 export const DEFAULT_AGENT_PERMISSIONS: readonly Permission[] = [

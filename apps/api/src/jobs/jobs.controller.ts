@@ -32,7 +32,7 @@ import {
 } from '@nestjs/swagger';
 import { RequirePermission, ScopeNarrowed } from '../auth/permission.decorator.js';
 import { RbacService } from '../auth/rbac.service.js';
-import { heldScope, scopeListFiltersToToken, workStartOptions } from '../auth/token-scope.js';
+import { heldScope, scopeListFiltersToToken, startedWorkOptions, workStartOptions } from '../auth/token-scope.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import type { Permission } from '../auth/permissions.js';
 import { zodSchemaToOpenApi } from '../openapi.js';
@@ -151,7 +151,7 @@ export class JobsController {
     if (body.env_overrides) {
       await this.jobsService.holdReservedEnvOverrides(projectId, body.env_overrides, caller);
     }
-    return this.jobsService.create(projectId, body, caller?.user_id, correlationId, workStartOptions(caller));
+    return this.jobsService.create(projectId, body, caller?.user_id, correlationId, startedWorkOptions(caller));
   }
 
   @RequirePermission('jobs:read')

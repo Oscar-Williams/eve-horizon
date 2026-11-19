@@ -40,6 +40,8 @@ const SYSTEM_SCOPE_RULE = 'secrets.system_scope';
 export const SYSTEM_SHARED_KEYS_SETTING = 'secrets.system_shared_keys';
 /** Project rule: a job that declares no secret binding (recorded here; filtered by the runner resolve). */
 const UNBOUND_JOB_RULE = 'secrets.unbound_job';
+/** Project rule: under `strict`, job and service tokens write no org-scope secret (the credential write-back). */
+export const JOB_ORG_WRITE_RULE = 'secrets.job_org_write';
 /** At most this many withheld names are written into a finding. */
 const MAX_FINDING_KEYS = 40;
 const REENCRYPT_BATCH = 200;
@@ -227,6 +229,25 @@ export class SecretsService {
 
     console.log(`Loaded ${loadedCount} system secrets from ${systemSecretsPath}`);
     return loadedCount;
+  }
+
+  /**
+   * Rule secrets.job_org_write: whether work a job or service token did may
+   * write this secret back (the harness credential write-back). Project and
+   * user scope always; org scope, which other projects share, only outside
+   * the token's project's strict profile, and `audit` records each such
+   * write. The org secret routes refuse these tokens on every profile.
+   */
+  async mayJobWriteSecret(caller: AuthUser, scopeType: SecretScopeType, key: string): Promise<boolean> {
+    if (scopeType !== 'org' || !(caller.is_job_token || caller.is_service_token) || !caller.project_id) return true;
+    if (!this.security) return true;
+    const profile = await this.security.decide(JOB_ORG_WRITE_RULE, {
+      governing: 'project',
+      projectId: caller.project_id,
+      actor: caller,
+      detail: { scope: 'org', key },
+    });
+    return profile !== 'strict';
   }
 
   async resolveForOrg(orgId: string): Promise<Array<{ key: string; value: string; type: SecretType }>> {

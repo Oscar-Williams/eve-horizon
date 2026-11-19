@@ -2,7 +2,7 @@ import { Injectable, ForbiddenException, NotFoundException, Inject } from '@nest
 import type { Db } from '@eve/db';
 import { membershipQueries, projectQueries, accessRoleQueries, accessGroupQueries, type MembershipRole } from '@eve/db';
 import { expandPermissions, type Permission } from './permissions.js';
-import { allPermissions } from '@eve/shared';
+import { allPermissions, MEMBER_OPERATOR_PERMISSIONS, OPERATOR_RIGHT_IMPLIED_BY, type OperatorRight } from '@eve/shared';
 import type { AuthUser } from './auth.service.js';
 import { isScopedToken, tokenMayAddressProject, type TokenScopeResolver } from './token-scope.js';
 import { SecurityService } from '../security/security.service.js';
@@ -15,6 +15,16 @@ export const UNRESOLVED_PROJECT_RULE = 'access.unresolved_project';
 export const CHAT_SENDER_RULE = 'chat.sender_rights';
 /** An org-addressed route reached a project resource the caller holds no right to there (P1-5). */
 export const ORG_ROUTE_PROJECT_RULE = 'access.org_route_project';
+/**
+ * Where the operator rights come from (P2-7): outside `strict` a read right
+ * stands for `secrets:use` or `envdb:export`, and the member role carries
+ * `jobs:harness_override`; under `strict` neither holds.
+ */
+export const OPERATOR_RIGHTS_RULE = 'access.operator_rights';
+/** Starting work bound to a secret beyond its harness credential needs `secrets:use` (P2-7). */
+export const SECRETS_USE_RULE = 'secrets.use';
+/** A database snapshot download needs `envdb:export` (P2-7). */
+export const ENVDB_EXPORT_RULE = 'envdb.export';
 
 /** A test the caller's permissions must pass; used to tell whether a request depends on a grant. */
 export type PermissionNeed = (permissions: ReadonlySet<string>) => boolean;
@@ -27,6 +37,11 @@ export type PermissionNeed = (permissions: ReadonlySet<string>) => boolean;
 interface PermissionSources {
   explicit: Set<string>;
   implicit: ReadonlySet<string>;
+  /**
+   * {@link MEMBER_OPERATOR_PERMISSIONS} the user holds only through the
+   * member role: a strict project withholds them (rule access.operator_rights).
+   */
+  memberOperator: ReadonlySet<string>;
   /** The project's id, when the context named a project that exists. */
   projectId?: string;
 }
@@ -126,6 +141,10 @@ export class RbacService implements TokenScopeResolver {
     options: { actor?: AuthUser; need?: PermissionNeed } = {},
   ): Promise<Set<string>> {
     const sources = await this.permissionSources(userId, orgId, projectId);
+    if (await this.withholdsMemberOperatorRights(sources, orgId, userId, options)) {
+      for (const permission of sources.memberOperator) sources.explicit.delete(permission);
+      sources.implicit = new Set([...sources.implicit].filter((permission) => !sources.memberOperator.has(permission)));
+    }
     const all = new Set<string>([...sources.explicit, ...sources.implicit]);
     if (all.size === sources.explicit.size) {
       return all;
@@ -142,6 +161,35 @@ export class RbacService implements TokenScopeResolver {
       detail: { org_role: 'member' },
     });
     return profile === 'strict' ? sources.explicit : all;
+  }
+
+  /**
+   * Rule access.operator_rights: whether a strict project takes the member
+   * role's operator permissions (jobs:harness_override) away from this user.
+   * With `need`, the rule is decided, and recorded, only when the request
+   * depends on them; without, the profile is read and nothing is recorded.
+   */
+  private async withholdsMemberOperatorRights(
+    sources: PermissionSources,
+    orgId: string,
+    userId: string,
+    options: { actor?: AuthUser; need?: PermissionNeed },
+  ): Promise<boolean> {
+    if (sources.memberOperator.size === 0 || !this.security) return false;
+    const scope = { orgId, projectId: sources.projectId };
+    if (!options.need) {
+      return (await this.security.effectiveProfile(scope, 'project', OPERATOR_RIGHTS_RULE)) === 'strict';
+    }
+    const all = new Set<string>([...sources.explicit, ...sources.implicit]);
+    const without = new Set([...all].filter((permission) => !sources.memberOperator.has(permission)));
+    if (options.need(without) || !options.need(all)) return false;
+    const profile = await this.security.decide(OPERATOR_RIGHTS_RULE, {
+      ...scope,
+      governing: 'project',
+      actor: options.actor ?? { user_id: userId },
+      detail: { permission: [...sources.memberOperator].join(','), source: 'member_role' },
+    });
+    return profile === 'strict';
   }
 
   private async permissionSources(userId: string, orgId: string, projectInput?: string): Promise<PermissionSources> {
@@ -172,10 +220,14 @@ export class RbacService implements TokenScopeResolver {
     for (const perm of customPermissions) {
       explicit.add(perm);
     }
+    const custom = new Set<string>(customPermissions);
 
     return {
       explicit,
       implicit: implicit ? (basePermissions as ReadonlySet<string>) : new Set<string>(),
+      memberOperator: new Set(baseRole === 'member'
+        ? MEMBER_OPERATOR_PERMISSIONS.filter((permission) => !custom.has(permission))
+        : []),
       projectId: project?.id,
     };
   }
@@ -252,6 +304,41 @@ export class RbacService implements TokenScopeResolver {
         throw new ForbiddenException(`Missing required permission: ${perm}`);
       }
     }
+  }
+
+  /**
+   * Hold a caller to an operator right (`secrets:use`, `envdb:export`) in a
+   * project, for a use governed by `rule` (secrets.use, envdb.export). The
+   * right itself passes. Outside a strict project the read right that stands
+   * for it passes too, and `audit` records the use (access.operator_rights).
+   * Anyone else breaks `rule`: `legacy` allows, `audit` records and allows,
+   * `strict` records and refuses (403). A null caller is no one (a chat
+   * sender with no Eve user). System admins pass.
+   */
+  async requireOperatorRight(
+    caller: AuthUser | null,
+    projectInput: string,
+    right: OperatorRight,
+    rule: string,
+    detail: Record<string, string | number | boolean | null> = {},
+  ): Promise<void> {
+    if (caller?.is_admin || !this.security) return;
+    const project = await this.getProjectScope(projectInput);
+    const impliedBy = OPERATOR_RIGHT_IMPLIED_BY[right];
+    const held = caller
+      ? await this.resolveEffectivePermissions(caller, project.id, (set) => set.has(right) || set.has(impliedBy))
+      : new Set<string>();
+    if (held.has(right)) return;
+    const scope = { governing: 'project' as const, projectId: project.id, orgId: project.org_id, actor: caller };
+    if (held.has(impliedBy)) {
+      const profile = await this.security.effectiveProfile(scope, 'project', OPERATOR_RIGHTS_RULE);
+      if (profile === 'legacy') return;
+      if (profile === 'audit') {
+        await this.security.decide(OPERATOR_RIGHTS_RULE, { ...scope, detail: { ...detail, permission: right, implied_by: impliedBy } });
+        return;
+      }
+    }
+    await this.security.gate(rule, { ...scope, detail: { ...detail, permission: right } }, `Missing required permission: ${right}`);
   }
 
   /**

@@ -159,6 +159,13 @@ export interface WorkStartOptions {
    * creates may receive only these secrets (narrowed by their own lists).
    */
   secretsAllowlist?: string[] | null;
+  /**
+   * Who starts the work: held to `secrets:use` when the work is bound to a
+   * secret beyond its harness credential (rule secrets.use). Null for a chat
+   * sender with no Eve user. Absent for work no caller starts (triggers,
+   * schedules, internal runs), which the manifest sync authorised.
+   */
+  startedBy?: AuthUser | null;
 }
 
 /**
@@ -172,6 +179,15 @@ export function workStartOptions(caller: AuthUser | undefined): WorkStartOptions
     userSecretsExcluded: Boolean(caller?.bound_org_id || caller?.user_secrets_excluded),
     ...(caller?.secrets_allowlist ? { secretsAllowlist: caller.secrets_allowlist } : {}),
   };
+}
+
+/**
+ * {@link workStartOptions}, plus the caller as who started the work, for the
+ * routes where rule secrets.use judges the starter (job create, workflow
+ * invoke).
+ */
+export function startedWorkOptions(caller: AuthUser | undefined): WorkStartOptions & { userSecretsExcluded: boolean } {
+  return { ...workStartOptions(caller), ...(caller ? { startedBy: caller } : {}) };
 }
 
 /**

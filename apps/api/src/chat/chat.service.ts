@@ -1,4 +1,4 @@
-import { Optional, Injectable, Inject, BadRequestException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
+import { Optional, Injectable, Inject, BadRequestException, ConflictException, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import {
   agentConfigQueries,
@@ -593,7 +593,7 @@ export class ChatService {
       env_overrides: overrideHints.env_overrides,
       labels,
       hints: { ...threadHints, ...this.getAgentContextHints(config, agent.id, agent.slug ?? null), ...this.getAgentAppApisHint(config, agent.slug ?? null), ...(chatFiles ? { chat_files: chatFiles } : {}) },
-    });
+    }, data);
 
     return {
       thread_id: thread.id,
@@ -711,7 +711,7 @@ export class ChatService {
         ...leadAppApis,
         ...(chatFiles ? { chat_files: chatFiles } : {}),
       },
-    });
+    }, data);
     jobIds.push(parent.id);
 
     const coordThreadKey = `coord:job:${parent.id}`;
@@ -750,7 +750,7 @@ export class ChatService {
             ...this.getAgentAppApisHint(config, agent?.slug ?? null),
             ...(memberTimeout ? { timeout_seconds: memberTimeout } : {}),
           },
-        });
+        }, data);
 
         if (previousChildId) {
           await this.jobsService.addDependency(child.id, {
@@ -782,7 +782,7 @@ export class ChatService {
             ...this.getAgentAppApisHint(config, agent?.slug ?? null),
             ...(memberTimeout ? { timeout_seconds: memberTimeout } : {}),
           },
-        });
+        }, data);
         jobIds.push(child.id);
       }
     }
@@ -1046,28 +1046,36 @@ export class ChatService {
           entry.harness_profile,
           overrideHints,
         );
-        const job = await this.createChatJob(undefined, projectId, {
-          description: this.buildListenerJobDescription(
-            data,
-            thread.id,
-            entry.agent_id,
-            entry.agent_slug,
-            Array.from(entry.scopes),
-          ),
-          assignee: entry.agent_id,
-          harness: listenerResolved.harness,
-          harness_profile: entry.harness_profile ?? undefined,
-          harness_options: listenerResolved.harness_options,
-          harness_profile_override: overrideHints.harness_profile_override,
-          env_overrides: overrideHints.env_overrides,
-          labels,
-          hints: {
-            ...threadHints,
-            ...this.getAgentContextHints(config, entry.agent_id, entry.agent_slug ?? null),
-            ...this.getAgentAppApisHint(config, entry.agent_slug ?? null),
-            ...(chatFiles ? { chat_files: chatFiles } : {}),
-          },
-        });
+        let job: Awaited<ReturnType<JobsService['create']>>;
+        try {
+          job = await this.createChatJob(undefined, projectId, {
+            description: this.buildListenerJobDescription(
+              data,
+              thread.id,
+              entry.agent_id,
+              entry.agent_slug,
+              Array.from(entry.scopes),
+            ),
+            assignee: entry.agent_id,
+            harness: listenerResolved.harness,
+            harness_profile: entry.harness_profile ?? undefined,
+            harness_options: listenerResolved.harness_options,
+            harness_profile_override: overrideHints.harness_profile_override,
+            env_overrides: overrideHints.env_overrides,
+            labels,
+            hints: {
+              ...threadHints,
+              ...this.getAgentContextHints(config, entry.agent_id, entry.agent_slug ?? null),
+              ...this.getAgentAppApisHint(config, entry.agent_slug ?? null),
+              ...(chatFiles ? { chat_files: chatFiles } : {}),
+            },
+          }, data);
+        } catch (error) {
+          // One listener the sender may not start (rule secrets.use) does not stop the others.
+          if (!(error instanceof ForbiddenException)) throw error;
+          this.logger.warn(`Listener ${entry.agent_slug ?? entry.agent_id} not dispatched in ${projectId}: ${error.message}`);
+          continue;
+        }
         jobIds.push(job.id);
       }
 
@@ -1079,15 +1087,24 @@ export class ChatService {
   /**
    * Every job chat starts goes through here, so a caller with a secrets
    * allowlist (a restricted job's token) passes it on, as on every other
-   * route that starts work. Gateway dispatches have no caller.
+   * route that starts work. Gateway dispatches have no caller. Whoever sent
+   * the message (the caller, else the Eve user the gateway mapped the sender
+   * to, else no one) starts the work, and is judged for `secrets:use` when
+   * the job is bound to a secret beyond its harness credential (rule
+   * secrets.use).
    */
   private createChatJob(
     ctx: ChatDispatchContext | undefined,
     projectId: string,
     data: Parameters<JobsService['create']>[1],
+    request?: ChatRouteRequest | ChatDispatchRequest,
   ): ReturnType<JobsService['create']> {
     const secretsAllowlist = ctx?.user?.secrets_allowlist;
-    return this.jobsService.create(projectId, data, undefined, undefined, secretsAllowlist ? { secretsAllowlist } : {});
+    const startedBy = ctx?.user ?? (request ? this.resolveMetadataPrincipal(request) : undefined) ?? null;
+    return this.jobsService.create(projectId, data, undefined, undefined, {
+      ...(secretsAllowlist ? { secretsAllowlist } : {}),
+      startedBy,
+    });
   }
 
   private async dispatchRouteTarget(
@@ -1134,7 +1151,7 @@ export class ChatService {
         env_overrides: overrideHints.env_overrides,
         labels: ['chat', `route:${route.id}`, `agent:${agent.id}`],
         hints: { ...threadHints, ...agentContextHints, ...agentAppApis, ...(chatFiles ? { chat_files: chatFiles } : {}) },
-      });
+      }, data);
       jobIds.push(job.id);
       return jobIds;
     }
@@ -1204,7 +1221,7 @@ export class ChatService {
           ...leadAppApis,
           ...(chatFiles ? { chat_files: chatFiles } : {}),
         },
-      });
+      }, data);
       jobIds.push(parent.id);
 
       const coordThreadKey = `coord:job:${parent.id}`;
@@ -1243,7 +1260,7 @@ export class ChatService {
               ...this.getAgentAppApisHint(config, agent?.slug ?? null),
               ...(memberTimeout ? { timeout_seconds: memberTimeout } : {}),
             },
-          });
+          }, data);
 
           if (previousChildId) {
             await this.jobsService.addDependency(child.id, {
@@ -1275,7 +1292,7 @@ export class ChatService {
               ...this.getAgentAppApisHint(config, agent?.slug ?? null),
               ...(memberTimeout ? { timeout_seconds: memberTimeout } : {}),
             },
-          });
+          }, data);
           jobIds.push(child.id);
         }
       }
@@ -1288,7 +1305,7 @@ export class ChatService {
         description: this.buildJobDescription(data, route, threadId),
         labels: ['chat', `route:${route.id}`, `target:${route.target}`],
         hints: { ...threadHints },
-      });
+      }, data);
       jobIds.push(job.id);
       return jobIds;
     }

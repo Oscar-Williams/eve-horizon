@@ -7,12 +7,14 @@ import {
   UnauthorizedException,
   NotFoundException,
   Inject,
+  Optional,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import * as yaml from 'yaml';
 import {
   DEFAULT_SERVICE_PERMISSIONS,
+  MEMBER_OPERATOR_PERMISSIONS,
   AccessBindingScopeSchema,
   agentSecretsAllowlist,
   getServicePermissions,
@@ -35,6 +37,8 @@ import { Public } from './auth.decorator.js';
 import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { AuthService } from './auth.service.js';
 import { AccessService } from './access.service.js';
+import { OPERATOR_RIGHTS_RULE } from './rbac.service.js';
+import { SecurityService } from '../security/security.service.js';
 import { jobTokenPermissionsFor } from './token-scope.js';
 import { AppLinkTokenMinter, type AppLinkMintRequest } from './app-link-token-minter.js';
 import { isRunningAttempt } from './job-liveness.js';
@@ -54,6 +58,7 @@ export class AuthInternalController {
     private readonly authService: AuthService,
     @Inject('DB') private readonly db: Db,
     private readonly accessService: AccessService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.jobs = jobQueries(db);
     this.projects = projectQueries(db);
@@ -119,7 +124,10 @@ export class AuthInternalController {
       orgId: project.org_id,
       projectId: job.project_id,
       jobId: job.id,
-      permissions,
+      permissions: await this.withoutDefaultOperatorRights(permissions, [
+        ...declaredPermissions(agent?.access_json),
+        ...(job.token_permissions ?? []),
+      ], { projectId: job.project_id, orgId: project.org_id }),
       scope,
       ttlSeconds: body.ttl_seconds,
       agentSlug: agentSlug ?? undefined,
@@ -137,6 +145,23 @@ export class AuthInternalController {
       token_type: 'bearer',
       expires_at: payload.exp,
     };
+  }
+
+  /**
+   * Rule access.operator_rights: under a strict project the default job
+   * permissions do not carry the member role's operator permissions
+   * (jobs:harness_override). A job token keeps one only when the job's agent
+   * (access.permissions) or the job's own token permissions declare it.
+   */
+  private async withoutDefaultOperatorRights(
+    permissions: string[],
+    declared: readonly string[],
+    scope: { projectId: string; orgId: string },
+  ): Promise<string[]> {
+    const undeclared = new Set<string>(MEMBER_OPERATOR_PERMISSIONS.filter((p) => permissions.includes(p) && !declared.includes(p)));
+    if (undeclared.size === 0 || !this.security) return permissions;
+    const profile = await this.security.effectiveProfile(scope, 'project', OPERATOR_RIGHTS_RULE);
+    return profile === 'strict' ? permissions.filter((p) => !undeclared.has(p)) : permissions;
   }
 
   @Public()
@@ -310,4 +335,10 @@ export class AuthInternalController {
   ): Promise<{ access_token: string; token_type: string; expires_at: number }> {
     return this.appLinkMinter.mint(body);
   }
+}
+
+/** The permissions an agent declares in `access.permissions`. */
+function declaredPermissions(access: Record<string, unknown> | null | undefined): string[] {
+  const raw = access?.permissions;
+  return Array.isArray(raw) ? raw.filter((p): p is string => typeof p === 'string') : [];
 }

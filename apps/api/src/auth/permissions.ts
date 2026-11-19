@@ -44,6 +44,9 @@ const ADMIN_EXTRA: readonly Permission[] = [
   'envs:write',       'envs:admin',
   'envdb:write',
   'secrets:write',    'secrets:admin',
+  // Operator rights (rule access.operator_rights): outside a strict project
+  // the member role's read rights stand for them.
+  'secrets:use',      'envdb:export',
   'builds:write',     'builds:admin',
   'releases:admin',
   'pipelines:write',  'pipelines:admin',
