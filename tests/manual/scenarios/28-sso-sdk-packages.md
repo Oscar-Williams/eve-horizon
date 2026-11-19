@@ -120,11 +120,39 @@ console.log('PASS: All expected exports present');
 ### 7. SSO Broker Session Endpoint
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" http://sso.eve.lvh.me/session
+# From the dashboard origin, with no session cookie
+curl -s -o /dev/null -w "%{http_code}\n" http://sso.eve.lvh.me/session -H "Origin: http://dashboard.eve.lvh.me"
+
+# With no Origin at all
+curl -s -o /dev/null -w "%{http_code}\n" http://sso.eve.lvh.me/session
 ```
 
 **Expected:**
-- Returns `401` (no session cookie) — confirms the endpoint exists and responds
+- The dashboard-origin request returns `401` (no session cookie) — confirms the endpoint exists and responds
+- The request with no Origin returns `401` under the `audit` and `legacy`
+  instance profiles and `403` under `strict` (the SSO serves only the
+  dashboard and app hosts there)
+
+### 7a. App Audience Tokens (Strict Instance Profile)
+
+With the instance on `strict`, sign in through an app that uses the SDK and
+read the token it keeps in `sessionStorage`:
+
+```bash
+APP_TOKEN=...   # from the app's sessionStorage
+echo "$APP_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{type, aud, orgs, exp, iat}'
+
+AUD=$(echo "$APP_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r .aud)
+curl -s -o /dev/null -w "%{http_code}\n" $EVE_API_URL/auth/me -H "Authorization: Bearer $APP_TOKEN"
+curl -s $EVE_API_URL/auth/me -H "Authorization: Bearer $APP_TOKEN" -H "X-Eve-Audience: $AUD" | jq '{authenticated, user_id}'
+curl -s -o /dev/null -w "%{http_code}\n" $EVE_API_URL/projects -H "Authorization: Bearer $APP_TOKEN" -H "X-Eve-Audience: $AUD"
+```
+
+**Expected:**
+- `type` is `user`, `aud` is `eve-app:<project_id>:<env>`, `orgs` is null,
+  `exp - iat` is `3600`
+- `/auth/me` returns `401` without the header and `authenticated: true` with it
+- `/projects` returns `401`
 
 ### 8. ${SSO_URL} Manifest Interpolation (Code Verification)
 
@@ -144,5 +172,6 @@ grep -n 'SSO_URL' apps/worker/src/deployer/deployer.service.ts
 - [ ] Token verification works via API
 - [ ] Worker has EVE_SSO_URL environment variable
 - [ ] @eve-horizon/auth exports both agent and user auth functions
-- [ ] SSO broker session endpoint accessible
+- [ ] SSO broker session endpoint accessible (no Origin: 403 under strict)
+- [ ] Under strict, an app gets an audience token accepted only on the app sign-in routes with X-Eve-Audience
 - [ ] Manifest interpolation code includes ${SSO_URL}

@@ -7,8 +7,10 @@
 
 Eve Horizon uses RS256 JWT tokens for authentication. When Supabase Auth is
 enabled, Eve also accepts Supabase-issued HS256 access tokens for web login.
-Verification is **dual-mode**: RS256 is tried first, then HS256 (when configured).
-Job tokens and service principal tokens remain **RS256-only**.
+Verification is **dual-mode** by the token's algorithm: RS256 is an Eve token,
+HS256 a Supabase one (when configured). Job tokens and service principal tokens
+remain **RS256-only**. An RS256 token on the user path must be a user token or
+carry no `type` (older tokens); any other type is refused.
 
 | Token Source | Algorithm | Use Case |
 |--------------|-----------|----------|
@@ -115,7 +117,8 @@ When Supabase Auth is enabled, Eve runs three web-auth components:
 
 - **GoTrue (Supabase Auth)**: Handles email/password, magic links, and invites.
 - **SSO broker** (`apps/sso`): Central login/session service that exchanges Supabase
-  tokens for Eve RS256 tokens and sets a shared, root-domain session cookie.
+  tokens for Eve RS256 tokens. It keeps the session in a host-only cookie on
+  its own host and sets a non-secret `eve_sso` hint on the root domain.
 - **Mailpit (local only)**: Captures invite and magic-link emails at `mail.<domain>`.
 
 ### Auth Configuration Discovery
@@ -215,7 +218,7 @@ Eve-rendered magic-link and invite emails do not embed the raw GoTrue verify URL
 
 Operations note: rows with `get_count > 1` are expected for users on protected mailboxes. The pruner deletes expired or long-consumed rows after 24h. Wrap tokens have the typeid('mlw') shape (`mlw_<26 base32>`) and are validated against that regex before any DB lookup. The wrap token is the bearer credential — knowing it lets the holder redeem. Trust boundary matches `org_invites.invite_code`.
 
-CSRF defense is a stateless HMAC nonce (signed with `EVE_INTERNAL_API_KEY`); it defends against accidental cross-origin form submissions but does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` and `Referrer-Policy: no-referrer` to prevent token leakage via Referer or shared caches. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
+CSRF defense is a stateless HMAC nonce (signed with `EVE_INTERNAL_API_KEY`, which the SSO must have: without it the interstitial is not served); it defends against accidental cross-origin form submissions but does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` and `Referrer-Policy: no-referrer` to prevent token leakage via Referer or shared caches. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
 
 A successful consume emits `auth.action_link.wrap_redeemed` to the event spine when `project_id` is present, carrying `{ org_id, email_hash, kind, get_count, latency_ms }`. The event source `auth` is also used for the existing `auth.domain_signup.*` events.
 
@@ -417,10 +420,13 @@ The SSO broker uses this list for two checks:
 - **`redirect_to` validation** in `/callback` and the `/` / `/login` landing
   pages. Cluster-domain hostnames are always accepted; anything else must
   match an entry in the project's allowlist (by exact scheme+host+port).
-- **CORS** for `/session` and `/logout`. Same-origin and cluster-domain
-  origins are accepted unconditionally. Non-cluster origins require
-  `project_id` in the request query so the broker can look up the project's
-  allowlist. The browser `Origin` header is then matched against that list.
+- **CORS** for `/session` and `/logout` under the `legacy` and `audit`
+  instance profiles. Requests with no `Origin` and cluster-domain origins are
+  accepted. Non-cluster origins require `project_id` in the request query so
+  the broker can look up the project's allowlist. The browser `Origin` header
+  is then matched against that list. Under `strict` the stricter origin rule
+  in [SSO sessions under the instance profile](#sso-sessions-under-the-instance-profile)
+  replaces this one.
 
 When a custom-domain app uses the `@eve-horizon/auth-react` SDK, the provider
 calls `GET /session?project_id=<eve_project_id>` and
@@ -434,15 +440,24 @@ custom domains) is visible to operators via the CLI:
 eve project auth-context <project_id>
 ```
 
-#### Session Cookie SameSite
+#### Session Cookies
 
-The SSO broker sets two cookies on `.<EVE_DEFAULT_DOMAIN>` after a successful
-sign-in:
+After a successful sign-in the SSO broker sets:
 
-| Cookie | Purpose | Attributes (https) | Attributes (http local) |
-| --- | --- | --- | --- |
-| `eve_sso_rt` | Refresh token (httpOnly) | `Secure; HttpOnly; SameSite=None` | `SameSite=Lax` |
-| `eve_sso` | UX hint (cookie presence) | `Secure; SameSite=None` | `SameSite=Lax` |
+| Cookie | Purpose | Scope | Attributes (https) | Attributes (http local) |
+| --- | --- | --- | --- | --- |
+| `__Host-eve_sso_rt` (https) / `eve_sso_rt` (http) | GoTrue refresh token | SSO host only, no `Domain` | `Path=/; Secure; HttpOnly; SameSite=None` | `HttpOnly; SameSite=Lax` |
+| `eve_sso` | UX hint (cookie presence), no secret | `.<EVE_DEFAULT_DOMAIN>` | `Secure; SameSite=None` | `SameSite=Lax` |
+
+The SSO reads the refresh token only from its own host-only cookie, so no
+other host on the domain can set one it would accept. Every response that
+sets or clears the session also clears the parent-domain `eve_sso_rt` cookie
+that older releases set. Apps may read `eve_sso` from page script to decide
+whether to ask `/session`.
+
+`/login` and a confirmed sign-in link (`POST /m/:wrap`) also set a short-lived
+host-only state cookie (`__Host-eve_sso_state`, 15 minutes). See
+[The sign-in callback](#the-sign-in-callback).
 
 `SameSite=None` is required for the `@eve-horizon/auth-react` provider's
 `fetch(SSO_URL/session, { credentials: 'include' })` probe to carry the
@@ -459,6 +474,89 @@ Operators can confirm the SSO broker's running mode from container logs:
 ```
 [eve-sso] Secure cookies: true (SameSite=none)
 ```
+
+#### The sign-in callback
+
+`/callback` sets a session only from a `POST` whose `Origin` is the SSO's own.
+The SSO pages that receive GoTrue tokens (the fragment reader at `/callback`,
+the password sign-in, `/login` and the `/` landing page) post them in a form
+body; a `GET /callback` carrying tokens sets no session and returns to
+`/login`. Tokens therefore never travel in a URL to the SSO.
+
+The `POST` sets the session at once when the state cookie shows that this
+browser started the sign-in (at `/login` or by confirming a sign-in link).
+Without it (an admin invite, or an email opened in another browser) the SSO
+shows "Continue as <email>?" and sets the session only when that page's form
+comes back with its one-time confirmation. A link planted by someone else
+therefore cannot sign a visitor in as them.
+
+#### Sign-out
+
+`POST /logout` refreshes the session once (GoTrue's logout needs an access
+token), calls GoTrue `POST /logout?scope=local`, which ends this session only
+and not the person's sessions elsewhere, and clears the cookies. The cookies
+are cleared even when GoTrue cannot be reached.
+
+#### Dashboard magic links
+
+A magic link requested from the SSO login page with no project (the Eve
+dashboard) is sent through GoTrue `/magiclink` with
+`redirect_to=<sso>/?redirect_to=<dashboard>` as a query parameter, so the link
+returns through the SSO landing page to the dashboard. Only cluster addresses
+are passed on. `GOTRUE_URI_ALLOW_LIST` stays empty: GoTrue only returns to its
+site URL, the SSO, and never hands GoTrue tokens straight to an app. The reply
+is the same whatever GoTrue answers, so it does not tell anyone whether an
+account exists.
+
+### SSO sessions under the instance profile
+
+The [instance security profile](./security-profiles.md) governs what
+`/session` and `/logout` serve, because the calling app is the party these
+rules guard against. The SSO asks the API before it touches the session
+(`POST /auth/sso/check-origin`) and again for the token
+(`POST /auth/sso/session`, with the GoTrue access token as the bearer).
+
+**Who may ask, under `strict`** (rule `sso.session_origin`):
+- the Eve dashboard's origin with no `project_id`, which gets the platform
+  token as before (`EVE_DASHBOARD_URL`; without it, `EVE_SSO_URL` with the
+  leading `sso.` read as `dashboard.`);
+- for `/logout` only, the SSO's own origin (its landing page signs out);
+- any other caller names a `project_id` of a project with `x-eve.auth` and
+  calls from an `https` origin that is one of that project's own hosts: its
+  environments' default hosts, its ingress aliases, its verified custom
+  domains and its manifest `allowed_redirect_origins`. Other orgs' domains do
+  not count, even for an `allowlist` app. Plain `http` is accepted only when
+  the SSO itself is plain `http` (local clusters).
+
+Any other request, including one with no `Origin`, gets 403.
+
+**What an app gets, under `strict`** (rules `sso.app_access`,
+`sso.audience_token`): an app audience token, only for a person the project's
+app-access policy admits (anyone else gets 403):
+
+| Claim | Value |
+| --- | --- |
+| `type` | `user` |
+| `aud` | `eve-app:<project_id>:<env>`; `eve-app:<project_id>` when the origin names no environment (manifest origins, and aliases or custom domains with no environment bound) |
+| `orgs` | absent: read the person's orgs from `/auth/app-access` |
+| lifetime | one hour; ask `/session` again on a 401 |
+
+The environment comes from the origin's host, so a staging or preview token
+does not work for production. A token with no environment works for any of
+the project's environments.
+
+The API accepts an app audience token only on `/auth/me`, `/auth/app-access`,
+`/auth/app-invites` and `/auth/token/verify`, only with an `X-Eve-Audience`
+header equal to the token's `aud`, and only when every `project_id` the
+request names (query, body, or `X-Eve-Project-Id` on `/auth/me`) is the
+token's project. Every other route answers 401. App-link tokens
+(`aud: project:...`) and registry tokens are not affected. The gateway's
+webchat accepts no token with an `aud`, and `@eve-horizon/auth` checks the
+audience against the app's own (see [Eve Auth SDK](./eve-auth-sdk.md)).
+
+**Under `audit`** `/session` and `/logout` behave as before and the API
+records a finding for each request `strict` would refuse or answer
+differently. **Under `legacy`** nothing is recorded.
 
 ### Token Verification (Apps)
 
@@ -1191,6 +1289,9 @@ export SUPABASE_JWT_SECRET="your-supabase-jwt-secret"
 ```
 
 In this configuration:
+- Only a signed-in user's token is accepted: it must carry `aud` and `role`
+  `authenticated`, as GoTrue user tokens do. GoTrue's anon and service keys,
+  and tokens for any other role, are refused.
 - Supabase users are auto-created on first login (identity-linked by Supabase UUID,
   or by email match on an email-proven sign-in; see Token Exchange above)
 - RS256 flows (SSH/Nostr, job tokens, service principals) continue to work

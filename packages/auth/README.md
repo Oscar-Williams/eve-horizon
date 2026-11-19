@@ -45,7 +45,19 @@ Set automatically when deployed to Eve:
 | `EVE_API_URL` | JWKS fetch + remote token verification |
 | `EVE_ORG_ID` | Org membership check |
 | `EVE_SSO_URL` | Auth config discovery |
-| `EVE_PROJECT_ID` | App-scoped org access lookup |
+| `EVE_PROJECT_ID` | App-scoped org access lookup; the app's own token audience |
+| `EVE_ENV_NAME` | The app's own token audience |
+
+## App audience tokens
+
+When the Eve instance runs the `strict` security profile, the SSO gives an
+app a one-hour token whose `aud` names the app
+(`eve-app:<EVE_PROJECT_ID>:<EVE_ENV_NAME>`, or `eve-app:<EVE_PROJECT_ID>`)
+and which carries no `orgs` claim. The middleware accepts such a token only
+for the app's own audience, reads the person's orgs from Eve
+`/auth/app-access`, and sends `X-Eve-Audience` whenever it asks Eve about the
+token. To call Eve yourself, add `eveAudienceHeaders(token)` to the request
+headers.
 
 ## Docs
 

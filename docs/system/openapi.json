@@ -517,6 +517,72 @@
         ]
       }
     },
+    "/auth/sso/check-origin": {
+      "post": {
+        "description": "Returns the instance security profile and whether the Origin may use the SSO /session or /logout: the Eve dashboard with no project, or an https host of the named project with x-eve.auth. An origin that may not is recorded as a security finding.",
+        "operationId": "AuthSsoController_checkOrigin",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SsoOriginCheckRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SsoOriginCheckResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Check an origin asking the SSO for a session or sign-out",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/sso/session": {
+      "post": {
+        "description": "Takes a GoTrue access token as the Bearer and the Origin and project the browser asked from. The dashboard gets the platform token. Under the strict instance profile an app gets an audience token (aud eve-app:<project>[:<env>], one hour, no orgs claim), only for a person its app-access policy admits; other callers get 403.",
+        "operationId": "AuthSsoController_session",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SsoSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SsoSessionResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Issue the token the SSO /session returns",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/internal/auth/mint-job-token": {
       "post": {
         "operationId": "AuthInternalController_mintJobToken",
@@ -21187,6 +21253,96 @@
         },
         "required": [
           "sent"
+        ],
+        "additionalProperties": false
+      },
+      "SsoOriginCheckRequest": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "maxLength": 2048,
+            "nullable": true
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "nullable": true
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "session",
+              "logout"
+            ]
+          }
+        },
+        "required": [
+          "purpose"
+        ],
+        "additionalProperties": false
+      },
+      "SsoOriginCheckResponse": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "legacy",
+              "audit",
+              "strict"
+            ]
+          },
+          "allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "allowed"
+        ],
+        "additionalProperties": false
+      },
+      "SsoSessionRequest": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "maxLength": 2048,
+            "nullable": true
+          },
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SsoSessionResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "number"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_at",
+          "user_id"
         ],
         "additionalProperties": false
       },

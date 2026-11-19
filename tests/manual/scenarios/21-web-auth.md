@@ -159,11 +159,13 @@ curl -s "$EVE_API_URL/auth/me" \
 ### 12. SSO Session Endpoint
 
 ```bash
-# Simulate what a browser app does — call /session with refresh cookie and Origin
+# Simulate what the dashboard does — call /session with the SSO's refresh
+# cookie and the dashboard's Origin. The cookie is host-only on the SSO:
+# eve_sso_rt on local http, __Host-eve_sso_rt on https.
 REFRESH_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r .refresh_token)
 
 SSO_RESPONSE=$(curl -s "http://sso.eve.lvh.me/session" \
-  -H "Origin: http://api.eve.lvh.me" \
+  -H "Origin: http://dashboard.eve.lvh.me" \
   -b "eve_sso_rt=$REFRESH_TOKEN")
 
 echo "$SSO_RESPONSE" | jq .
@@ -172,7 +174,69 @@ echo "$SSO_RESPONSE" | jq .
 **Expected:**
 - Returns `{ access_token, expires_at, user: { id, email } }`
 - `user.id` starts with `user_`
-- `access_token` is a valid Eve RS256 JWT
+- `access_token` is a valid Eve RS256 JWT with no `aud`
+- GoTrue rotates the refresh token: use `refresh_token` from a fresh login for
+  the next steps
+
+### 12a. SSO Origins Under the Strict Instance Profile
+
+```bash
+eve system security profile strict          # instance profile (system admin)
+
+# No Origin: refused before the session is touched
+curl -s -o /dev/null -w "%{http_code}\n" "http://sso.eve.lvh.me/session" -b "eve_sso_rt=$REFRESH_TOKEN"
+
+# A cluster host that is not the dashboard and names no project: refused
+curl -s -o /dev/null -w "%{http_code}\n" "http://sso.eve.lvh.me/session" \
+  -H "Origin: http://api.eve.lvh.me" -b "eve_sso_rt=$REFRESH_TOKEN"
+
+eve system security profile audit           # back to the default
+eve doctor security --days 1                # sso.session_origin findings
+```
+
+**Expected:**
+- Both requests return `403` under `strict`
+- Under `audit` the same requests are served as before, and the report lists
+  `sso.session_origin` findings for them
+
+### 12b. Callback Takes Tokens Only by POST
+
+```bash
+# Tokens in the query string set no session
+curl -s -o /dev/null -D - "http://sso.eve.lvh.me/callback?access_token=$SUPABASE_TOKEN&refresh_token=$REFRESH_TOKEN" \
+  | grep -i -E "^(location|set-cookie)"
+
+# A POST from another origin is refused
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "http://sso.eve.lvh.me/callback" \
+  -H "Origin: http://evil.example" --data-urlencode "access_token=$SUPABASE_TOKEN" \
+  --data-urlencode "refresh_token=$REFRESH_TOKEN"
+
+# A POST from the SSO's own origin, with no sign-in state, asks first
+curl -s -X POST "http://sso.eve.lvh.me/callback" -H "Origin: http://sso.eve.lvh.me" \
+  --data-urlencode "access_token=$SUPABASE_TOKEN" --data-urlencode "refresh_token=$REFRESH_TOKEN" \
+  | grep -o "Continue as [^<]*"
+```
+
+**Expected:**
+- The GET redirects to `/login` and sets no `eve_sso_rt` cookie
+- The foreign POST returns `403`
+- The same-origin POST shows "Continue as <email>?" and sets no session cookie
+
+### 12c. Logout Ends Its Own Session
+
+```bash
+curl -s -X POST "http://sso.eve.lvh.me/logout" \
+  -H "Origin: http://dashboard.eve.lvh.me" -b "eve_sso_rt=$REFRESH_TOKEN" | jq .
+
+# The refresh token no longer works at GoTrue
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "http://auth.eve.lvh.me/token?grant_type=refresh_token" \
+  -H "apikey: $ANON_KEY" -H "Content-Type: application/json" -d "{\"refresh_token\":\"$REFRESH_TOKEN\"}"
+```
+
+**Expected:**
+- Logout returns `{ "ok": true }` and clears the cookies
+- The GoTrue refresh returns `400` (session ended); other sessions of the
+  same person, e.g. a CLI password login, still work (`scope=local`)
 
 ### 13. Identity Auto-Linking Verified
 
@@ -248,6 +312,9 @@ curl -s "http://mail.eve.lvh.me/api/v1/messages" \
 - [ ] Eve RS256 token accepted by /auth/me
 - [ ] RS256 (internal) tokens still work (dual-mode)
 - [ ] SSO session endpoint returns Eve token from refresh cookie
+- [ ] Under strict, /session with no Origin or an unlisted origin returns 403; under audit it is served and recorded
+- [ ] /callback refuses tokens by GET and from other origins, and asks "Continue as" without sign-in state
+- [ ] Logout ends that GoTrue session only
 - [ ] Identity auto-linking is stable (same user on repeat exchange)
 - [ ] Admin invite API sends GoTrue invite email
 - [ ] CLI `--web` flag triggers GoTrue invite

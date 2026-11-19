@@ -76,10 +76,45 @@ function App() {
 ### Token Flow
 
 1. User visits app -- `EveAuthProvider` checks `sessionStorage` for cached token
-2. If no cached token -- probes SSO broker `/session` endpoint (uses root-domain cookie)
+2. If no cached token -- probes SSO broker `/session?project_id=<project>` with
+   credentials (the SSO's own host-only session cookie; apps can only see the
+   `eve_sso` hint)
 3. If SSO session exists -- gets fresh Eve RS256 token, caches in `sessionStorage`
 4. If no SSO session -- shows login form (SSO redirect or token paste)
 5. All API requests include `Authorization: Bearer <token>` header
+
+### App Audience Tokens (Strict Instance Profile)
+
+Under the `strict` instance [security profile](./security-profiles.md),
+`/session` serves an app only from one of its own project's hosts (default
+environment hosts, ingress aliases, verified custom domains, manifest
+`allowed_redirect_origins`), only for a person the app's access policy
+admits, and returns an **app audience token** instead of the platform token:
+
+- `aud` is `eve-app:<EVE_PROJECT_ID>:<EVE_ENV_NAME>`, or
+  `eve-app:<EVE_PROJECT_ID>` when the app's address names no environment;
+- it has no `orgs` claim: read the person's orgs from Eve `/auth/app-access`
+  (the SDK middleware does this);
+- it lasts one hour: on a 401, ask `/session` again.
+
+Eve's API takes such a token only on `/auth/me`, `/auth/app-access`,
+`/auth/app-invites` and `/auth/token/verify`, with an `X-Eve-Audience`
+header equal to the token's `aud`, and only for the app's own project. The
+SDK sends that header itself. An app calling those routes without the SDK
+sends the token's `aud` once it has checked it is one of its own:
+
+```typescript
+import { eveAudienceHeaders } from '@eve-horizon/auth';
+
+await fetch(`${process.env.EVE_API_URL}/auth/me`, {
+  headers: { Authorization: `Bearer ${token}`, ...eveAudienceHeaders(token) },
+});
+```
+
+Apps on an older SDK find no identity in an app audience token and must
+upgrade before the instance moves to `strict`. Under `audit` apps get the
+platform token as before, and the security report lists each app that would
+get an audience token.
 
 ### Auto-Injected Environment Variables
 
@@ -134,13 +169,17 @@ Lower-level middleware for agent/job token verification. Attaches `req.agent` wi
   - `eveApiUrl?: string` -- Override `EVE_API_URL` env var
   - `strategy?: 'remote' | 'local'` -- HTTP (default) or JWKS verification
 
-#### `verifyEveToken(token, eveApiUrl?)`
+#### `verifyEveToken(token, eveApiUrl?, options?)`
 
-Verify a token locally using JWKS (fetched and cached from Eve API). Faster for high-throughput scenarios. Returns `EveTokenClaims`.
+Verify a token locally using JWKS (fetched and cached from Eve API). Faster for high-throughput scenarios. Returns `EveTokenClaims`. A token with an `aud` is accepted only when the audience is one of the app's own (`options.audiences`, default `eveAppAudiences()`), and `claims.aud` reports it.
 
-#### `verifyEveTokenRemote(token, eveApiUrl?)`
+#### `verifyEveTokenRemote(token, eveApiUrl?, options?)`
 
-Verify a token by calling the Eve API `/auth/token/verify` endpoint. Simplest approach -- no key management needed. Returns `EveTokenClaims`.
+Verify a token by calling the Eve API `/auth/token/verify` endpoint. Simplest approach -- no key management needed. Returns `EveTokenClaims`. Checks an app audience token against the app's own audiences first and sends it as `X-Eve-Audience`.
+
+#### `eveAppAudiences(options?)` and `eveAudienceHeaders(token)`
+
+`eveAppAudiences()` lists the audiences the app accepts, from `EVE_PROJECT_ID` and `EVE_ENV_NAME`. `eveAudienceHeaders(token)` returns `{ 'X-Eve-Audience': aud }` for an app audience token of this app, `{}` for a token without an audience, and throws for another app's token.
 
 ### Frontend (`@eve-horizon/auth-react`)
 

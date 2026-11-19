@@ -27,9 +27,10 @@ EveAuthProvider                        eveUserAuth()                          Ev
 
 SSO Broker (apps/sso)
   /login     ── HTML login form
-  /callback  ── Supabase → Eve token exchange, sets cookies
-  /session   ── Returns Eve token from refresh cookie (CORS)
-  /logout    ── Clears cookies
+  /callback  ── POST only: Supabase → Eve token exchange, sets cookies
+  /session   ── Returns an Eve token from the refresh cookie (CORS; the API
+                decides which origins and which token)
+  /logout    ── Ends this GoTrue session (scope=local), clears cookies
 ```
 
 ## Package: `@eve-horizon/auth`
@@ -48,8 +49,10 @@ Source: `packages/auth/`
 | `eveAppAuth(options?)` | Middleware | Unified user/job middleware with app-scoped user org access |
 | `eveIdentityGuard()` | Middleware | 401 if `req.eveIdentity` not set |
 | `eveAuthMiddleware(options?)` | Middleware | Agent/job token verification, attach `req.agent` |
-| `verifyEveToken(token, url?)` | Function | JWKS-based local verification (15-min cache) |
-| `verifyEveTokenRemote(token, url?)` | Function | HTTP verification via `/auth/token/verify` |
+| `verifyEveToken(token, url?, options?)` | Function | JWKS-based local verification (15-min cache); an `aud` must be one of the app's own |
+| `verifyEveTokenRemote(token, url?, options?)` | Function | HTTP verification via `/auth/token/verify`; sends `X-Eve-Audience` for an app audience token |
+| `eveAppAudiences(options?)` | Function | The audiences this app accepts: `eve-app:<EVE_PROJECT_ID>:<EVE_ENV_NAME>` and `eve-app:<EVE_PROJECT_ID>` |
+| `eveAudienceHeaders(token)` | Function | `{ 'X-Eve-Audience': aud }` for this app's audience token, `{}` without one; throws for another app's |
 
 ### Types
 
@@ -69,6 +72,7 @@ interface EveTokenClaims {
   permissions?: string[];
   is_admin?: boolean;
   role?: string;
+  aud?: string;               // App audience tokens: eve-app:<project>[:<env>]
 }
 
 interface EveUser {
@@ -103,6 +107,13 @@ interface EveAppAccess {
 - Token is invalid or expired
 - Token type is not `user`
 - `orgs` claim missing or target org not found
+- The token is an app audience token for another app
+
+An app audience token (the token `/session` gives an app under the `strict`
+instance profile) carries no `orgs` claim. For such a token `eveUserAuth()`
+and `eveAuth()` read the person's orgs from Eve `/auth/app-access`, and
+`eveAuthMe()` asks Eve `/auth/me`, sending `X-Eve-Audience` each time. See
+[App SSO Integration](./app-sso-integration.md#app-audience-tokens-strict-instance-profile).
 
 This lets you mix public and protected routes:
 
@@ -189,9 +200,9 @@ Source: `packages/auth-react/`
 
 | Token | Storage | TTL | Refresh Path |
 |-------|---------|-----|--------------|
-| Eve RS256 access token | `sessionStorage` | 1 day (default) | Re-probe SSO `/session` |
-| SSO refresh cookie | httpOnly cookie (root domain) | 30 days | GoTrue refresh |
-| GoTrue refresh token | httpOnly cookie (SSO broker) | 30 days | Re-login |
+| Eve RS256 access token | `sessionStorage` | 1 day (default); 1 hour for an app audience token | Re-probe SSO `/session` |
+| GoTrue refresh token | httpOnly `__Host-` cookie on the SSO host only | 30 days | GoTrue refresh, else re-login |
+| `eve_sso` hint | cookie on the root domain, no secret | 30 days | Set and cleared with the session |
 
 When the cached access token expires, the bootstrap re-probes the SSO session. If the SSO refresh token is also expired, the user sees the login form. No manual token refresh logic needed in apps.
 
