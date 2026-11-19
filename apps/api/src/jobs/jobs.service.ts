@@ -1035,7 +1035,7 @@ export class JobsService {
       await this.guardStepTokenLoweringReview(currentJob, caller);
     }
     const cascade = updates.phase === 'cancelled' && await this.cancelCascades(currentJob);
-    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade, decider: deciderOf(caller) });
+    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade, decider: deciderOf(caller), caller });
     if (caller && changesWhatRuns(currentJob, updates)) {
       await this.changeWhatJobRuns(currentJob, caller, apply);
     } else {
@@ -1292,14 +1292,15 @@ export class JobsService {
 
   /**
    * The phase transition and field changes of a PATCH, inside its
-   * transaction. A move from review to done is an approval: it records the
-   * decider, the review status and an audit entry, as the approve route does.
+   * transaction. A move from review to done is an approval and a move back to
+   * active a rejection: each records the decider, the review status and an
+   * audit entry, as the approve and reject routes do.
    */
   private async applyUpdate(
     tx: Db,
     job: Job,
     updates: UpdateJobRequest,
-    options: { cascade: boolean; decider: { id: string; type: string } },
+    options: { cascade: boolean; decider: { id: string; type: string }; caller?: AuthUser },
   ): Promise<void> {
     const txJobs = jobQueries(tx);
     await this.lockReviewState(tx, job);
@@ -1309,6 +1310,20 @@ export class JobsService {
       if (job.phase === 'review' && updates.phase === 'done') {
         try {
           await txJobs.approveReview(job.id, options.decider.id, undefined, options.decider.type);
+        } catch (error) {
+          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+        }
+      } else if (job.phase === 'review' && updates.phase === 'active') {
+        // A rejection, as the reject route makes it: the caller's allowlist
+        // narrows the job, and a new attempt runs it again.
+        await this.narrowToCallerAllowlist(tx, job.id, options.caller);
+        try {
+          await txJobs.rejectReview(
+            job.id,
+            options.decider.id,
+            updates.close_reason ?? 'Sent back from review',
+            options.decider.type,
+          );
         } catch (error) {
           throw new BadRequestException(error instanceof Error ? error.message : String(error));
         }

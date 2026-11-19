@@ -322,7 +322,12 @@ ignored. A person's own token is recorded as their user id; a job token as
 or app-link token as its kind and id (`service:<name>`, and so on). A `PATCH`
 that moves a job from `review` to `done` is an approval too: it records the
 caller as the decider, sets `review_status` to `approved` and writes the same
-audit entry as the approve route.
+audit entry as the approve route. One that moves it back to `active` is a
+rejection, as the reject route makes it: `review_status` becomes `rejected`, a
+new attempt runs the job again, and a caller's secrets allowlist narrows the
+job. A `PATCH` is applied only to the job state it was judged on: when the
+job's phase, review requirement or actor changes before it is applied, it is
+refused with 409.
 
 Under the project's `strict` security profile (rule `jobs.approve_token`), only
 a person's own token may approve or reject: job, service, service-principal and
