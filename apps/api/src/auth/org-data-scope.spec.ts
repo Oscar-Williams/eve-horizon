@@ -82,6 +82,29 @@ describe('org files, docs and cloud-fs in jobs (P1-6)', () => {
       expect(store.findings('access.org_data_no_user')[0]).toMatchObject({ profile: 'strict', org_id: ORG });
     });
 
+    it('refuses org data in a scope declared for work no user started', async () => {
+      const { access } = services();
+      const noUser = (userId: string | undefined, scope: Record<string, unknown>) => assertCanUseJobScope(access, {
+        orgId: ORG, projectId: PROJECT, userId, scope: scope as never, context: 'Workflow step scope',
+      });
+
+      await expect(noUser(undefined, { orgfs: { read_only_prefixes: ['/**'] } })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(noUser('system', { cloud_fs: { allow_mount_ids: ['cfm_1'] } })).rejects.toBeInstanceOf(BadRequestException);
+      // A project's env-db is not org data.
+      await expect(noUser(undefined, { envdb: { schemas: ['public'] } })).resolves.toBeUndefined();
+      expect(store.findings('access.org_data_no_user')[0]).toMatchObject({ profile: 'strict', org_id: ORG, actor_type: 'none' });
+    });
+
+    it('lets org owners and admins declare an org data scope outside any binding', async () => {
+      const { access } = services();
+
+      await expect(assertCanUseJobScope(access, {
+        orgId: ORG, projectId: PROJECT, userId: ORG_ADMIN,
+        scope: { cloud_fs: { allow_mount_ids: ['*'] } }, context: 'Workflow step scope',
+      })).resolves.toBeUndefined();
+      expect(store.findings('access.org_data_scope_wide')).toEqual([]);
+    });
+
     it('refuses a declared scope of every mount from a project admin with no binding', async () => {
       const { access } = services();
 
@@ -152,7 +175,13 @@ describe('org files, docs and cloud-fs in jobs (P1-6)', () => {
       await expect(jobTokenPermissionsFor(access, PROJECT_ADMIN, ORG, PROJECT, ['cloud_fs:admin']))
         .resolves.toEqual(['cloud_fs:admin']);
 
+      await expect(assertCanUseJobScope(access, {
+        orgId: ORG, projectId: PROJECT, userId: undefined,
+        scope: { orgfs: { read_only_prefixes: ['/**'] } }, context: 'Workflow step scope',
+      })).resolves.toBeUndefined();
+
       expect(store.findings('access.org_data_unscoped')[0]).toMatchObject({ profile: 'audit' });
+      expect(store.findings('access.org_data_no_user')[0]).toMatchObject({ profile: 'audit', actor_type: 'none' });
       expect(store.findings('access.org_data_scope_wide')[0]).toMatchObject({ profile: 'audit' });
       expect(store.findings('access.org_data_role_wildcard')[0]).toMatchObject({ profile: 'audit' });
     });
