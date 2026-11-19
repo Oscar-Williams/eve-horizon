@@ -241,9 +241,12 @@ Stable; egress policies select on them.
 | `eve.horizon/project-id` | claimed and plain pods | the project id |
 | `eve.horizon/attempt-id` | claimed and plain pods | the attempt id |
 
-A warm pod has only the first three until it is claimed, so egress must fail
-closed: deny every `eve.horizon/runner=true` pod except DNS and the API, and
-allow more by `eve.horizon/project-id`. The controller's
+A warm pod has only the first three until it is claimed, so egress fails
+closed: `eve-runner-deny` (k8s/base) denies every `eve.horizon/runner=true`
+pod all but DNS and the API, `eve-runner-ingress` admits only the worker on
+the submit port, and each project's policies, written by the worker before it
+claims or creates a pod for that project, allow more by
+`eve.horizon/project-id` (see [egress policies](egress-policies.md)). The controller's
 `agent-sandbox-config` must allow-list the `eve.horizon` label domain, or
 every claim fails with `InvalidMetadata` (and falls back to plain pods).
 

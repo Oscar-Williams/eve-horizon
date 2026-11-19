@@ -55,6 +55,11 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
   return child;
 }) }));
 
+// egress.default_deny: the project's runner policies come before any claim or pod.
+vi.mock('../network/runner-egress.js', () => ({
+  ensureRunnerEgress: vi.fn(async (projectId: string) => { k.calls.push(['ensure-runner-egress', projectId]); }),
+}));
+
 const submit = { kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', project_id: 'proj_shop', job_token: 't', api_url: 'http://api.test' };
 let submittedTo: string[] = [];
 
@@ -142,5 +147,20 @@ describe('runner pod backends', () => {
     const [pod] = podsApplied();
     expect(pod.metadata.namespace).toBe('eve');
     expect(pod.spec.containers[0].volumeMounts).toContainEqual({ name: 'org-fs', mountPath: '/org', readOnly: true });
+  });
+
+  it('brings the project runner egress policies in line before it claims or creates a pod, on every path', async () => {
+    const firstWrite = () => k.calls.findIndex((args) => args.includes('apply'));
+    for (const setup of [() => {}, () => { k.claim = 'pending'; }, () => { k.crds = false; }]) {
+      k.crds = true; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = []; submittedTo = [];
+      resetSandboxDiscovery();
+      setup();
+      expect((await run()).success).toBe(true);
+      expect(k.calls[0]).toEqual(['ensure-runner-egress', 'proj_shop']);
+      expect(firstWrite()).toBeGreaterThan(0);
+    }
+    k.applied = []; k.calls = []; submittedTo = []; k.podPhase = 'Running';
+    expect((await run({ orgFs: { readOnly: true } })).success).toBe(true);
+    expect(k.calls[0]).toEqual(['ensure-runner-egress', 'proj_shop']);
   });
 });

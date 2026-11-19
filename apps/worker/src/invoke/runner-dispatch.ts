@@ -29,6 +29,7 @@ import {
 } from '@eve/shared';
 import { createPlainPodBackend, type PodCreatedMeta, type RunnerPodPlan } from './k8s-runner.js';
 import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolPresent } from './sandbox-claim-backend.js';
+import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
 export interface RunnerPodBackend {
@@ -238,6 +239,10 @@ async function runnerBackendFor(
 /** Run a prepared job in a fresh runner pod and return its recorded outcome. */
 export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchToRunnerPodOptions): Promise<RunnerOutcome> {
   opts.signal?.throwIfAborted();
+  // egress.default_deny: the project's runner policies (or, under audit and
+  // legacy, its allow-all companion) exist before a claim labels a pod with
+  // the project or a plain pod starts with it; eve-runner-deny holds until then.
+  await ensureRunnerEgress(submit.project_id);
   const inbound = createRunnerInboundKey();
   const backend = await runnerBackendFor(submit, opts, inbound.sha256);
   return runInRunnerPod(submit, {

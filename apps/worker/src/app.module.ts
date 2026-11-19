@@ -10,6 +10,7 @@ import { BuilderModule } from './builder/builder.module.js';
 import { ReaperModule } from './reaper/reaper.module';
 import { RegistryModule } from './registry/registry.module.js';
 import { RunnerTemplatesModule } from './runner-templates/runner-templates.module.js';
+import { NetworkModule } from './network/network.module.js';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { RunnerTemplatesModule } from './runner-templates/runner-templates.modul
     ReaperModule,
     RegistryModule,
     RunnerTemplatesModule,
+    NetworkModule,
   ],
 })
 export class AppModule {}

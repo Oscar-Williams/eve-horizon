@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { SetSecurityProfileRequestSchema, registryKeyVersion } from '@eve/shared';
 import { SecurityService } from './security.service';
@@ -447,6 +447,95 @@ describe('SecurityService', () => {
       db.state.settings.set('security.profile', 'audit');
       await build().decide('internal.service_key', { governing: 'instance', principal: { type: 'service', id: 'gateway' } });
       expect(db.state.findings).toEqual([expect.objectContaining({ actor_type: 'service', actor_id: 'gateway' })]);
+    });
+  });
+
+  describe('network policies (egress.default_deny)', () => {
+    /** The worker, at WORKER_URL: answers each route with a canned JSON body. */
+    function stubWorker(answers: Record<string, unknown> = {}) {
+      vi.stubEnv('WORKER_URL', 'http://worker.test');
+      const calls: Array<{ path: string; body: unknown }> = [];
+      const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, body: init?.body ? JSON.parse(init.body) : undefined });
+        const answer = answers[path];
+        if (answer instanceof Error) throw answer;
+        return new Response(JSON.stringify(answer ?? { ok: true }), { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return calls;
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('reconcile writes the egress policies of every env and project, then re-signs pull secrets and renders runner templates', async () => {
+      const calls = stubWorker({
+        '/network/reconcile': { environments: { reconciled: 3 } },
+        '/registry/pull-secrets/resign': { resigned: 1 },
+        '/runner/templates/reconcile': { applied: 6 },
+      });
+      const result = await build().reconcile();
+      expect(calls).toEqual([
+        { path: '/network/reconcile', body: {} },
+        { path: '/registry/pull-secrets/resign', body: {} },
+        { path: '/runner/templates/reconcile', body: {} },
+      ]);
+      expect(result).toEqual({
+        network: { environments: { reconciled: 3 } },
+        registry: { resigned: 1 },
+        runner_templates: { applied: 6 },
+      });
+    });
+
+    it('reconciles a project at once when its profile changes, so its companions go with no deploy', async () => {
+      const calls = stubWorker({ '/network/reconcile': { environments: { reconciled: 1 } } });
+      const result = await build().setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      expect(calls).toEqual([{ path: '/network/reconcile', body: { project_id: PROJECT } }]);
+      expect(result).toMatchObject({ scope: 'project', id: PROJECT, profile: 'strict', network: { environments: { reconciled: 1 } } });
+    });
+
+    it('reconciles the projects of an org, or every project for the instance, and nothing for new-project defaults', async () => {
+      const calls = stubWorker();
+      const svc = build();
+      await svc.setProfile({ scope: 'org', id: ORG }, 'audit', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, 'audit', 'user_admin');
+      await svc.setProfile({ scope: 'new_projects' }, 'strict', 'user_admin');
+      expect(calls).toEqual([
+        { path: '/network/reconcile', body: { org_id: ORG } },
+        { path: '/network/reconcile', body: {} },
+      ]);
+    });
+
+    it('keeps the profile change when the worker cannot reconcile, and says how to finish', async () => {
+      stubWorker({ '/network/reconcile': new Error('connect ECONNREFUSED') });
+      const result = await build().setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      expect(db.state.projectProfiles.get(PROJECT)).toBe('strict');
+      expect(result.network).toEqual({ error: expect.stringMatching(/ECONNREFUSED.*eve system security reconcile/s) });
+    });
+
+    it('reports network.policy_enforced and holds the strict checklist on it', async () => {
+      db.state.projectProfiles.set(PROJECT, 'audit');
+      const svc = build();
+      let report = await svc.report({});
+      expect(report.network).toEqual({ policy_enforced: null, egress_effective: false });
+      expect(report.projects.find((p) => p.id === PROJECT)!.strict_checklist).toEqual({
+        clean: false,
+        blockers: [expect.stringMatching(/network\.policy_enforced is not true/)],
+      });
+
+      db.state.settings.set('network.policy_enforced', 'true');
+      report = await build().report({});
+      expect(report.network).toEqual({ policy_enforced: true, egress_effective: true });
+      expect(report.projects.find((p) => p.id === PROJECT)!.strict_checklist).toEqual({ clean: true, blockers: [] });
+
+      db.state.findings = [{ rule: 'egress.default_deny', project_id: PROJECT, actor_type: 'job', actor_id: 'j1', count: 3 }];
+      report = await build().report({});
+      expect(report.projects.find((p) => p.id === PROJECT)!.strict_checklist).toEqual({
+        clean: false,
+        blockers: ['3 finding(s) in the last 14 days'],
+      });
     });
   });
 });

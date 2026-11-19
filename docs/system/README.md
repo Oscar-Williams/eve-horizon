@@ -48,6 +48,7 @@ Authoritative docs describing how Eve Horizon works today. Each doc includes **C
 
 - [Deployment](./deployment.md)
 - [Container Registry](./container-registry.md)
+- [Egress Policies](./egress-policies.md)
 - [K8s Local Stack](./k8s-local-stack.md)
 - [Observability](./observability.md)
 - [Pricing & Billing](./pricing-and-billing.md)

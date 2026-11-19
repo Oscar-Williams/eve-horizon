@@ -84,9 +84,12 @@ rules:
       - delete
       - patch
       - update
+  # networkpolicies: egress.default_deny (env namespaces' eve-egress* and the
+  # eve-runner-<project> policies in the runner namespaces).
   - apiGroups: ["networking.k8s.io"]
     resources:
       - ingresses
+      - networkpolicies
     verbs:
       - get
       - list

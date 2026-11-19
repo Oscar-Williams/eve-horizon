@@ -54,6 +54,8 @@ let imageUsers: Record<string, string> = {};
 function newDeployer(k8s: unknown = null) {
   const deployer = new DeployerService(null as any, k8s as any);
   (deployer as any).logger = { warn: vi.fn(), log: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  // egress.default_deny has its own spec (deployer-egress-policy.spec.ts).
+  (deployer as any).egress = { applyEnv: vi.fn(async () => ({})), applyRunners: vi.fn(async () => ({})) };
   const readImageConfig = vi.fn(async (image: string) => (image in imageUsers ? { user: imageUsers[image] } : null));
   (deployer as any).imageResolver.readImageConfig = readImageConfig;
   return { deployer, readImageConfig };

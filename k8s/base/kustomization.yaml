@@ -16,6 +16,7 @@ resources:
   - buildkitd-deployment.yaml
   - buildkitd-service.yaml
   - buildkitd-network-policy.yaml
+  - runner-network-policies.yaml
   - api-deployment.yaml
   - api-service.yaml
   - api-ingress.yaml

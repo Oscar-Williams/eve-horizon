@@ -48,9 +48,14 @@ export class SecurityController {
   @RequirePermission('system:admin')
   @Put('profile')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Set the security profile of the instance, new projects, an org or a project (system_admin only)' })
+  @ApiOperation({
+    summary: 'Set the security profile of the instance, new projects, an org or a project (system_admin only)',
+    description:
+      'For the instance, an org or a project, the worker then reconciles the egress NetworkPolicies of the projects ' +
+      'in scope, so the allow-all companions go or return at once; the profile stands if that fails.',
+  })
   @ApiBody({ schema: zodSchemaToOpenApi(SetSecurityProfileRequestSchema, 'SetSecurityProfileRequest') })
-  @ApiOkResponse({ description: 'The profile now set' })
+  @ApiOkResponse({ description: 'The profile now set, and what the network reconcile did (network)' })
   async setProfile(
     @Body(new ZodValidationPipe(SetSecurityProfileRequestSchema)) body: SetSecurityProfileRequest,
     @CurrentUser() caller: AuthUser | undefined,
@@ -65,10 +70,11 @@ export class SecurityController {
   @ApiOperation({
     summary: 'Bring every environment in line with the security profiles (system_admin only)',
     description:
-      'Re-signs each environment\'s registry pull secret with the current registry credential key, with no restart, ' +
-      'and records the key version on the environment.',
+      'With no restart: writes each environment\'s and project\'s egress NetworkPolicies for its egress.default_deny ' +
+      'profile and removes the runner policies of deleted projects; then re-signs each environment\'s registry pull ' +
+      'secret with the current registry credential key and records the key version on the environment.',
   })
-  @ApiOkResponse({ description: 'What was re-signed, already current, without a pull secret, or failed' })
+  @ApiOkResponse({ description: 'The network policies written, removed or failed, and the pull secrets re-signed, already current, without a pull secret, or failed' })
   async reconcile(@CurrentUser() caller: AuthUser | undefined) {
     requireSystemAdmin(caller);
     return this.security.reconcile();

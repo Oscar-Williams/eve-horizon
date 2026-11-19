@@ -2,7 +2,9 @@
  * Namespace Hardening — Phase 10
  *
  * Pure functions that generate K8s manifest objects for environment namespace
- * hardening: ResourceQuota, LimitRange, and NetworkPolicy.
+ * hardening: ResourceQuota and LimitRange. Nothing applies them yet (capacity,
+ * not isolation). Network isolation is egress.default_deny, in
+ * egress-policies.ts.
  *
  * These are plain JS objects that can be serialized to JSON and applied via
  * `kubectl apply -f -` or any K8s client library.
@@ -26,11 +28,6 @@ export interface NamespaceHardeningConfig {
     default_cpu_limit: string;   // e.g. "500m"
     default_memory_limit: string;// e.g. "512Mi"
   };
-  network_policy?: {
-    allow_ingress_from_namespaces?: string[];  // e.g. ["ingress-nginx"]
-    allow_egress_to_namespaces?: string[];     // e.g. ["eve", "kube-system"]
-    allow_egress_cidrs?: string[];             // e.g. ["0.0.0.0/0"]
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -53,11 +50,6 @@ export const DEFAULT_HARDENING_CONFIG: Omit<NamespaceHardeningConfig, 'namespace
     default_memory_request: '256Mi',
     default_cpu_limit: '500m',
     default_memory_limit: '512Mi',
-  },
-  network_policy: {
-    allow_ingress_from_namespaces: ['ingress-nginx'],
-    allow_egress_to_namespaces: ['eve', 'kube-system'],
-    allow_egress_cidrs: ['0.0.0.0/0'],
   },
 };
 
@@ -132,124 +124,6 @@ export function generateLimitRange(config: NamespaceHardeningConfig): object {
 }
 
 /**
- * Generate a NetworkPolicy manifest for the given namespace.
- *
- * Strategy: default-deny all ingress and egress, then poke explicit holes:
- *   - Ingress: from namespaces in the allow list (e.g. ingress-nginx)
- *     plus in-namespace traffic (pods talking to each other).
- *   - Egress: to namespaces in the allow list (e.g. eve, kube-system)
- *     plus specified external CIDRs, plus DNS (kube-system port 53).
- */
-export function generateNetworkPolicy(config: NamespaceHardeningConfig): object {
-  const netpol = config.network_policy ?? DEFAULT_HARDENING_CONFIG.network_policy!;
-
-  // Build ingress rules
-  const ingressRules: object[] = [];
-
-  // Allow in-namespace traffic (pods within the same namespace)
-  ingressRules.push({
-    from: [
-      {
-        podSelector: {},  // all pods in same namespace
-      },
-    ],
-  });
-
-  // Allow from specified namespaces (e.g. ingress-nginx)
-  if (netpol.allow_ingress_from_namespaces && netpol.allow_ingress_from_namespaces.length > 0) {
-    for (const ns of netpol.allow_ingress_from_namespaces) {
-      ingressRules.push({
-        from: [
-          {
-            namespaceSelector: {
-              matchLabels: {
-                'kubernetes.io/metadata.name': ns,
-              },
-            },
-          },
-        ],
-      });
-    }
-  }
-
-  // Build egress rules
-  const egressRules: object[] = [];
-
-  // Allow DNS resolution (always needed — UDP + TCP port 53 to kube-system)
-  egressRules.push({
-    to: [
-      {
-        namespaceSelector: {
-          matchLabels: {
-            'kubernetes.io/metadata.name': 'kube-system',
-          },
-        },
-      },
-    ],
-    ports: [
-      { protocol: 'UDP', port: 53 },
-      { protocol: 'TCP', port: 53 },
-    ],
-  });
-
-  // Allow in-namespace traffic
-  egressRules.push({
-    to: [
-      {
-        podSelector: {},  // all pods in same namespace
-      },
-    ],
-  });
-
-  // Allow to specified namespaces
-  if (netpol.allow_egress_to_namespaces && netpol.allow_egress_to_namespaces.length > 0) {
-    for (const ns of netpol.allow_egress_to_namespaces) {
-      // Skip kube-system here since DNS rule already covers it with port restriction
-      // but we add a full-access rule for other namespaces and kube-system non-DNS
-      egressRules.push({
-        to: [
-          {
-            namespaceSelector: {
-              matchLabels: {
-                'kubernetes.io/metadata.name': ns,
-              },
-            },
-          },
-        ],
-      });
-    }
-  }
-
-  // Allow egress to external CIDRs
-  if (netpol.allow_egress_cidrs && netpol.allow_egress_cidrs.length > 0) {
-    egressRules.push({
-      to: netpol.allow_egress_cidrs.map((cidr) => ({
-        ipBlock: { cidr },
-      })),
-    });
-  }
-
-  return {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'NetworkPolicy',
-    metadata: {
-      name: 'eve-default-deny',
-      namespace: config.namespace,
-      labels: {
-        'app.kubernetes.io/managed-by': 'eve-horizon',
-        'eve.component': 'namespace-hardening',
-      },
-    },
-    spec: {
-      podSelector: {},  // applies to all pods in namespace
-      policyTypes: ['Ingress', 'Egress'],
-      ingress: ingressRules,
-      egress: egressRules,
-    },
-  };
-}
-
-/**
  * Generate all hardening manifests for a namespace.
  * Returns an array of K8s manifest objects ready for kubectl apply.
  */
@@ -257,7 +131,6 @@ export function generateAllHardeningManifests(config: NamespaceHardeningConfig):
   return [
     generateResourceQuota(config),
     generateLimitRange(config),
-    generateNetworkPolicy(config),
   ];
 }
 
@@ -273,6 +146,5 @@ export function mergeHardeningConfig(
     namespace,
     resource_quota: overrides?.resource_quota ?? DEFAULT_HARDENING_CONFIG.resource_quota,
     limit_range: overrides?.limit_range ?? DEFAULT_HARDENING_CONFIG.limit_range,
-    network_policy: overrides?.network_policy ?? DEFAULT_HARDENING_CONFIG.network_policy,
   };
 }

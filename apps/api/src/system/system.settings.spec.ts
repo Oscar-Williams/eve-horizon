@@ -43,4 +43,20 @@ describe('system settings', () => {
     await controller.setSetting('harness_preference', { value: 'claude' }, admin);
     expect(settings.set).toHaveBeenCalledWith('harness_preference', 'claude', 'user_admin', undefined);
   });
+
+  it('takes network.policy_enforced only as true or false', async () => {
+    const svc = new SystemService({} as never);
+    await expect(svc.setSetting('network.policy_enforced', 'yes', 'user_admin')).rejects.toThrow(/true or false/);
+    await svc.setSetting('network.policy_enforced', 'true', 'user_admin');
+    expect(settings.set).toHaveBeenCalledWith('network.policy_enforced', 'true', 'user_admin', undefined);
+  });
+
+  it('takes network.private_cidrs only as IPv4 CIDRs, naming the ones it cannot use', async () => {
+    const svc = new SystemService({} as never);
+    await expect(svc.setSetting('network.private_cidrs', '10.0.0.0/8, fd00::/8, nope', 'user_admin'))
+      .rejects.toThrow(/fd00::\/8.*nope/);
+    expect(settings.set).not.toHaveBeenCalled();
+    await svc.setSetting('network.private_cidrs', '198.18.0.0/15', 'user_admin');
+    expect(settings.set).toHaveBeenCalledWith('network.private_cidrs', '198.18.0.0/15', 'user_admin', undefined);
+  });
 });

@@ -26,6 +26,9 @@ data:
   # /internal/*. The dashboard does not read this key: it proxies browser
   # requests and stays on the public port (4701).
   EVE_API_URL: http://eve-api:4791
+  # What apps and runner pods get as EVE_API_URL: the public port, never the
+  # internal one. The egress policies allow only this port to eve-api.
+  EVE_API_APP_URL: http://eve-api.eve.svc.cluster.local:4701
   EVE_PUBLIC_API_URL: http://api.eve.lvh.me
   EVE_SSO_URL: http://sso.eve.lvh.me
   EVE_DEFAULT_DOMAIN: lvh.me

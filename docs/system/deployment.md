@@ -254,9 +254,12 @@ rollout, or in-cluster calls to `/internal/*` fail:
 2. Point `EVE_API_URL` at the internal port on the platform services that
    call `/internal/*`: `eve-orchestrator`, `eve-worker`, `eve-agent-runtime`,
    `eve-gateway` and `eve-sso` (for example
-   `http://eve-api.eve.svc.cluster.local:4791`). Runner pods and app
-   deployments inherit the worker's value, so they use the internal port too
-   (its `/internal/*` routes still require the internal key).
+   `http://eve-api.eve.svc.cluster.local:4791`). Set `EVE_API_APP_URL` on the
+   worker to the public port (default
+   `http://eve-api.eve.svc.cluster.local:4701`): apps and runner pods get that
+   as their `EVE_API_URL`, never the worker's own, so they never hold the
+   internal port. An app keeps the URL it was deployed with until its next
+   deploy.
 3. Leave `eve-dashboard` on the public port. Its server proxies browser
    requests under `/api/*` to `EVE_API_URL`, so pointing it at the internal
    port would publish `/internal/*` through the dashboard host. (For the same
@@ -264,14 +267,18 @@ rollout, or in-cluster calls to `/internal/*` fail:
    not cover the dashboard host; this port split does. The dashboard server
    also answers `404` itself for `/api/internal` and anything under it, in
    any spelling, and for any `/api` path with a `..` segment.)
-4. Allow the internal port wherever NetworkPolicies restrict traffic to
-   `eve-api`, including from app namespaces.
+4. Where NetworkPolicies restrict traffic to `eve-api`, allow the internal
+   port from the platform services only. Eve's own egress policies
+   ([egress policies](egress-policies.md)) allow apps and runner pods the
+   public port (4701) alone, so `/internal/*` is out of their reach even with
+   a stolen key.
 
 In `k8s/base` (and so the local k3d stack from `./bin/eh k8s deploy`) this is
 already done: `eve-api` sets `EVE_API_INTERNAL_PORT=4791`, the `eve-api`
 Service carries an `internal` port, `eve-cluster-config`'s `EVE_API_URL` is
-`http://eve-api:4791`, and the dashboard sets `EVE_API_URL=http://eve-api:4701`
-inline. To reach `/internal/*` from a workstation, port-forward
+`http://eve-api:4791` and its `EVE_API_APP_URL`
+`http://eve-api.eve.svc.cluster.local:4701`, and the dashboard sets
+`EVE_API_URL=http://eve-api:4701` inline. To reach `/internal/*` from a workstation, port-forward
 `svc/eve-api 4791`. A deployment that takes its manifests from elsewhere needs
 steps 1-4 itself.
 
