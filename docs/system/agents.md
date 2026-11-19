@@ -94,10 +94,10 @@ secrets, whatever scope each comes from, and nothing else.
 ```yaml
 agents:
   triage:
-    skill: opportunity-triage
+    skill: ticket-review
     harness_profile: triage
     access:
-      secrets: [ANTHROPIC_API_KEY, OPPS_SIGNING_KEY]
+      secrets: [ANTHROPIC_API_KEY, SHOP_SIGNING_KEY]
 ```
 
 - Name the harness credential too (for example `ANTHROPIC_API_KEY` or

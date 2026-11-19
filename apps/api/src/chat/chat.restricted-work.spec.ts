@@ -8,7 +8,7 @@ import type { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 
 const RESTRICTED: AuthUser = {
-  user_id: 'user_owner', is_job_token: true, job_id: 'opps-1', project_id: 'proj_opps',
+  user_id: 'user_owner', is_job_token: true, job_id: 'shop-1', project_id: 'proj_shop',
   permissions: ['threads:write', 'chat:write'], secrets_allowlist: ['ANTHROPIC_API_KEY'],
 } as AuthUser;
 
@@ -26,21 +26,21 @@ function serviceWith(create: ReturnType<typeof vi.fn>): Priv {
 
 describe('jobs chat starts', () => {
   it('carry the allowlist of a restricted caller, as every other route that starts work', async () => {
-    const create = vi.fn(async () => ({ id: 'opps-2' }));
+    const create = vi.fn(async () => ({ id: 'shop-2' }));
 
-    await serviceWith(create).createChatJob({ user: RESTRICTED }, 'proj_opps', { description: 'hi' });
+    await serviceWith(create).createChatJob({ user: RESTRICTED }, 'proj_shop', { description: 'hi' });
 
-    expect(create).toHaveBeenCalledWith('proj_opps', { description: 'hi' }, undefined, undefined, { secretsAllowlist: ['ANTHROPIC_API_KEY'] });
+    expect(create).toHaveBeenCalledWith('proj_shop', { description: 'hi' }, undefined, undefined, { secretsAllowlist: ['ANTHROPIC_API_KEY'] });
   });
 
   it('carry nothing for an unrestricted caller or a gateway dispatch', async () => {
-    const create = vi.fn(async () => ({ id: 'opps-3' }));
+    const create = vi.fn(async () => ({ id: 'shop-3' }));
 
-    await serviceWith(create).createChatJob({ user: { user_id: 'user_owner' } }, 'proj_opps', { description: 'hi' });
-    await serviceWith(create).createChatJob(undefined, 'proj_opps', { description: 'hi' });
+    await serviceWith(create).createChatJob({ user: { user_id: 'user_owner' } }, 'proj_shop', { description: 'hi' });
+    await serviceWith(create).createChatJob(undefined, 'proj_shop', { description: 'hi' });
 
-    expect(create).toHaveBeenNthCalledWith(1, 'proj_opps', { description: 'hi' }, undefined, undefined, {});
-    expect(create).toHaveBeenNthCalledWith(2, 'proj_opps', { description: 'hi' }, undefined, undefined, {});
+    expect(create).toHaveBeenNthCalledWith(1, 'proj_shop', { description: 'hi' }, undefined, undefined, {});
+    expect(create).toHaveBeenNthCalledWith(2, 'proj_shop', { description: 'hi' }, undefined, undefined, {});
   });
 
   it('are all created through createChatJob', () => {

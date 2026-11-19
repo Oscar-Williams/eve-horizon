@@ -22,9 +22,9 @@ afterEach(() => {
 });
 
 async function contextFor(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
-  resolved.secrets = [secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD')];
+  resolved.secrets = [secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('SHOP_SIGNING_KEY'), secret('SMTP_PASSWORD')];
   const invocation = {
-    jobId: 'opps-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'triage',
+    jobId: 'shop-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'review',
     workspacePath: '/tmp/eve-allowlist-test', repoUrl: 'https://github.com/org/repo.git',
     ...(secrets_allowlist ? { secrets_allowlist } : {}),
     ...extra,
@@ -43,13 +43,13 @@ async function contextFor(secrets_allowlist?: string[], extra: Record<string, un
 describe('agent runtime secrets allowlist', () => {
   it('hands the job every resolved secret when no allowlist is declared (unchanged)', async () => {
     const ctx = await contextFor();
-    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'OPPS_SIGNING_KEY', 'SMTP_PASSWORD']);
+    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'SHOP_SIGNING_KEY', 'SMTP_PASSWORD']);
     expect(ctx.gitAuth?.cloneUrl).toContain(TOKEN);
   });
 
   it('hands the job only the allowlisted secrets', async () => {
-    const ctx = await contextFor(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
-    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    const ctx = await contextFor(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
+    expect(ctx.resolvedSecrets.map((s: SecretResolveItem) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
   });
 
   it('still clones with a git token the allowlist leaves out, without putting it in the clone URL', async () => {

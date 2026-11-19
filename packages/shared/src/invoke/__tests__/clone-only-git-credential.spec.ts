@@ -15,7 +15,7 @@ async function invocation(overrides: Partial<HarnessInvocation> = {}): Promise<H
   const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'eve-clone-only-'));
   created.push(workspacePath);
   return {
-    attemptId: 'att-1', jobId: 'opps-1', projectId: 'proj_opps', text: 'triage', workspacePath,
+    attemptId: 'att-1', jobId: 'shop-1', projectId: 'proj_shop', text: 'review', workspacePath,
     repoUrl: 'https://github.com/org/repo.git', secrets_allowlist: ['ANTHROPIC_API_KEY'],
     ...overrides,
   } as HarnessInvocation;

@@ -11,10 +11,10 @@ describe('job token liveness', () => {
   it('reads phase and running attempt in one narrow lookup', async () => {
     const jobs = lookup({ phase: 'active', running_attempt_id: 'att-1' });
 
-    await assertJobRunning(jobs as never, 'opps-1', 'att-1');
+    await assertJobRunning(jobs as never, 'shop-1', 'att-1');
 
     expect(jobs.getTokenLiveness).toHaveBeenCalledTimes(1);
-    expect(jobs.getTokenLiveness).toHaveBeenCalledWith('opps-1');
+    expect(jobs.getTokenLiveness).toHaveBeenCalledWith('shop-1');
   });
 
   it('refuses an ended attempt, a cancelled job, a done job and a missing job', async () => {

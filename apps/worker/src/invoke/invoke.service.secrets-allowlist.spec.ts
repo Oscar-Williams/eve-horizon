@@ -27,7 +27,7 @@ afterEach(() => {
 
 async function runUntilSecretsMaterialize(secrets_allowlist?: string[], extra: Record<string, unknown> = {}) {
   const invocation = {
-    jobId: 'opps-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'triage',
+    jobId: 'shop-a1b2c3d4', attemptId: `att-${Math.random().toString(36).slice(2)}`, projectId: 'proj_1', text: 'review',
     workspacePath: '/tmp/eve-allowlist-test', repoUrl: 'https://github.com/org/repo.git',
     ...(secrets_allowlist ? { secrets_allowlist } : {}),
     ...extra,
@@ -37,7 +37,7 @@ async function runUntilSecretsMaterialize(secrets_allowlist?: string[], extra: R
   vi.spyOn(service as any, 'applyManifestDefaults').mockImplementation(async (inv) => inv);
   vi.spyOn(service as any, 'logLifecycleEvent').mockResolvedValue(undefined);
   vi.spyOn(service as any, 'resolveSecrets').mockResolvedValue([
-    secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('OPPS_SIGNING_KEY'), secret('SMTP_PASSWORD'),
+    secret('ANTHROPIC_API_KEY'), secret('GITHUB_TOKEN', TOKEN), secret('SHOP_SIGNING_KEY'), secret('SMTP_PASSWORD'),
   ]);
   const captured: { gitAuth?: any; secrets?: SecretResolveItem[]; result?: any; cloned?: boolean } = {};
   seen.secrets = undefined;
@@ -58,7 +58,7 @@ async function runUntilSecretsMaterialize(secrets_allowlist?: string[], extra: R
 describe('worker secrets allowlist', () => {
   it('hands the job every resolved secret when no allowlist is declared (unchanged)', async () => {
     const seen = await runUntilSecretsMaterialize();
-    expect(seen.secrets?.map((s) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'OPPS_SIGNING_KEY', 'SMTP_PASSWORD']);
+    expect(seen.secrets?.map((s) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'SHOP_SIGNING_KEY', 'SMTP_PASSWORD']);
     expect(seen.gitAuth?.cloneUrl).toContain(TOKEN);
   });
 

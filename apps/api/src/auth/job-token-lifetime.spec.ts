@@ -13,8 +13,8 @@ import type { MailerService } from '../mailer/mailer.service';
 import type { IdentityProviderRegistry } from './providers/index.js';
 
 /**
- * opps-1: the engine's triage job, running as attempt att-run-1, with one app
- * link (alias "opps") to the engine's API in project proj_engine.
+ * shop-1: the engine's review job, running as attempt att-run-1, with one app
+ * link (alias "shop") to the engine's API in project proj_engine.
  */
 const m = vi.hoisted(() => {
   const state = {
@@ -31,15 +31,15 @@ const m = vi.hoisted(() => {
         state.job && state.job.id === jobId ? { phase: state.job.phase as string, running_attempt_id: state.runningAttemptId } : null),
     },
     projects: {
-      findById: vi.fn(async (id: string) => ({ proj_opps: { id: 'proj_opps', org_id: 'org_vdb' }, proj_engine: { id: 'proj_engine', org_id: 'org_vdb' } } as Record<string, unknown>)[id] ?? null),
+      findById: vi.fn(async (id: string) => ({ proj_shop: { id: 'proj_shop', org_id: 'org_acme' }, proj_engine: { id: 'proj_engine', org_id: 'org_acme' } } as Record<string, unknown>)[id] ?? null),
     },
     subscriptions: {
-      findWithGrantsById: vi.fn(async (id: string) => (id === 'als_opps' ? {
-        id: 'als_opps',
-        consumer_project_id: 'proj_opps',
+      findWithGrantsById: vi.fn(async (id: string) => (id === 'als_shop' ? {
+        id: 'als_shop',
+        consumer_project_id: 'proj_shop',
         producer_env_name: 'prod',
         requested_scopes: ['notices:read'],
-        api_grant: { producer_project_id: 'proj_engine', export_name: 'opps', envs: [], revoked_at: null },
+        api_grant: { producer_project_id: 'proj_engine', export_name: 'shop', envs: [], revoked_at: null },
       } : null)),
       recordTokenMint: vi.fn(async () => undefined),
     },
@@ -94,11 +94,11 @@ function buildAuth(): { authService: AuthService; internal: AuthInternalControll
 
 function runningJob(phase = 'active') {
   m.state.job = {
-    id: 'opps-1', project_id: 'proj_opps', phase, actor_user_id: null, user_secrets_excluded: false,
-    assignee: 'triage', secrets_allowlist: null, target: null,
+    id: 'shop-1', project_id: 'proj_shop', phase, actor_user_id: null, user_secrets_excluded: false,
+    assignee: 'review', secrets_allowlist: null, target: null,
     hints: {
       resolved_app_links: [
-        { name: 'opps', alias: 'opps', subscription_id: 'als_opps', producer_project_id: 'proj_engine', producer_env: 'prod', base_url: 'https://opps.example' },
+        { name: 'shop', alias: 'shop', subscription_id: 'als_shop', producer_project_id: 'proj_engine', producer_env: 'prod', base_url: 'https://shop.example' },
       ],
     },
   };
@@ -120,7 +120,7 @@ beforeEach(() => {
 describe('a job token', () => {
   async function mintForAttempt(internal: AuthInternalController): Promise<string> {
     const minted = await (internal.mintJobToken as (body: unknown) => Promise<{ access_token: string }>)(
-      { job_id: 'opps-1', permissions: ['jobs:read'], attempt_id: 'att-run-1' },
+      { job_id: 'shop-1', permissions: ['jobs:read'], attempt_id: 'att-run-1' },
     );
     return minted.access_token;
   }
@@ -140,7 +140,7 @@ describe('a job token', () => {
     const { internal, authService } = buildAuth();
     const token = await mintForAttempt(internal);
 
-    await expect(authService.verifyAuthorizationHeader(`Bearer ${token}`)).resolves.toMatchObject({ job_id: 'opps-1' });
+    await expect(authService.verifyAuthorizationHeader(`Bearer ${token}`)).resolves.toMatchObject({ job_id: 'shop-1' });
 
     m.state.runningAttemptId = null;
     await expect(authService.verifyAuthorizationHeader(`Bearer ${token}`)).rejects.toBeInstanceOf(UnauthorizedException);
@@ -156,9 +156,9 @@ describe('a job token', () => {
 
   it('without an attempt is refused once the job is done', async () => {
     const { internal, authService } = buildAuth();
-    const { access_token } = await internal.mintJobToken({ job_id: 'opps-1', permissions: ['jobs:read'] });
+    const { access_token } = await internal.mintJobToken({ job_id: 'shop-1', permissions: ['jobs:read'] });
 
-    await expect(authService.verifyAuthorizationHeader(`Bearer ${access_token}`)).resolves.toMatchObject({ job_id: 'opps-1' });
+    await expect(authService.verifyAuthorizationHeader(`Bearer ${access_token}`)).resolves.toMatchObject({ job_id: 'shop-1' });
 
     m.state.job = { ...m.state.job!, phase: 'done' };
     m.state.runningAttemptId = null;
@@ -169,7 +169,7 @@ describe('a job token', () => {
 describe("a job's app-link token", () => {
   async function mintLinkToken(internal: AuthInternalController): Promise<string> {
     const minted = await (internal.mintAppLinkToken as (body: unknown) => Promise<{ access_token: string }>)(
-      { subscription_id: 'als_opps', consumer_principal: 'job:opps-1', producer_env: 'prod', attempt_id: 'att-run-1' },
+      { subscription_id: 'als_shop', consumer_principal: 'job:shop-1', producer_env: 'prod', attempt_id: 'att-run-1' },
     );
     return minted.access_token;
   }
@@ -179,7 +179,7 @@ describe("a job's app-link token", () => {
     const token = await mintLinkToken(internal);
 
     await expect(me.me(`Bearer ${token}`)).resolves.toMatchObject({
-      type: 'app_link', consumer_project_id: 'proj_opps', consumer_principal: 'job:opps-1',
+      type: 'app_link', consumer_project_id: 'proj_shop', consumer_principal: 'job:shop-1',
     });
   });
 
@@ -193,7 +193,7 @@ describe("a job's app-link token", () => {
 
   it('is refused once the job is done, when minted without an attempt', async () => {
     const { internal, me } = buildAuth();
-    const { access_token } = await internal.mintAppLinkToken({ subscription_id: 'als_opps', consumer_principal: 'job:opps-1', producer_env: 'prod' });
+    const { access_token } = await internal.mintAppLinkToken({ subscription_id: 'als_shop', consumer_principal: 'job:shop-1', producer_env: 'prod' });
 
     m.state.job = { ...m.state.job!, phase: 'done' };
     m.state.runningAttemptId = null;

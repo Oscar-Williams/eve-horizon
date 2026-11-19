@@ -7,11 +7,11 @@ describe('secrets allowlist in agent and workflow config', () => {
     const parsed = AgentsYamlSchema.safeParse({
       version: 1,
       agents: {
-        triage: { skill: 'opportunity-triage', access: { secrets: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] } },
+        triage: { skill: 'ticket-review', access: { secrets: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] } },
       },
     });
     expect(parsed.success).toBe(true);
-    expect(parsed.data?.agents.triage.access?.secrets).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    expect(parsed.data?.agents.triage.access?.secrets).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
   });
 
   it('accepts an empty agent allowlist (no secrets at all)', () => {
@@ -31,8 +31,8 @@ describe('secrets allowlist in agent and workflow config', () => {
   });
 
   it('accepts secrets on a workflow agent step and rejects a malformed one', () => {
-    expect(WorkflowStepSchema.safeParse({ agent: { name: 'triage' }, secrets: ['OPPS_SIGNING_KEY'] }).success).toBe(true);
-    expect(WorkflowStepSchema.safeParse({ agent: { name: 'triage' }, secrets: 'OPPS_SIGNING_KEY' }).success).toBe(false);
+    expect(WorkflowStepSchema.safeParse({ agent: { name: 'triage' }, secrets: ['SHOP_SIGNING_KEY'] }).success).toBe(true);
+    expect(WorkflowStepSchema.safeParse({ agent: { name: 'triage' }, secrets: 'SHOP_SIGNING_KEY' }).success).toBe(false);
   });
 
   it('rejects secrets on a non-agent workflow step, where nothing would apply it', () => {

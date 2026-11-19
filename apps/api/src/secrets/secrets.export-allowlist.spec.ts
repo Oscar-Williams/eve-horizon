@@ -4,7 +4,7 @@ import { ProjectSecretsController } from './secrets.controller';
 import type { AuthUser } from '../auth/auth.types';
 
 const RESTRICTED: AuthUser = {
-  user_id: 'user_owner', is_job_token: true, job_id: 'opps-1', project_id: 'proj_opps',
+  user_id: 'user_owner', is_job_token: true, job_id: 'shop-1', project_id: 'proj_shop',
   permissions: ['secrets:read'], secrets_allowlist: ['ANTHROPIC_API_KEY'],
 } as AuthUser;
 
@@ -17,15 +17,15 @@ describe('POST /projects/:project_id/secrets/export', () => {
   it('refuses a restricted job token a key its allowlist leaves out', async () => {
     const { controller: c, exportSafeSecrets } = controller();
 
-    await expect(c.exportSecrets('proj_opps', { keys: ['GHCR_TOKEN'] } as never, RESTRICTED)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(c.exportSecrets('proj_shop', { keys: ['GHCR_TOKEN'] } as never, RESTRICTED)).rejects.toBeInstanceOf(ForbiddenException);
     expect(exportSafeSecrets).not.toHaveBeenCalled();
   });
 
   it('exports keys the allowlist names, and anything to an unrestricted caller', async () => {
     const { controller: c, exportSafeSecrets } = controller();
 
-    await c.exportSecrets('proj_opps', { keys: ['ANTHROPIC_API_KEY'] } as never, RESTRICTED);
-    await c.exportSecrets('proj_opps', { keys: ['GHCR_TOKEN'] } as never, { user_id: 'user_owner' } as AuthUser);
+    await c.exportSecrets('proj_shop', { keys: ['ANTHROPIC_API_KEY'] } as never, RESTRICTED);
+    await c.exportSecrets('proj_shop', { keys: ['GHCR_TOKEN'] } as never, { user_id: 'user_owner' } as AuthUser);
 
     expect(exportSafeSecrets).toHaveBeenCalledTimes(2);
   });

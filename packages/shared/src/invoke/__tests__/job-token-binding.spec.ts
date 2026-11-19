@@ -11,10 +11,10 @@ function jsonResponse(body: unknown) {
 }
 
 const invocation = {
-  jobId: 'opps-1',
+  jobId: 'shop-1',
   attemptId: 'att-run-1',
-  projectId: 'proj_opps',
-  text: 'triage',
+  projectId: 'proj_shop',
+  text: 'review',
   workspacePath: '/tmp/ws',
 } as HarnessInvocation;
 
@@ -42,22 +42,22 @@ describe('tokens minted for a running job', () => {
     await resolveInvocationJobToken(invocation, undefined, ['jobs:read']);
 
     expect(fetchSpy.mock.calls[0][0]).toBe('http://api.test/internal/auth/mint-job-token');
-    expect(body(0)).toMatchObject({ job_id: 'opps-1', attempt_id: 'att-run-1' });
+    expect(body(0)).toMatchObject({ job_id: 'shop-1', attempt_id: 'att-run-1' });
   });
 
   it("binds each app-link token to the job's attempt and returns them for the harness env", async () => {
     fetchSpy.mockResolvedValue(jsonResponse({ access_token: 'link-token', token_type: 'bearer', expires_at: 2 }));
 
     const links = await mintJobAppLinkTokens(invocation, [
-      { name: 'opps', alias: 'opps', subscription_id: 'als_opps', base_url: 'https://opps.example', producer_env: 'prod' },
+      { name: 'shop', alias: 'shop', subscription_id: 'als_shop', base_url: 'https://shop.example', producer_env: 'prod' },
     ]);
 
     expect(fetchSpy.mock.calls[0][0]).toBe('http://api.test/internal/auth/mint-app-link-token');
     expect(body(0)).toMatchObject({
-      subscription_id: 'als_opps', consumer_principal: 'job:opps-1', producer_env: 'prod', attempt_id: 'att-run-1',
+      subscription_id: 'als_shop', consumer_principal: 'job:shop-1', producer_env: 'prod', attempt_id: 'att-run-1',
     });
     expect(links).toEqual([
-      expect.objectContaining({ alias: 'opps', origin: 'app_link', type: 'openapi', token: 'link-token' }),
+      expect.objectContaining({ alias: 'shop', origin: 'app_link', type: 'openapi', token: 'link-token' }),
     ]);
   });
 });

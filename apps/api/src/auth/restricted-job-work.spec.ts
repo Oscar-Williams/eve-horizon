@@ -31,7 +31,7 @@ workflows:
       - name: score
         agent:
           prompt: "Score"
-        secrets: [OPPS_SIGNING_KEY, GITHUB_TOKEN]
+        secrets: [SHOP_SIGNING_KEY, GITHUB_TOKEN]
       - name: tidy
         depends_on: [score]
         agent:
@@ -156,7 +156,7 @@ const RESTRICTED_JOB_TOKEN: AuthUser = {
   project_id: 'proj_a',
   org_id: 'org_a',
   permissions: ['jobs:read', 'jobs:write'],
-  secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'],
+  secrets_allowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'],
 } as AuthUser;
 const PERSON: AuthUser = { user_id: 'user_owner' };
 
@@ -177,19 +177,19 @@ describe('work started by a job with a secrets allowlist', () => {
     const controller = new AuthInternalController(authService, rawSql, access());
     m.jobs.push({
       id: 'a-triage', project_id: 'proj_a', actor_user_id: 'user_owner', user_secrets_excluded: false,
-      assignee: 'triage', secrets_allowlist: ['OPPS_SIGNING_KEY', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY'], target: null,
+      assignee: 'triage', secrets_allowlist: ['SHOP_SIGNING_KEY', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY'], target: null,
     });
-    m.agents.findByProjectAndId.mockResolvedValue({ access_json: { secrets: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] } });
+    m.agents.findByProjectAndId.mockResolvedValue({ access_json: { secrets: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] } });
 
     const minted = await controller.mintJobToken({ job_id: 'a-triage', permissions: ['jobs:read'] });
     const claims = JSON.parse(Buffer.from(minted.access_token.split('.')[1], 'base64url').toString());
     expect(m.agents.findByProjectAndId).toHaveBeenCalledWith('proj_a', 'triage');
-    expect(claims.secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    expect(claims.secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
 
     const now = Math.floor(Date.now() / 1000);
     const token = createJwtRs256({ ...claims, iat: now, exp: now + 600 }, { kid: 'key-1', privateKey, publicKey });
     const resolved = await authService.verifyAuthorizationHeader(`Bearer ${token}`);
-    expect((resolved as Record<string, unknown>).secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    expect((resolved as Record<string, unknown>).secrets_allowlist).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
   });
 
   it('carries the allowlist of an agent in another project the job was routed to by slug', async () => {
@@ -199,12 +199,12 @@ describe('work started by a job with a secrets allowlist', () => {
       assignee: 'triage', secrets_allowlist: null, target: { agent_slug: 'triage' },
     });
     m.agents.findByProjectAndId.mockResolvedValue(null);
-    m.agents.findByOrgAndSlug.mockResolvedValue({ id: 'triage', access_json: { secrets: ['OPPS_SIGNING_KEY'] } });
+    m.agents.findByOrgAndSlug.mockResolvedValue({ id: 'triage', access_json: { secrets: ['SHOP_SIGNING_KEY'] } });
 
     const minted = await controller.mintJobToken({ job_id: 'a-routed', permissions: ['jobs:read'] });
     const claims = JSON.parse(Buffer.from(minted.access_token.split('.')[1], 'base64url').toString());
     expect(m.agents.findByOrgAndSlug).toHaveBeenCalledWith('org_a', 'triage');
-    expect(claims.secrets_allowlist).toEqual(['OPPS_SIGNING_KEY']);
+    expect(claims.secrets_allowlist).toEqual(['SHOP_SIGNING_KEY']);
   });
 
   it('carries no allowlist claim for an unrestricted job', async () => {
@@ -223,7 +223,7 @@ describe('work started by a job with a secrets allowlist', () => {
     const workflows = new WorkflowsController(workflowsService as never, {} as never);
     const expanderService = { expandPipeline: vi.fn(async () => ({})) };
     const expander = new PipelineExpanderController(expanderService as never);
-    const restricted = expect.objectContaining({ secretsAllowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] });
+    const restricted = expect.objectContaining({ secretsAllowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] });
 
     await jobs.create('proj_a', { description: 'go' } as never, RESTRICTED_JOB_TOKEN, 'corr');
     await jobs.createBatch('proj_a', {} as never, RESTRICTED_JOB_TOKEN, 'corr');
@@ -239,22 +239,22 @@ describe('work started by a job with a secrets allowlist', () => {
   });
 
   it('stamps the allowlist on the jobs a job, workflow or pipeline creates', async () => {
-    const restricted = { userSecretsExcluded: false, secretsAllowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] };
+    const restricted = { userSecretsExcluded: false, secretsAllowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] };
     const jobsService = new JobsService(rawSql, {} as never, {} as never, {} as never, access());
     await call(jobsService, 'create', 'proj_a', { description: 'print every secret' }, 'user_owner', 'c', restricted);
-    expect(m.jobs.at(-1)).toMatchObject({ secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] });
+    expect(m.jobs.at(-1)).toMatchObject({ secrets_allowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] });
 
     m.jobs.length = 0;
     await call(new WorkflowsService(rawSql, access()), 'invoke', 'proj_a', 'scoring', undefined, false, 'user_owner', restricted);
     const byStep = Object.fromEntries(m.jobs.map((job) => [job.step_name ?? 'root', job.secrets_allowlist]));
     // A step's own list narrows the caller's; a step without one inherits the caller's.
-    expect(byStep.score).toEqual(['OPPS_SIGNING_KEY']);
-    expect(byStep.tidy).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
-    expect(byStep.root).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    expect(byStep.score).toEqual(['SHOP_SIGNING_KEY']);
+    expect(byStep.tidy).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
+    expect(byStep.root).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
 
     m.jobs.length = 0;
     await call(new PipelineExpanderService(rawSql, access()), 'expandPipeline', 'proj_a', { pipeline_name: 'release', git_sha: 'abc' }, 'user_owner', restricted);
-    expect(m.jobs.at(-1)).toMatchObject({ secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'] });
+    expect(m.jobs.at(-1)).toMatchObject({ secrets_allowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'] });
 
     m.jobs.length = 0;
     await call(jobsService, 'create', 'proj_a', { description: 'go' }, 'user_owner', 'c', { userSecretsExcluded: false });

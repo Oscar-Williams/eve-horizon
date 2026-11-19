@@ -13,7 +13,7 @@ function secret(key: string, scope_type: SecretResolveItem['scope_type'] = 'proj
 const RESOLVED = [
   secret('ANTHROPIC_API_KEY', 'org'),
   secret('GITHUB_TOKEN', 'project'),
-  secret('OPPS_SIGNING_KEY', 'project'),
+  secret('SHOP_SIGNING_KEY', 'project'),
   secret('PERSONAL_TOKEN', 'user'),
   secret('SMTP_PASSWORD', 'system'),
 ];
@@ -43,8 +43,8 @@ describe('filterSecretsByAllowlist', () => {
   });
 
   it('keeps only allowlisted keys, whatever scope they come from', () => {
-    const kept = filterSecretsByAllowlist(RESOLVED, ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY', 'NOT_SET']);
-    expect(kept.map((s) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']);
+    const kept = filterSecretsByAllowlist(RESOLVED, ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY', 'NOT_SET']);
+    expect(kept.map((s) => s.key)).toEqual(['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']);
   });
 
   it('withholds every secret for an empty allowlist', () => {
@@ -54,7 +54,7 @@ describe('filterSecretsByAllowlist', () => {
 
 describe('agentSecretsAllowlist', () => {
   it('reads access.secrets from an agent\'s stored access config', () => {
-    expect(agentSecretsAllowlist({ permissions: ['jobs:read'], secrets: ['OPPS_SIGNING_KEY'] })).toEqual(['OPPS_SIGNING_KEY']);
+    expect(agentSecretsAllowlist({ permissions: ['jobs:read'], secrets: ['SHOP_SIGNING_KEY'] })).toEqual(['SHOP_SIGNING_KEY']);
   });
 
   it('is undeclared when the agent has no access.secrets', () => {
@@ -63,7 +63,7 @@ describe('agentSecretsAllowlist', () => {
   });
 
   it('fails closed on a malformed stored value', () => {
-    expect(agentSecretsAllowlist({ secrets: 'OPPS_SIGNING_KEY' })).toEqual([]);
+    expect(agentSecretsAllowlist({ secrets: 'SHOP_SIGNING_KEY' })).toEqual([]);
     expect(agentSecretsAllowlist({ secrets: ['OK', 7] })).toEqual(['OK']);
   });
 });

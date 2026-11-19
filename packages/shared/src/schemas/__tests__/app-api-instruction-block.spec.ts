@@ -97,10 +97,10 @@ describe('buildAppApiInstructionBlock', () => {
 
   it('tells the agent how to refresh an app link token before it expires', () => {
     const result = buildAppApiInstructionBlock([
-      { name: 'opps', type: 'openapi', origin: 'app_link', alias: 'opps', base_url: 'http://opps:3000' },
+      { name: 'shop', type: 'openapi', origin: 'app_link', alias: 'shop', base_url: 'http://shop:3000' },
     ]);
 
-    expect(result).toContain('export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)');
+    expect(result).toContain('export EVE_APP_LINK_SHOP_TOKEN=$(eve job app-link-token shop)');
   });
 });
 

@@ -74,7 +74,7 @@ A producer that verifies locally against JWKS (`strategy: 'local'`) sees only
 A job that runs longer than an hour refreshes its own tokens with its job token:
 
 ```bash
-export EVE_APP_LINK_OPPS_TOKEN=$(eve job app-link-token opps)   # one link
+export EVE_APP_LINK_SHOP_TOKEN=$(eve job app-link-token shop)   # one link
 eval "$(eve job app-link-token --env)"                           # every link
 ```
 
