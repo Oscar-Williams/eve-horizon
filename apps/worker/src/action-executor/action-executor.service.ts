@@ -20,6 +20,8 @@ import {
   threadMessageQueries,
   governingSecurityProfile,
   decideSecurityRule,
+  recordRunnerModeFinding,
+  runnerModeFor,
 } from '@eve/db';
 import {
   applyEnvOverrides,
@@ -63,6 +65,8 @@ import { classifyBuildError } from './error-classifier.js';
 import { K8sOperationError } from '../deployer/k8s-error.js';
 import { DeployFailureError, classifyFromSnapshot } from '../deployer/deploy-failure.js';
 import { runStreamingCommand } from '../execution/streaming-command.js';
+import { inKubernetes, strictNeedsRunnerPods } from '../execution/runner-mode.js';
+import { ScriptExecutorService } from '../script-executor/script-executor.service.js';
 import { buildJobCommandEnv } from '../execution/job-command-env.js';
 
 const execFileAsync = promisify(execFile);
@@ -1139,6 +1143,37 @@ export class ActionExecutorService {
     const job = await this.jobs.findById(jobId);
     const timeoutSeconds = resolveRunTimeoutSeconds(input, job);
     const timeoutMs = timeoutSeconds * 1000;
+
+    // Rule isolation.runner_mode: under strict (or EVE_RUNNER_PODS_ONLY) the
+    // command runs only in a runner pod, through the script runner's handler;
+    // under audit an inline run is recorded.
+    const mode = await runnerModeFor(this.db, projectId);
+    if (mode.required) {
+      if (!inKubernetes()) {
+        await recordRunnerModeFinding(this.db, { projectId, profile: mode.profile, actorId: jobId,
+          detail: { kind: 'action_run', job_id: jobId, refused: 'no_kubernetes' } });
+        throw strictNeedsRunnerPods('`action: run` step');
+      }
+      await this.appendLog(attemptId, 'status', {
+        message: `Running command in a runner pod: ${command}`,
+        timestamp: new Date().toISOString(),
+      });
+      const result = await new ScriptExecutorService(this.db).runActionInRunner({
+        job, jobId, attemptId, command, gitSha, timeoutSeconds,
+        tokenPermissions: [...DEFAULT_ACTION_RUN_JOB_PERMISSIONS],
+        mode,
+      });
+      if (!result.success) {
+        const error = new Error(result.error ?? `Command failed with exit code ${result.exitCode}`) as Error & { code?: string | number };
+        error.code = result.errorCode ?? result.exitCode;
+        throw error;
+      }
+      return { command, exit_code: result.exitCode, stdout: (result.stdout ?? '').trim(), stderr: (result.stderr ?? '').trim() };
+    }
+    if (mode.profile === 'audit') {
+      await recordRunnerModeFinding(this.db, { projectId, profile: mode.profile, actorId: jobId,
+        detail: { kind: 'action_run', job_id: jobId } });
+    }
     const envOverrides = ((job as { env_overrides?: Record<string, string> | null } | null)?.env_overrides) ?? null;
     const envOverrideSecretRefs = extractSecretRefs(envOverrides ?? {});
     const resolvedSecrets = await this.resolveSecretsForExecution(

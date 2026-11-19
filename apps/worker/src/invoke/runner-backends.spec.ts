@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchToRunnerPod } from './runner-dispatch.js';
+import { resetSandboxDiscovery } from './sandbox-claim-backend.js';
 
 /**
  * Where a runner pod comes from. With the agent-sandbox CRDs present (and the
@@ -60,6 +61,7 @@ let submittedTo: string[] = [];
 beforeEach(() => {
   k.crds = true; k.pool = true; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
   submittedTo = [];
+  resetSandboxDiscovery();
   vi.stubEnv('EVE_RUNNER_IMAGE', 'worker:test');
   vi.stubEnv('EVE_RUNNER_NAMESPACE', 'eve-runners');
   vi.stubEnv('EVE_K8S_NAMESPACE', 'eve');

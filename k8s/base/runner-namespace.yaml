@@ -1,0 +1,23 @@
+# Runner pods (job code) run here, apart from the platform's own pods, under
+# Pod Security `restricted`. The agent-sandbox templates, warm pools and
+# claims live here too; the controller itself is installed by the instance
+# overlay, not by base. A job that mounts the org filesystem (legacy and audit
+# only) still runs as a plain pod in `eve`, where that claim lives.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: eve-runners
+  labels:
+    app.kubernetes.io/part-of: eve
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# Runner pods' account in the runner namespace: no token, no RBAC, no cloud identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eve-runner
+  namespace: eve-runners
+automountServiceAccountToken: false

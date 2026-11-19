@@ -12,6 +12,7 @@ import {
   buildRunnerPod,
   serviceHelperEnv,
   type RunnerResources,
+  type RunnerRuntime,
 } from '@eve/shared';
 import type { RunnerPodBackend } from './runner-dispatch.js';
 
@@ -85,6 +86,12 @@ export interface RunnerPodPlan {
   orgFs?: { readOnly: boolean } | null;
   /** Extra pod labels (allow-listed domain), set by the dispatcher. */
   labels?: Record<string, string>;
+  /** The workspace: a claim per attempt (default), or a pod-local emptyDir. */
+  workspace?: 'pvc' | 'emptyDir';
+  /** Workspace claim size (default EVE_K8S_WORKSPACE_SIZE). */
+  workspaceSize?: string;
+  /** Runtime class and its scheduling (instance setting runner.runtime_class). */
+  runtime?: RunnerRuntime;
 }
 
 /**
@@ -98,7 +105,7 @@ export function buildRunnerManifests(
   podName: string,
   resources?: RunnerResourceOverrides,
   inboundKeySha256?: string,
-  plan: Pick<RunnerPodPlan, 'orgFs' | 'labels'> = {},
+  plan: Pick<RunnerPodPlan, 'orgFs' | 'labels' | 'workspace' | 'workspaceSize' | 'runtime'> = {},
 ): string {
   const labels = {
     'eve.type': 'runner',
@@ -113,7 +120,7 @@ export function buildRunnerManifests(
     metadata: { name: pvcName, namespace, labels: { 'eve.type': 'runner', 'eve.job_id': labels['eve.job_id'], 'eve.attempt_id': labels['eve.attempt_id'] }, annotations },
     spec: {
       accessModes: ['ReadWriteOnce'],
-      resources: { requests: { storage: process.env.EVE_K8S_WORKSPACE_SIZE ?? DEFAULT_WORKSPACE_SIZE } },
+      resources: { requests: { storage: plan.workspaceSize ?? process.env.EVE_K8S_WORKSPACE_SIZE ?? DEFAULT_WORKSPACE_SIZE } },
     },
   };
   const pod = buildRunnerPod({
@@ -123,14 +130,15 @@ export function buildRunnerManifests(
     labels,
     annotations,
     inboundKeySha256,
-    workspace: { kind: 'pvc', claimName: pvcName },
+    workspace: plan.workspace === 'emptyDir' ? { kind: 'emptyDir', sizeLimit: '10Gi' } : { kind: 'pvc', claimName: pvcName },
     orgFs: plan.orgFs ?? null,
+    runtime: plan.runtime,
     toolchains: invocation.toolchains ?? [],
     appClis: invocation.appClis ?? [],
     resources,
     activeDeadlineSeconds: parseInt(process.env.EVE_K8S_ACTIVE_DEADLINE_SECONDS ?? '7200', 10),
   });
-  return JSON.stringify({ apiVersion: 'v1', kind: 'List', items: [pvc, pod] });
+  return JSON.stringify({ apiVersion: 'v1', kind: 'List', items: plan.workspace === 'emptyDir' ? [pod] : [pvc, pod] });
 }
 
 type InitStatus = { name: string; imageID?: string; state?: { waiting?: { reason?: string; message?: string }; terminated?: { exitCode?: number; message?: string } } };
@@ -165,7 +173,7 @@ type PodStatus = {
   };
 };
 
-export type PodCreatedMeta = { runtime: string; pod_name: string; namespace: string; backend?: string; toolchains?: Record<string, unknown> };
+export type PodCreatedMeta = { runtime: string; pod_name: string; namespace: string; backend?: string; claim?: string; fallback?: string; toolchains?: Record<string, unknown> };
 
 /** A plain runner pod (with its workspace claim), managed through kubectl. */
 export function createPlainPodBackend(opts: {
@@ -176,6 +184,7 @@ export function createPlainPodBackend(opts: {
   onPodCreated?: (meta: PodCreatedMeta) => Promise<void>;
 }): RunnerPodBackend {
   const namespace = opts.namespace ?? process.env.EVE_K8S_NAMESPACE ?? DEFAULT_NAMESPACE;
+  const usesClaim = opts.plan.workspace !== 'emptyDir';
   const { podName, pvcName } = runnerResourceNames(opts.submit.attempt_id);
   const toolchains = [...new Set(opts.plan.toolchains ?? [])];
   const invocation = { jobId: opts.submit.job_id, attemptId: opts.submit.attempt_id, toolchains, appClis: opts.plan.appClis };
@@ -224,6 +233,7 @@ export function createPlainPodBackend(opts: {
       } catch (err) {
         console.error(`Failed to delete pod ${podName}: ${err instanceof Error ? err.message : err}`);
       }
+      if (!usesClaim) return;
       try {
         await execKubectl(['delete', 'pvc', pvcName, `--namespace=${namespace}`, '--ignore-not-found=true', '--wait=false']);
       } catch (err) {

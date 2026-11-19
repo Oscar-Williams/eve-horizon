@@ -22,6 +22,7 @@ import {
 import {
   CODEX_ID_TOKEN_JWKS_URL,
   RUNNER_EVENT_TYPES,
+  RUNNER_FINDING_RULES,
   RUNNER_RUNTIME_META_KEYS,
   RUNNER_WRITABLE_CREDENTIALS,
   codexAccountIdOf,
@@ -41,7 +42,6 @@ import { SecurityService } from '../security/security.service.js';
 export const CODEX_JWKS_SOURCE = 'CODEX_JWKS_SOURCE';
 export type CodexJwksSource = () => Promise<Jwks>;
 
-const JOB_ORG_WRITE_RULE = 'secrets.job_org_write';
 const MAX_LOG_ENTRIES = 500;
 const MAX_THREAD_MESSAGE = 16 * 1024;
 
@@ -114,6 +114,10 @@ export class RunnerAttemptsService {
     if (typeof type !== 'string' || !(RUNNER_EVENT_TYPES as readonly string[]).includes(type)) {
       throw new BadRequestException(`A runner emits only ${RUNNER_EVENT_TYPES.join(', ')}`);
     }
+    if (type === 'security.finding') {
+      await this.recordFinding(token, payload);
+      return;
+    }
     await eventQueries(this.db).create({
       id: generateEventId(),
       project_id: token.project_id,
@@ -128,6 +132,29 @@ export class RunnerAttemptsService {
         job_id: token.job_id, attempt_id: token.attempt_id },
       dedupe_key: `resource:${token.attempt_id}:${type}`,
     } as never);
+  }
+
+  /**
+   * A finding for a rule the runner applies itself, with the profile the
+   * worker decided (a runner has no database). Recorded under the job's
+   * project, as the job.
+   */
+  private async recordFinding(token: JobTokenPayload, payload: unknown): Promise<void> {
+    const { rule, detail } = (payload ?? {}) as { rule?: unknown; detail?: unknown };
+    if (typeof rule !== 'string' || !RUNNER_FINDING_RULES.includes(rule)) {
+      throw new BadRequestException(`A runner records findings only for ${RUNNER_FINDING_RULES.join(', ')}`);
+    }
+    const flat: Record<string, string | number | boolean | null> = {};
+    for (const [k, v] of Object.entries(detail && typeof detail === 'object' ? detail as Record<string, unknown> : {}).slice(0, 20)) {
+      if (v === null || typeof v === 'number' || typeof v === 'boolean') flat[k] = v;
+      else if (typeof v === 'string') flat[k] = v.slice(0, 500);
+    }
+    await this.security.decide(rule, {
+      projectId: token.project_id,
+      governing: 'project',
+      actor: { user_id: token.user_id, is_job_token: true, job_id: token.job_id } as AuthUser,
+      detail: { ...flat, job_id: token.job_id, attempt_id: token.attempt_id ?? null },
+    });
   }
 
   async updateRuntimeMeta(attemptId: string, meta: unknown): Promise<void> {
@@ -230,17 +257,12 @@ export class RunnerAttemptsService {
       throw new ConflictException('The refreshed credential belongs to another account');
     }
 
-    if (stored.scope_type === 'project') {
-      await this.secrets.updateIfExists('project', stored.scope_id, key, value);
-      return;
-    }
-    const profile = await this.security.decide(JOB_ORG_WRITE_RULE, {
-      projectId: token.project_id,
-      governing: 'project',
-      actor: { user_id: token.user_id, is_job_token: true, job_id: token.job_id } as AuthUser,
-      detail: { key, scope_type: stored.scope_type, route: 'runner.credential' },
-    });
-    if (profile === 'strict') {
+    // Rule secrets.job_org_write: an org-scope write-back only outside the
+    // project's strict profile (recorded under audit); under strict the
+    // refreshed credential goes to the job's own project instead.
+    const caller = { user_id: token.user_id, is_job_token: true, job_id: token.job_id, attempt_id: token.attempt_id,
+      project_id: token.project_id, org_id: token.org_id ?? undefined } as AuthUser;
+    if (!await this.secrets.mayJobWriteSecret(caller, stored.scope_type, key)) {
       await this.secrets.create('project', token.project_id, { key, value, type: stored.type });
       return;
     }

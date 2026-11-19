@@ -53,6 +53,8 @@ export class RunnerController {
   }
 
   private async runInBackground(submit: RunnerSubmit): Promise<void> {
+    // The job (and its Eve CLI) talks to the API the worker named, with the job's token.
+    process.env.EVE_API_URL = submit.api_url;
     const client = new RunnerApiClient({ apiUrl: submit.api_url, jobToken: submit.job_token, jobId: submit.job_id, attemptId: submit.attempt_id });
     let report: RunnerResultReport;
     try {

@@ -135,8 +135,20 @@ the pod, which reports with the attempt's job token through
 - `EVE_REQUIRE_ENVIRON_PROTECTION=true` on the worker and agent runtime: they
   refuse to start if job processes could read their environment.
 
-Runner pods must reach the API's public port (`EVE_API_APP_URL`, else
-`EVE_API_URL`). See [runner pods](runner-pods.md).
+Runner pods live in `eve-runners` (`k8s/base/runner-namespace.yaml`: Pod
+Security `restricted` enforced, its own `eve-runner` account) and report to
+the API's public port by its cluster name (`EVE_API_APP_URL`). The worker
+holds a Role there (`k8s/base/runner-rbac.yaml`). `EVE_RUNNER_PODS_ONLY=true`
+puts every project's job code in runner pods for a migration window.
+
+**agent-sandbox** is optional and is not installed by base. Where the
+instance overlay installs it (pinned release manifest, `agent-sandbox-config`
+allow-listing the `eve.horizon` label domain), the worker renders the
+runner templates and warm pools and claims runner pods from them; set
+`runner.runtime_class`, `runner.warm_pool.chat` and `runner.warm_pool.job`
+with `eve system settings set`, then run `eve system security reconcile`.
+Without it, runner pods are created directly. See
+[runner pods](runner-pods.md#backends-agent-sandbox-or-a-plain-pod).
 
 ### Secrets Provisioning
 

@@ -120,6 +120,14 @@ interface ReconcileReport {
     without_pull_secret: number;
     failed: Array<{ environment_id: string; error: string }>;
   };
+  /** Runner SandboxTemplates and SandboxWarmPools (absent from an older API). */
+  runner_templates?: {
+    backend: 'sandbox' | 'pod';
+    namespace: string;
+    reason?: string;
+    runtime_class?: string | null;
+    warm_pools?: Record<string, number>;
+  };
 }
 
 /**
@@ -128,7 +136,8 @@ interface ReconcileReport {
  * With no scope flag it sets the instance profile.
  *
  * `eve system security reconcile`: bring environments in line with the
- * profiles (registry pull secrets re-signed with the current key).
+ * profiles (registry pull secrets re-signed with the current key) and render
+ * the runner templates and warm pools from the instance settings.
  */
 export async function handleSystemSecurity(
   positionals: string[],
@@ -154,6 +163,13 @@ export async function handleSystemSecurity(
     }
     if (r.failed.length > 0) {
       console.log('Environments that failed stay on their old key; run eve system security reconcile again.');
+    }
+    const t = result.runner_templates;
+    if (t?.backend === 'sandbox') {
+      const pools = Object.entries(t.warm_pools ?? {}).map(([cls, size]) => `${cls} ${size}`).join(', ');
+      console.log(`Runner templates in ${t.namespace}: runtime class ${t.runtime_class ?? 'none'}; warm pools ${pools || 'none'}`);
+    } else if (t) {
+      console.log(`Runner pods are created directly in ${t.namespace} (${t.reason ?? 'no agent-sandbox'})`);
     }
     return;
   }

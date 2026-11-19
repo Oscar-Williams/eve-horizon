@@ -2265,7 +2265,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
           '--project <id> Set a project (overrides its org)',
           '--new-projects Set the profile written onto each new project',
           '--force       Set the instance strict although v1 secrets, plain OAuth columns or registry pull secrets on an older key remain',
-          'reconcile     Re-sign each environment\'s registry pull secret with the current registry credential key (no restart)',
+          'reconcile     Re-sign each environment\'s registry pull secret with the current registry credential key (no restart), and render the runner SandboxTemplates and warm pools from the runner.* settings',
         ],
         examples: [
           'eve system security profile audit',

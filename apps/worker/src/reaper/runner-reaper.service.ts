@@ -13,7 +13,11 @@ export class RunnerReaperService implements OnModuleInit, OnModuleDestroy {
   private readonly enabled = process.env.EVE_RUNNER_REAPER_ENABLED !== 'false';
   private readonly intervalMs = parseInt(process.env.EVE_RUNNER_REAPER_INTERVAL_MS ?? '300000', 10);
   private readonly graceSeconds = parseInt(process.env.EVE_RUNNER_REAPER_GRACE_SECONDS ?? '120', 10);
-  private readonly namespace = process.env.EVE_K8S_NAMESPACE ?? 'eve';
+  /** The platform namespace (plain runner pods for org-filesystem jobs) and the runner namespace. */
+  private readonly namespaces = [...new Set([
+    process.env.EVE_K8S_NAMESPACE ?? 'eve',
+    process.env.EVE_RUNNER_NAMESPACE || 'eve-runners',
+  ])];
 
   constructor(@Inject('DB') private readonly db: Db) {}
 
@@ -60,6 +64,16 @@ export class RunnerReaperService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async reap(): Promise<void> {
+    for (const namespace of this.namespaces) {
+      try {
+        await this.reapNamespace(namespace);
+      } catch (err) {
+        if ((err as { statusCode?: number })?.statusCode !== 404) throw err;
+      }
+    }
+  }
+
+  private async reapNamespace(namespace: string): Promise<void> {
     if (!this.coreApi) return;
 
     const labelSelector = 'eve.type=runner';
@@ -69,15 +83,19 @@ export class RunnerReaperService implements OnModuleInit, OnModuleDestroy {
     // 1. List runner pods and PVCs
     const [podList, pvcList] = await Promise.all([
       this.coreApi.listNamespacedPod(
-        this.namespace, undefined, undefined, undefined, undefined, labelSelector,
+        namespace, undefined, undefined, undefined, undefined, labelSelector,
       ),
       this.coreApi.listNamespacedPersistentVolumeClaim(
-        this.namespace, undefined, undefined, undefined, undefined, labelSelector,
+        namespace, undefined, undefined, undefined, undefined, labelSelector,
       ),
     ]);
 
-    const pods = podList.body.items;
-    const pvcs = pvcList.body.items;
+    // agent-sandbox owns the pods (and workspace claims) it creates for claims and
+    // warm pools; deleting a SandboxClaim removes them. Reap only Eve's own.
+    const ownedBySandbox = (o: { metadata?: { ownerReferences?: Array<{ kind?: string }> } }) =>
+      (o.metadata?.ownerReferences ?? []).some((ref) => ref.kind === 'Sandbox');
+    const pods = podList.body.items.filter((pod) => !ownedBySandbox(pod));
+    const pvcs = pvcList.body.items.filter((pvc) => !ownedBySandbox(pvc));
 
     if (pods.length === 0 && pvcs.length === 0) return;
 
@@ -184,7 +202,7 @@ export class RunnerReaperService implements OnModuleInit, OnModuleDestroy {
 
     for (const name of podsToDelete) {
       try {
-        await this.coreApi.deleteNamespacedPod(name, this.namespace);
+        await this.coreApi.deleteNamespacedPod(name, namespace);
         deletedPods++;
         this.logger.log(`Reaped pod: ${name}`);
       } catch (err: unknown) {
@@ -196,7 +214,7 @@ export class RunnerReaperService implements OnModuleInit, OnModuleDestroy {
 
     for (const name of pvcsToDelete) {
       try {
-        await this.coreApi.deleteNamespacedPersistentVolumeClaim(name, this.namespace);
+        await this.coreApi.deleteNamespacedPersistentVolumeClaim(name, namespace);
         deletedPvcs++;
         this.logger.log(`Reaped PVC: ${name}`);
       } catch (err: unknown) {

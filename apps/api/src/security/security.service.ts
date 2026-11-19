@@ -226,12 +226,20 @@ export class SecurityService {
   }
 
   /**
-   * Bring environments in line with the security profiles: the worker
+   * Bring the instance in line with the security profiles. The worker
    * re-signs each stale environment's registry pull secret with the current
-   * registry credential key and records the version.
+   * registry credential key and records the version, and renders the runner
+   * SandboxTemplates and SandboxWarmPools from the instance settings (a no-op
+   * without the agent-sandbox CRDs).
    */
-  async reconcile(): Promise<{ registry: unknown }> {
-    const response = await fetch(`${resolveWorkerUrl('reconcile environments')}/registry/pull-secrets/resign`, {
+  async reconcile(): Promise<{ registry: unknown; runner_templates: unknown }> {
+    const registry = await this.callWorker('/registry/pull-secrets/resign', 're-sign registry pull secrets');
+    const runnerTemplates = await this.callWorker('/runner/templates/reconcile', 'render the runner templates');
+    return { registry, runner_templates: runnerTemplates };
+  }
+
+  private async callWorker(path: string, what: string): Promise<unknown> {
+    const response = await fetch(`${resolveWorkerUrl('reconcile environments')}${path}`, {
       method: 'POST',
       headers: workerRequestHeaders(),
       body: '{}',
@@ -244,9 +252,9 @@ export class SecurityService {
       } catch {
         // Not JSON: keep the text.
       }
-      throw new HttpException(`The worker could not re-sign registry pull secrets: ${message}`, response.status);
+      throw new HttpException(`The worker could not ${what}: ${message}`, response.status);
     }
-    return { registry: JSON.parse(text) as unknown };
+    return JSON.parse(text) as unknown;
   }
 
   /** Profiles and findings for the instance, an org or a project. */

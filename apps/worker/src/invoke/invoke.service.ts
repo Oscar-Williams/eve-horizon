@@ -22,7 +22,7 @@ import {
   type ResolvedGitMetadata,
   buildSecurityPolicyPreamble,
   buildSecurityClaudeMd,
-  loadConfig,
+  loadConfigWithoutDatabase,
   DEFAULT_BILLING_DEFAULTS_V1,
   DEFAULT_RATE_CARD_EFFECTIVE_AT,
   DEFAULT_RATE_CARD_NAME,
@@ -62,6 +62,10 @@ import {
   mayReadJobAttachment,
   DEFAULT_AGENT_PERMISSIONS,
   RunnerApiClient,
+  RUNNER_DECIDED_RULES,
+  RUNNER_SETTINGS,
+  selectRunnerClass,
+  type SecurityProfile,
   type PreparedAgentJob,
   type RunnerContextFile,
   type RunnerResource,
@@ -123,7 +127,13 @@ import {
   systemSettingsQueries,
   threadMessageQueries,
   runnerResultQueries,
+  runnerModeFor,
+  recordRunnerModeFinding,
+  decideSecurityRule,
+  governingSecurityProfile,
+  type RunnerModeDecision,
 } from '@eve/db';
+import { inKubernetes, runnerSelfCheckMode, strictNeedsRunnerPods } from '../execution/runner-mode.js';
 import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type HarnessHelpers } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
 import { dispatchToRunnerPod, runnerApiUrl, type RunnerOutcome } from './runner-dispatch.js';
@@ -1282,6 +1292,7 @@ export class InvokeService implements OnModuleInit {
     effectiveInvocation: HarnessInvocation,
     cancellation: JobCancellationMonitor,
     runnerResources: { requests?: { cpu?: string; memory?: string }; limits?: { cpu?: string; memory?: string } } | undefined,
+    mode: RunnerModeDecision,
   ): Promise<HarnessResult> {
     const prepared = await this.prepareAgentJob(effectiveInvocation);
     const jobToken = getInvocationJobToken(prepared.invocation);
@@ -1293,15 +1304,28 @@ export class InvokeService implements OnModuleInit {
       project_id: effectiveInvocation.projectId,
       job_token: jobToken,
       api_url: runnerApiUrl(),
+      self_check: runnerSelfCheckMode(mode),
       agent: prepared,
     };
     const attemptId = effectiveInvocation.attemptId;
+    const job = await this.jobs.findById(effectiveInvocation.jobId) as { labels?: string[] | null; hints?: Record<string, unknown> | null } | null;
+    const hints = job?.hints ?? {};
+    const orgFs = orgFsPodMount(effectiveInvocation.data?.orgfs_mount, { strict: mode.profile === 'strict' });
     const outcome = await dispatchToRunnerPod(submit, {
       pod: {
         toolchains: prepared.invocation.toolchains,
         appClis: prepared.invocation.appClis,
         resources: runnerResources,
-        orgFs: orgFsPodMount(effectiveInvocation.data?.orgfs_mount),
+        orgFs,
+        jobClass: selectRunnerClass({
+          labels: job?.labels,
+          toolchains: prepared.invocation.toolchains,
+          appClis: prepared.invocation.appClis,
+          resourceOverride: Boolean(runnerResources),
+          hint: typeof hints.runner_class === 'string' ? hints.runner_class : null,
+        }),
+        timeoutSeconds: typeof hints.timeout_seconds === 'number' ? hints.timeout_seconds : undefined,
+        runtimeClass: (await systemSettingsQueries(this.db).get(RUNNER_SETTINGS.runtimeClass))?.value ?? null,
       },
       readResult: async (id) => (await runnerResultQueries(this.db).find(id))?.result as never ?? null,
       onPodCreated: async (runtimeMeta) => {
@@ -1370,7 +1394,48 @@ export class InvokeService implements OnModuleInit {
       budget: await this.resolveBudgetEnforcementConfig(invocation).catch(() => null) as PreparedAgentJob['budget'],
       relay: await this.relayLookups(invocation),
       actor_user_id: (job as { actor_user_id?: string | null } | null)?.actor_user_id ?? null,
+      rule_profiles: await this.ruleProfilesFor(invocation.projectId),
     };
+  }
+
+  /** The project's profile for each rule a runner applies itself (stamps honoured). */
+  private async ruleProfilesFor(projectId: string): Promise<Record<string, SecurityProfile>> {
+    const profiles: Record<string, SecurityProfile> = {};
+    for (const rule of RUNNER_DECIDED_RULES) {
+      profiles[rule] = await governingSecurityProfile(this.db, { projectId, governing: 'project', rule });
+    }
+    return profiles;
+  }
+
+  /**
+   * A project rule's profile where the job runs. The worker reads it from the
+   * database; a runner pod, which has none, uses the decision the worker
+   * sent, and fails rather than skip a rule it was not sent.
+   */
+  private async decidedRuleProfile(projectId: string, rule: string): Promise<SecurityProfile> {
+    if (!this.runner) return governingSecurityProfile(this.db, { projectId, governing: 'project', rule });
+    const profile = this.runner.prepared.rule_profiles?.[rule];
+    if (!profile) throw new Error(`The worker sent no decision for rule ${rule}`);
+    return profile;
+  }
+
+  /**
+   * Record a finding for a project rule the job applies. A runner pod sends it
+   * through its attempt's events route (as `security.finding`).
+   */
+  private async recordRuleFinding(invocation: HarnessInvocation, rule: string, detail: Record<string, string | number | boolean | null>): Promise<void> {
+    if (this.runner) {
+      await this.runner.client.emitEvent('security.finding', { rule, detail: { job_id: invocation.jobId, ...detail } })
+        .catch((err) => console.error(`[runner] Failed to record ${rule}: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+    await decideSecurityRule(this.db, rule, {
+      projectId: invocation.projectId,
+      governing: 'project',
+      actorType: 'job',
+      actorId: invocation.jobId,
+      detail: { job_id: invocation.jobId, ...detail },
+    });
   }
 
   /** Render the job's `.eve/` context (coordination inbox, thread history, carryover) into files. */
@@ -1522,7 +1587,21 @@ export class InvokeService implements OnModuleInit {
       // Managed model spec is detected early and passed through to invocation adapters.
       const modelSpec = (effectiveInvocation.harness_options as Record<string, unknown> | undefined)?.model as string | undefined;
 
-      if (process.env.EVE_RUNTIME === 'k8s') {
+      // Rule isolation.runner_mode (the outer worker; a runner pod has decided nothing to decide).
+      const mode = this.runner ? null : await runnerModeFor(this.db, effectiveInvocation.projectId);
+      if (mode && !inKubernetes()) {
+        if (mode.required) {
+          await recordRunnerModeFinding(this.db, { projectId: effectiveInvocation.projectId, profile: mode.profile,
+            actorId: effectiveInvocation.jobId, detail: { kind: 'agent', job_id: effectiveInvocation.jobId, refused: 'no_kubernetes' } });
+          throw strictNeedsRunnerPods('agent job');
+        }
+        if (mode.profile === 'audit') {
+          await recordRunnerModeFinding(this.db, { projectId: effectiveInvocation.projectId, profile: mode.profile,
+            actorId: effectiveInvocation.jobId, detail: { kind: 'agent', job_id: effectiveInvocation.jobId, target: 'worker-inline' } });
+        }
+      }
+
+      if (mode && inKubernetes()) {
         const localRepoPath = effectiveInvocation.repoUrl ? getLocalRepoPath(effectiveInvocation.repoUrl) : null;
         if (localRepoPath) {
           throw new Error('file:// repo URLs are not supported in k8s runtime');
@@ -1549,7 +1628,7 @@ export class InvokeService implements OnModuleInit {
           console.warn(`[k8s] Failed to resolve resource class sizing for ${effectiveInvocation.jobId}: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        return await this.dispatchAgentJob(effectiveInvocation, cancellation, runnerResources);
+        return await this.dispatchAgentJob(effectiveInvocation, cancellation, runnerResources, mode);
       }
 
       inlineExecution = true;
@@ -1910,7 +1989,7 @@ export class InvokeService implements OnModuleInit {
         error: errMsg,
       };
     } finally {
-      if (inlineExecution) await cleanupAttemptWorkspace(invocation, executionSucceeded, loadConfig());
+      if (inlineExecution) await cleanupAttemptWorkspace(invocation, executionSucceeded, loadConfigWithoutDatabase());
     }
   }
 
@@ -2457,7 +2536,7 @@ export class InvokeService implements OnModuleInit {
         projectId: invocation.projectId,
         repoPath,
         parentJobId: invocation.parentJobId,
-        eveApiUrl: loadConfig().EVE_API_URL,
+        eveApiUrl: loadConfigWithoutDatabase().EVE_API_URL,
         envName: typeof invocation.data?.env_name === 'string' ? invocation.data.env_name : undefined,
         resourceIndexPath: resourceIndexPath ?? undefined,
         jobUserHome: effectiveJobUserHome,

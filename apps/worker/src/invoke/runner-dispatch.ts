@@ -11,8 +11,15 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  DEFAULT_RUNNER_NAMESPACE,
+  HEAVY_WORKSPACE_SIZE,
   createRunnerInboundKey,
   getCorrelationHeaders,
+  runnerClassLabels,
+  runnerClassResources,
+  runnerJobLabels,
+  runnerRuntimeFor,
+  type RunnerClass,
   RUNNER_INBOUND_KEY_HEADER,
   RUNNER_PORT,
   RUNNER_SUBMIT_PATH,
@@ -21,6 +28,7 @@ import {
   type RunnerSubmit,
 } from '@eve/shared';
 import { createPlainPodBackend, type PodCreatedMeta, type RunnerPodPlan } from './k8s-runner.js';
+import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolPresent } from './sandbox-claim-backend.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
 export interface RunnerPodBackend {
@@ -145,7 +153,14 @@ export async function submitToRunner(ip: string, body: RunnerSubmit, inboundKey:
 }
 
 export interface DispatchToRunnerPodOptions {
-  pod: RunnerPodPlan;
+  pod: RunnerPodPlan & {
+    /** The job's class (template and pool): chat, job or heavy. */
+    jobClass?: RunnerClass;
+    /** The job's timeout, for the claim's shutdown time. */
+    timeoutSeconds?: number;
+    /** Instance setting runner.runtime_class. */
+    runtimeClass?: string | null;
+  };
   /** The runner's pushed result, read from the database. */
   readResult(attemptId: string): Promise<RunnerResultReport | null>;
   onPodCreated?: (meta: PodCreatedMeta) => Promise<void>;
@@ -153,16 +168,78 @@ export interface DispatchToRunnerPodOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * The pod for a job. A job that mounts the org filesystem runs as a plain pod
+ * in the platform namespace, where the org filesystem claim lives (only under
+ * legacy and audit: strict mounts none). Every other job runs in the runner
+ * namespace: through a SandboxClaim on its class's warm pool when the
+ * agent-sandbox CRDs and that pool are present, else as the identical pod
+ * created directly. A job with init containers (toolchains, app CLIs) or its
+ * own resource class always gets a plain pod: a claim cannot vary the pod.
+ */
+async function runnerBackendFor(
+  submit: RunnerSubmit,
+  opts: DispatchToRunnerPodOptions,
+  inboundKeySha256: string,
+): Promise<RunnerPodBackend> {
+  const plan = opts.pod;
+  const jobClass = plan.jobClass ?? 'job';
+  const runtime = runnerRuntimeFor(plan.runtimeClass);
+  const labels = { ...runnerClassLabels(jobClass), ...runnerJobLabels({ projectId: submit.project_id, attemptId: submit.attempt_id, jobClass }) };
+  if (plan.orgFs) {
+    return createPlainPodBackend({ submit, plan: { ...plan, labels, runtime, workspace: 'pvc' }, inboundKeySha256, onPodCreated: opts.onPodCreated });
+  }
+
+  const namespace = process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE;
+  const heavy = jobClass === 'heavy';
+  const plain = (fallback?: string) => createPlainPodBackend({
+    submit,
+    plan: {
+      ...plan,
+      labels,
+      runtime,
+      workspace: heavy ? 'pvc' : 'emptyDir',
+      ...(heavy ? { workspaceSize: process.env.EVE_K8S_WORKSPACE_SIZE ?? HEAVY_WORKSPACE_SIZE } : {}),
+      resources: plan.resources ?? runnerClassResources(jobClass),
+    },
+    namespace,
+    inboundKeySha256,
+    onPodCreated: opts.onPodCreated && ((meta) => opts.onPodCreated!({ ...meta, ...(fallback ? { fallback } : {}) })),
+  });
+  const varies = (plan.toolchains?.length ?? 0) > 0 || (plan.appClis?.length ?? 0) > 0 || Boolean(plan.resources);
+  if (varies || !(await sandboxCrdsPresent()) || !(await sandboxPoolPresent(namespace, jobClass))) return plain();
+
+  const claim = createSandboxClaimBackend({
+    namespace,
+    jobClass,
+    submit,
+    timeoutSeconds: plan.timeoutSeconds ?? Math.ceil(parseInt(process.env.EVE_K8S_POLL_TIMEOUT_MS ?? '1800000', 10) / 1000),
+    onPodCreated: opts.onPodCreated as never,
+  });
+  let active: RunnerPodBackend = claim;
+  return {
+    async start(signal) {
+      try {
+        return await claim.start(signal);
+      } catch (err) {
+        if (signal?.aborted || !(err instanceof SandboxClaimUnavailable)) throw err;
+        // A controller outage costs latency, never the job: drop the claim, create the pod directly.
+        console.warn(`[runner] ${err.message}; creating the runner pod directly`);
+        await claim.stop(false);
+        active = plain(err.message);
+        return active.start(signal);
+      }
+    },
+    podEnded: () => active.podEnded(),
+    stop: (cancelled) => active.stop(cancelled),
+  };
+}
+
 /** Run a prepared job in a fresh runner pod and return its recorded outcome. */
 export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchToRunnerPodOptions): Promise<RunnerOutcome> {
   opts.signal?.throwIfAborted();
   const inbound = createRunnerInboundKey();
-  const backend = createPlainPodBackend({
-    submit,
-    plan: opts.pod,
-    inboundKeySha256: inbound.sha256,
-    onPodCreated: opts.onPodCreated,
-  });
+  const backend = await runnerBackendFor(submit, opts, inbound.sha256);
   return runInRunnerPod(submit, {
     backend,
     submit: submitToRunner,

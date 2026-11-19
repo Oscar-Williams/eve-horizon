@@ -61,10 +61,10 @@ describe('runner template reconcile', () => {
       'SandboxTemplate/eve-runner-chat', 'SandboxTemplate/eve-runner-heavy', 'SandboxTemplate/eve-runner-job',
       'SandboxWarmPool/eve-runner-chat', 'SandboxWarmPool/eve-runner-heavy', 'SandboxWarmPool/eve-runner-job',
     ]);
-    const chat = k.applied.find((o) => o.kind === 'SandboxTemplate' && o.metadata.name === 'eve-runner-chat');
+    const chat = k.applied.find((o) => o.kind === 'SandboxTemplate' && o.metadata.name === 'eve-runner-chat')!;
     expect(chat.spec.podTemplate.spec.containers[0].image).toBe('eve-horizon/worker:0.1.327');
     expect(chat.spec.podTemplate.spec.runtimeClassName).toBe('gvisor');
-    expect(k.applied.find((o) => o.kind === 'SandboxWarmPool' && o.metadata.name === 'eve-runner-chat').spec.replicas).toBe(3);
+    expect(k.applied.find((o) => o.kind === 'SandboxWarmPool' && o.metadata.name === 'eve-runner-chat')!.spec.replicas).toBe(3);
   });
 
   it('does nothing without the agent-sandbox CRDs', async () => {

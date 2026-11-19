@@ -20,6 +20,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { SecretResolveItem } from '../schemas/secret.js';
 import type { HarnessInvocation } from '../types/harness.js';
 import type { JobGit, ResolvedGitMetadata } from '../schemas/git-controls.js';
+import type { SecurityProfile } from '../security/profile.js';
 
 /** The port a runner serves on (the worker's port, so probes and policies keep one number). */
 export const RUNNER_PORT = 4749;
@@ -120,6 +121,11 @@ export interface PreparedAgentJob {
   relay?: RunnerRelayLookups;
   /** The job's actor, for attachment ownership checks the runner repeats. */
   actor_user_id?: string | null;
+  /**
+   * The project's profile for each rule the runner applies itself
+   * (RUNNER_DECIDED_RULES), decided by the worker: a runner has no database.
+   */
+  rule_profiles?: Record<string, SecurityProfile>;
 }
 
 /** A script step (or `action: run`), prepared by the worker. */
@@ -188,7 +194,15 @@ export const RUNNER_EVENT_TYPES = [
   'system.resource.hydration.started',
   'system.resource.hydration.completed',
   'system.resource.hydration.failed',
+  // A finding for a rule the runner applies: payload { rule, detail }.
+  'security.finding',
 ] as const;
+
+/** Project rules a runner applies itself, with the profile the worker decided. */
+export const RUNNER_DECIDED_RULES = ['harness.checkout_settings'] as const;
+
+/** Rules a runner may record findings for (through its events route). */
+export const RUNNER_FINDING_RULES: readonly string[] = [...RUNNER_DECIDED_RULES];
 
 /** The one credential a runner may write back: a refreshed Codex auth.json. */
 export const RUNNER_WRITABLE_CREDENTIALS = ['CODEX_AUTH_JSON_B64'] as const;

@@ -153,6 +153,11 @@ with a Multi-Attach error. Set pod affinity to the agent runtime for that case:
 
 `ReadWriteMany` claims (Filestore, EFS) need no affinity.
 
+Under the project's strict `isolation.runner_mode`, or with
+`EVE_RUNNER_PODS_ONLY=true` on the instance, script steps and `action: run`
+always run in runner pods and legacy pipeline-runner `run` steps are refused
+(400, "use a `script:` step"); see [runner pods](runner-pods.md#where-job-code-runs-isolationrunner_mode).
+
 `EVE_SCRIPT_K8S_RUNNER` stays off by default in code because local
 docker-compose has no Kubernetes, the k3d stack has not been verified with
 runner-pod scripts, and on a `ReadWriteOnce` org filesystem a runner without

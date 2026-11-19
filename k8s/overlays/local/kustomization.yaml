@@ -2,7 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
-namespace: eve
+# Base names every namespace itself (eve, and eve-runners for runner pods);
+# a namespace transform here would fold eve-runners into eve.
+# namespace: eve
 patchesStrategicMerge:
   - postgres.patch.yaml
   - agent-runtime-pvc.patch.yaml

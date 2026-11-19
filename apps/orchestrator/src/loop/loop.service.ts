@@ -8,6 +8,7 @@ import {
   type AttemptId,
   type HarnessName,
   type HarnessResult,
+  type HarnessInvocation,
   type JobGitConfig,
   type JobWorkspaceConfig,
   generateEventId,
@@ -79,6 +80,8 @@ import {
   type JobAttempt,
   type PipelineRun,
   type Project,
+  runnerModeFor,
+  recordRunnerModeFinding,
 } from '@eve/db';
 import { WorkerService } from '../worker/worker.service';
 import * as yaml from 'yaml';
@@ -468,6 +471,42 @@ export function secretsUserIdForJob(job: Pick<Job, 'actor_user_id' | 'user_secre
     return undefined;
   }
   return job.actor_user_id;
+}
+
+/**
+ * Where an agent job runs (rule isolation.runner_mode). The worker runs it in
+ * a credential-free runner pod; the agent runtime runs it inline. Under the
+ * project's strict profile, or with EVE_RUNNER_PODS_ONLY on the instance, it
+ * goes to the worker. Otherwise to the agent runtime when one is configured,
+ * and under audit that inline run is recorded, with what strict would change.
+ */
+export async function agentJobTarget(
+  db: Db,
+  invocation: HarnessInvocation,
+  opts: { agentRuntimeConfigured: boolean },
+): Promise<'worker' | 'agent-runtime'> {
+  if (!opts.agentRuntimeConfigured) return 'worker';
+  const mode = await runnerModeFor(db, invocation.projectId);
+  if (mode.required) return 'worker';
+  if (mode.profile === 'audit') {
+    const orgfs = (invocation.data?.orgfs_mount as { mode?: unknown } | undefined)?.mode;
+    const orgfsMode = orgfs === 'read' || orgfs === 'write' ? orgfs : 'none';
+    await recordRunnerModeFinding(db, {
+      projectId: invocation.projectId,
+      profile: mode.profile,
+      actorId: invocation.jobId,
+      detail: {
+        kind: 'agent',
+        job_id: invocation.jobId,
+        target: 'agent-runtime',
+        orgfs_mount: orgfsMode,
+        toolchains: (invocation.toolchains ?? []).join(','),
+        // Under strict a runner pod mounts no org filesystem.
+        ...(orgfsMode !== 'none' ? { strict_blocker: 'orgfs_mount' } : {}),
+      },
+    });
+  }
+  return 'agent-runtime';
 }
 
 @Injectable()
@@ -1999,7 +2038,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
         routing,
       );
 
-      if (this.agentRuntimeConfigured) {
+      if (await agentJobTarget(this.db, invocation, { agentRuntimeConfigured: this.agentRuntimeConfigured }) === 'agent-runtime') {
         result = await this.workerService.executeAgentRuntime(invocation, {
           workerImage,
           timeoutMs: jobTimeoutMs,

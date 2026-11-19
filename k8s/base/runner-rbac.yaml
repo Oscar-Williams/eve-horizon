@@ -1,0 +1,33 @@
+# What the worker may do in the runner namespace: claim sandboxes
+# (agent-sandbox), render the class templates and warm pools (at startup and
+# on `eve system security reconcile`), and manage the plain runner pods it
+# falls back to. Nothing on `sandboxes`: only the controller creates them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eve-worker-runners
+  namespace: eve-runners
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["create", "get", "delete", "watch"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates", "sandboxwarmpools"]
+    verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eve-worker-runners
+  namespace: eve-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eve-worker-runners
+subjects:
+  - kind: ServiceAccount
+    name: eve-worker
+    namespace: eve

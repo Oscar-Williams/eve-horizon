@@ -73,6 +73,8 @@ let profiles: Record<string, SecurityProfile>;
 let stored: { key: string; value: string; type: string; scope_type: 'org' | 'project' | 'user'; scope_id: string } | null;
 const secrets = {
   resolveForJob: vi.fn(async () => (stored ? [stored] : [])),
+  // SecretsService.mayJobWriteSecret: rule secrets.job_org_write for an org-scope write.
+  mayJobWriteSecret: vi.fn(async (_caller: Record<string, unknown>, scope: string) => scope !== 'org' || profiles['secrets.job_org_write'] !== 'strict'),
   updateIfExists: vi.fn(async () => true),
   create: vi.fn(async () => ({})),
 };
@@ -104,7 +106,7 @@ beforeEach(() => {
   m.logs = []; m.meta = []; m.events = []; m.messages = []; m.results = new Map();
   profiles = {};
   stored = { key: 'CODEX_AUTH_JSON_B64', value: codexAuth('acct_acme'), type: 'env_var', scope_type: 'org', scope_id: 'org_acme' };
-  secrets.resolveForJob.mockClear(); secrets.updateIfExists.mockClear(); secrets.create.mockClear();
+  secrets.resolveForJob.mockClear(); secrets.updateIfExists.mockClear(); secrets.create.mockClear(); secrets.mayJobWriteSecret.mockClear();
 });
 
 describe('runner routes: the attempt token', () => {
@@ -196,11 +198,12 @@ describe('runner routes: the Codex credential write-back', () => {
 
   it("writes a refreshed auth.json to the secret's own scope under audit, and records an org write", async () => {
     profiles = { 'secrets.job_org_write': 'audit' };
-    const { controller: c, security } = controller();
+    const { controller: c } = controller();
     const refreshed = codexAuth('acct_acme', { refresh: '2' });
     await c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: refreshed });
     expect(secrets.updateIfExists).toHaveBeenCalledWith('org', 'org_acme', 'CODEX_AUTH_JSON_B64', refreshed);
-    expect(security.decide).toHaveBeenCalledWith('secrets.job_org_write', expect.objectContaining({ projectId: 'proj_shop' }));
+    expect(secrets.mayJobWriteSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ is_job_token: true, job_id: 'shop-1', project_id: 'proj_shop' }), 'org', 'CODEX_AUTH_JSON_B64');
   });
 
   it('writes it to project scope only under strict', async () => {
@@ -210,5 +213,17 @@ describe('runner routes: the Codex credential write-back', () => {
     await c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: refreshed });
     expect(secrets.updateIfExists).not.toHaveBeenCalledWith('org', expect.anything(), expect.anything(), expect.anything());
     expect(secrets.create).toHaveBeenCalledWith('project', 'proj_shop', expect.objectContaining({ key: 'CODEX_AUTH_JSON_B64', value: refreshed }));
+  });
+});
+
+describe('runner routes: findings for rules the runner applies', () => {
+  it('records a finding for an allowed rule as the job, and refuses any other rule', async () => {
+    const { controller: c, security } = controller();
+    await c.emitEvent('shop-1', 'att-a', 'Bearer token-a', { type: 'security.finding', payload: { rule: 'harness.checkout_settings', detail: { settings: 'model' } } });
+    expect(security.decide).toHaveBeenCalledWith('harness.checkout_settings', expect.objectContaining({
+      projectId: 'proj_shop', governing: 'project', detail: expect.objectContaining({ settings: 'model', job_id: 'shop-1' }),
+    }));
+    await expect(c.emitEvent('shop-1', 'att-a', 'Bearer token-a', { type: 'security.finding', payload: { rule: 'secrets.value_read', detail: {} } }))
+      .rejects.toBeInstanceOf(BadRequestException);
   });
 });

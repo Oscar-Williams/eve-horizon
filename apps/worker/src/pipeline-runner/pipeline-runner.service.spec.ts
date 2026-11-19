@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// isolation.runner_mode: a legacy project (the service has no database here).
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => ({ profile: 'legacy', podsOnly: false, required: false })),
+  recordRunnerModeFinding: vi.fn(async () => undefined),
+}));
 import { PipelineRunnerService } from './pipeline-runner.service.js';
 
 const { execFile } = vi.hoisted(() => ({ execFile: vi.fn() }));

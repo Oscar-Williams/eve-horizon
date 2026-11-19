@@ -7,7 +7,19 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { Db } from '@eve/db';
-import { decideSecurityRule, executionLogQueries, jobQueries, runnerResultQueries, threadMessageQueries } from '@eve/db';
+import {
+  decideSecurityRule,
+  executionLogQueries,
+  jobQueries,
+  recordRunnerModeFinding,
+  runnerModeFor,
+  runnerPodsOnly,
+  runnerResultQueries,
+  systemSettingsQueries,
+  threadMessageQueries,
+  type RunnerModeDecision,
+} from '@eve/db';
+import { inKubernetes, runnerSelfCheckMode, strictNeedsRunnerPods } from '../execution/runner-mode.js';
 import {
   applyEnvOverrides,
   buildAppApiEnvVars,
@@ -22,7 +34,7 @@ import {
   GitWorkspace,
   handleCommitPolicy,
   handlePushPolicy,
-  loadConfig,
+  loadConfigWithoutDatabase,
   mintAppLinkToken,
   mintJobToken,
   resolveProjectSecrets,
@@ -39,6 +51,7 @@ import {
   deriveNamespace,
   serviceGitEnv,
   prepareGitAuth,
+  RUNNER_SETTINGS,
   type PreparedScriptJob,
   type RunnerApiClient,
   type RunnerSubmit,
@@ -184,8 +197,9 @@ export class ScriptExecutorService {
     return this.runner?.gitMeta;
   }
 
+  /** The instance sends script steps to runner pods (EVE_SCRIPT_K8S_RUNNER or EVE_RUNNER_PODS_ONLY). */
   shouldDispatchToRunner(): boolean {
-    return process.env.EVE_RUNTIME === 'k8s' && process.env.EVE_SCRIPT_K8S_RUNNER === 'true'
+    return process.env.EVE_RUNTIME === 'k8s' && (process.env.EVE_SCRIPT_K8S_RUNNER === 'true' || runnerPodsOnly())
       && process.env.EVE_RUNNER_SELF_TERMINATE !== '1';
   }
 
@@ -292,8 +306,20 @@ export class ScriptExecutorService {
           throw new Error(`Job ${jobId} has no script_command defined`);
         }
 
-        if (this.shouldDispatchToRunner()) {
-          return await this.dispatchScript(job, jobId, attemptId, scriptCommand, cancellation, startTime);
+        // Rule isolation.runner_mode: under strict (or the instance switch) the
+        // step runs only in a runner pod; under audit an inline run is recorded.
+        const mode = await runnerModeFor(this.db, job.project_id);
+        if (mode.required && !inKubernetes()) {
+          await recordRunnerModeFinding(this.db, { projectId: job.project_id, profile: mode.profile, actorId: jobId,
+            detail: { kind: 'script', job_id: jobId, refused: 'no_kubernetes' } });
+          throw strictNeedsRunnerPods('script step');
+        }
+        if (inKubernetes() && (mode.required || this.shouldDispatchToRunner())) {
+          return await this.dispatchScript(job, jobId, attemptId, scriptCommand, cancellation, startTime, mode);
+        }
+        if (mode.profile === 'audit') {
+          await recordRunnerModeFinding(this.db, { projectId: job.project_id, profile: mode.profile, actorId: jobId,
+            detail: { kind: 'script', job_id: jobId, orgfs_mount: 'none', toolchains: getJobToolchains(job).join(',') } });
         }
 
         await this.jobs.markExecutionStarted(attemptId);
@@ -378,6 +404,7 @@ export class ScriptExecutorService {
         ...(appLinkEnv ? { appLinkEnv } : {}),
         resolvedSecrets: resolvedSecrets.filter((secret) => !secret.clone_only),
         parentJobId: prepared.parent_id ?? null,
+        timeoutCode: prepared.timeout_code,
         relayMissingSecrets: (missing) =>
           deliverProvisioningError(this.buildRelayDb(), {
             jobId,
@@ -495,7 +522,7 @@ export class ScriptExecutorService {
     jobId: string,
     attemptId: string,
     scriptCommand: string,
-    opts: { forRunner: boolean },
+    opts: { forRunner: boolean; gitRef?: PreparedScriptJob['git_ref']; timeoutSeconds?: number; timeoutCode?: string; tokenPermissions?: string[] },
   ): Promise<{ prepared: PreparedScriptJob; jobToken?: string }> {
     const raw = job as unknown as {
       script_timeout_seconds?: number; env_name?: string; env_overrides?: Record<string, string> | null;
@@ -523,16 +550,16 @@ export class ScriptExecutorService {
 
     const gitConfig = raw.git_json ?? undefined;
     const defaultBranch = projectRow.branch ?? 'main';
-    const gitRef = gitConfig
+    const gitRef = opts.gitRef ?? (gitConfig
       ? await this.resolveGitRef({ projectId: job.project_id, envName, gitConfig, defaultBranch })
-      : null;
+      : null);
 
     // A job token for the Eve CLI, bound to this attempt. Per-job overrides
     // persisted by the workflow/pipeline expander (jobs.token_permissions,
     // jobs.token_scope) apply; otherwise the broad script default.
     const tokenPermissions = Array.isArray(raw.token_permissions) && raw.token_permissions.length > 0
       ? raw.token_permissions
-      : [...DEFAULT_SCRIPT_JOB_PERMISSIONS];
+      : [...(opts.tokenPermissions ?? DEFAULT_SCRIPT_JOB_PERMISSIONS)];
     // Org data in the scope follows the orchestrator's decision (P1-6).
     const tokenScope = await tokenScopeForJob(job, (rule, ctx) => decideSecurityRule(this.db, rule, ctx));
     let jobToken: string | undefined;
@@ -551,7 +578,8 @@ export class ScriptExecutorService {
       jobToken,
       prepared: {
         command: scriptCommand,
-        timeout_seconds: raw.script_timeout_seconds ?? 300,
+        timeout_seconds: opts.timeoutSeconds ?? raw.script_timeout_seconds ?? 300,
+        ...(opts.timeoutCode ? { timeout_code: opts.timeoutCode } : {}),
         repo_url: repoUrl,
         default_branch: defaultBranch,
         git: gitConfig ?? null,
@@ -568,6 +596,30 @@ export class ScriptExecutorService {
         relay,
       },
     };
+  }
+
+  /**
+   * Run an `action: run` command in a runner pod (rule isolation.runner_mode):
+   * the worker prepares it as a script step checked out at the action's
+   * git_sha, and the runner runs it with the script handler.
+   */
+  async runActionInRunner(args: {
+    job: Awaited<ReturnType<ReturnType<typeof jobQueries>['findById']>>;
+    jobId: string;
+    attemptId: string;
+    command: string;
+    gitSha: string;
+    timeoutSeconds: number;
+    tokenPermissions: string[];
+    mode: RunnerModeDecision;
+  }): Promise<ScriptExecutionResult> {
+    if (!args.job) throw new Error(`Job not found: ${args.jobId}`);
+    return this.dispatchScript(args.job, args.jobId, args.attemptId, args.command, undefined, Date.now(), args.mode, {
+      gitRef: { ref: args.gitSha, source: 'explicit' },
+      timeoutSeconds: args.timeoutSeconds,
+      timeoutCode: 'action_run_timeout',
+      tokenPermissions: args.tokenPermissions,
+    });
   }
 
   /** The job and parent hints, and the threads they name, for provisioning-error delivery. */
@@ -595,21 +647,28 @@ export class ScriptExecutorService {
     jobId: string,
     attemptId: string,
     scriptCommand: string,
-    cancellation: JobCancellationMonitor,
+    cancellation: JobCancellationMonitor | undefined,
     startTime: number,
+    mode: RunnerModeDecision,
+    overrides: { gitRef?: PreparedScriptJob['git_ref']; timeoutSeconds?: number; timeoutCode?: string; tokenPermissions?: string[] } = {},
   ): Promise<ScriptExecutionResult> {
-    const { prepared, jobToken } = await this.prepareScriptJob(job, jobId, attemptId, scriptCommand, { forRunner: true });
+    const { prepared, jobToken } = await this.prepareScriptJob(job, jobId, attemptId, scriptCommand, { forRunner: true, ...overrides });
     if (!jobToken) throw new Error(`Could not mint a job token for ${jobId}; a runner pod needs one`);
     const submit: RunnerSubmit = {
       kind: 'script', job_id: jobId, attempt_id: attemptId, project_id: job.project_id,
-      job_token: jobToken, api_url: runnerApiUrl(), script: prepared,
+      job_token: jobToken, api_url: runnerApiUrl(), self_check: runnerSelfCheckMode(mode), script: prepared,
     };
     const result = await dispatchToRunnerPod(submit, {
-      pod: { toolchains: prepared.toolchains },
+      pod: {
+        toolchains: prepared.toolchains,
+        jobClass: (prepared.toolchains?.length ?? 0) > 0 ? 'heavy' : 'job',
+        timeoutSeconds: prepared.timeout_seconds,
+        runtimeClass: (await systemSettingsQueries(this.db).get(RUNNER_SETTINGS.runtimeClass))?.value ?? null,
+      },
       readResult: async (id) => (await runnerResultQueries(this.db).find(id))?.result as never ?? null,
       onPodCreated: (runtimeMeta) => this.jobs.updateRuntimeMeta(attemptId, runtimeMeta).then(() => undefined),
       onSubmitted: () => this.jobs.markExecutionStarted(attemptId),
-      signal: cancellation.signal,
+      signal: cancellation?.signal,
     });
     if (result.gitMeta) await this.updateAttemptGitMeta(attemptId, result.gitMeta);
     const report = result.resultReport;
@@ -930,6 +989,8 @@ export class ScriptExecutorService {
       resolvedSecrets?: SecretResolveItem[];
       parentJobId?: string | null;
       relayMissingSecrets?: (missing: string[]) => Promise<void>;
+      /** The timeout's error code (script_timeout, or action_run_timeout for `action: run`). */
+      timeoutCode?: string;
       logToolchainEvent?: (event: ToolchainCacheEvent) => Promise<void>;
     },
   ): Promise<Omit<ScriptExecutionResult, 'durationMs'>> {
@@ -1017,7 +1078,7 @@ export class ScriptExecutorService {
         env,
         attemptId: context.attemptId,
         timeoutMs,
-        timeoutCode: 'script_timeout',
+        timeoutCode: context.timeoutCode === 'action_run_timeout' ? 'action_run_timeout' : 'script_timeout',
         appendLog: (attemptId, type, content) => this.appendLog(attemptId, type, content),
       });
 
@@ -1027,7 +1088,7 @@ export class ScriptExecutorService {
         stdout: result.stdout,
         stderr: result.stderr,
         error: result.error,
-        errorCode: result.cancelled ? 'job_cancelled' : result.timedOut ? 'script_timeout' : undefined,
+        errorCode: result.cancelled ? 'job_cancelled' : result.timedOut ? (context.timeoutCode ?? 'script_timeout') : undefined,
       };
     } catch (error) {
       if (isMissingSecretOverrideError(error) || error instanceof ToolchainProvisionError ||
@@ -1185,7 +1246,7 @@ export class ScriptExecutorService {
    * script. Mirrors the agent-runtime layout.
    */
   private async writeScriptCredentials(scriptHome: string, jobToken: string): Promise<void> {
-    const config = loadConfig();
+    const config = loadConfigWithoutDatabase();
     if (!config.EVE_API_URL) return;
     const authKey = config.EVE_API_URL.trim().replace(/\/+$/, '');
     const payload = {

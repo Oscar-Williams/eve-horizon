@@ -54,6 +54,11 @@ it in a credential-free runner pod, and returns the worker's result. See
 [runner pods](runner-pods.md). `EVE_RUNNER_*` placement settings belong on the
 worker.
 
+Under a project's strict `isolation.runner_mode`, or with
+`EVE_RUNNER_PODS_ONLY=true`, the orchestrator sends that project's agent jobs
+to the worker and never to the agent runtime; under `audit` each job the agent
+runtime runs inline is recorded.
+
 ## Cancellation and workspace cleanup
 
 Agent and worker executors check cancellation before starting, poll job phase

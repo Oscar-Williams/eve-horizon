@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Inject, Logger } from '@nestjs/common';
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
@@ -13,6 +13,8 @@ import {
   projectManifestQueries,
   projectQueries,
   releaseQueries,
+  recordRunnerModeFinding,
+  runnerModeFor,
 } from '@eve/db';
 import {
   buildAuthenticatedHttpsUrl,
@@ -360,6 +362,18 @@ export class PipelineRunnerService {
 
     if (!command) {
       throw new Error('Run action missing command');
+    }
+
+    // Rule isolation.runner_mode: a legacy pipeline-runner `run` step runs in
+    // the worker's own process, so under strict (or EVE_RUNNER_PODS_ONLY) it
+    // is refused; under audit it is recorded.
+    const mode = await runnerModeFor(this.db, run.project_id);
+    if (mode.required || mode.profile === 'audit') {
+      await recordRunnerModeFinding(this.db, { projectId: run.project_id, profile: mode.profile, actorId: stepId,
+        detail: { kind: 'legacy_run', step_id: stepId, ...(mode.required ? { refused: 'legacy_run' } : {}) } });
+    }
+    if (mode.required) {
+      throw new BadRequestException('isolation.runner_mode: legacy pipeline `run` steps do not run under strict; use a `script:` step');
     }
 
     const project = await this.projects.findById(run.project_id, { include_deleted: true });

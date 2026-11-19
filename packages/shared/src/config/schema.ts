@@ -219,3 +219,12 @@ export type Config = z.infer<typeof configSchema>;
 export function loadConfig(): Config {
   return configSchema.parse(process.env);
 }
+
+/**
+ * The config for code that needs no database, which also runs in a runner
+ * pod: a runner holds no database URL, so `loadConfig()` would refuse to
+ * parse there.
+ */
+export function loadConfigWithoutDatabase(): Omit<Config, 'DATABASE_URL'> & { DATABASE_URL?: string } {
+  return configSchema.extend({ DATABASE_URL: z.string().url().optional() }).parse(process.env);
+}

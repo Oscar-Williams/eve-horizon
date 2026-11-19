@@ -10,7 +10,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import type { HarnessInvocation } from '../types/harness.js';
-import { loadConfig } from '../config/schema.js';
+import { loadConfigWithoutDatabase } from '../config/schema.js';
 import { mintJobToken } from '../api-client/auth-client.js';
 import { AccessBindingScopeSchema, type AccessBindingScope } from '../schemas/auth.js';
 
@@ -117,7 +117,7 @@ export async function writeEveCredentials(
   scope?: AccessBindingScope,
 ): Promise<string | undefined> {
   try {
-    const config = loadConfig();
+    const config = loadConfigWithoutDatabase();
     if (!config.EVE_API_URL) return;
 
     const token = await resolveInvocationJobToken(
