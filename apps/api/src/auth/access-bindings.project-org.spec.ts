@@ -40,8 +40,9 @@ function controller() {
   const db = Object.assign(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');
     if (/FROM projects/.test(sql)) {
-      const [first, second] = values as string[];
-      return [...store.projects.values()].filter((p) => !p.deleted_at && (p.id === first || (p.slug === first && p.org_id === second)));
+      // The lookup names the org and the project's id or slug.
+      return [...store.projects.values()].filter((p) => !p.deleted_at
+        && values.includes(p.org_id) && (values.includes(p.id) || values.includes(p.slug)));
     }
     return [];
   }, { json: (value: unknown) => value });

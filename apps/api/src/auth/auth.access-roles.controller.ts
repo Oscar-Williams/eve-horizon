@@ -272,11 +272,14 @@ export class AccessRolesController {
 
     this.validateBindingScopeForRole(role.name, role.permissions, body.scope_json);
 
+    // A binding on a project names a live project of the role's own org.
+    const projectId = body.project_id ? await this.resolveBindingProject(role.org_id, body.project_id) : null;
+
     // Callers cannot bind roles with permissions they don't themselves hold
     // (unless they are system admins)
     if (!user.is_admin) {
       const callerPermissions = await this.rbacService.getEffectivePermissions(
-        user.user_id, orgId, body.project_id,
+        user.user_id, role.org_id, projectId ?? undefined,
       );
       const unauthorizedPerms = role.permissions.filter((p) => !callerPermissions.has(p));
       if (unauthorizedPerms.length > 0) {
@@ -292,7 +295,7 @@ export class AccessRolesController {
       role.id,
       body.principal_type,
       body.principal_id,
-      body.project_id ?? null,
+      projectId,
       body.scope_json ?? null,
       user.is_service_principal ? null : user.user_id,
     );
@@ -393,6 +396,21 @@ export class AccessRolesController {
         'Only system admins can create roles containing system:* permissions',
       );
     }
+  }
+
+  /** A project id or slug, resolved within the org; 400 when it is not a live project of that org. */
+  private async resolveBindingProject(orgId: string, projectInput: string): Promise<string> {
+    const [project] = await this.db<{ id: string }[]>`
+      SELECT id FROM projects
+      WHERE deleted_at IS NULL
+        AND org_id = ${orgId}
+        AND (id = ${projectInput} OR slug = ${projectInput})
+      LIMIT 1
+    `;
+    if (!project) {
+      throw new BadRequestException(`Project ${projectInput} is not a project of this org`);
+    }
+    return project.id;
   }
 
   private validateBindingScopeForRole(
