@@ -1,7 +1,25 @@
-import { Inject, Injectable, NotFoundException, ConflictException, BadRequestException, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  InternalServerErrorException,
+  Optional,
+} from '@nestjs/common';
 import * as crypto from 'crypto';
 import type { Db, Integration } from '@eve/db';
-import { integrationQueries, externalIdentityQueries, membershipRequestQueries, userQueries, membershipQueries, oauthAppConfigQueries } from '@eve/db';
+import {
+  integrationQueries,
+  externalIdentityQueries,
+  membershipRequestQueries,
+  userQueries,
+  membershipQueries,
+  oauthAppConfigQueries,
+  oauthStateQueries,
+} from '@eve/db';
 import type { OAuthAppConfig } from '@eve/db';
 import { SecurityService } from '../security/security.service.js';
 import { SecretCipher } from '../secrets/secret-cipher.js';
@@ -23,6 +41,42 @@ import {
 
 const logger = createJsonLogger('api');
 
+/** Providers with an OAuth install flow. */
+export type OAuthProvider = 'slack' | 'google_drive';
+
+/** Binds a signed-link Slack install (no Eve user) to the browser that started it. */
+export const SLACK_INSTALL_COOKIE = '__Host-eve_slack_install';
+
+/** With authentication disabled (local development) there is no caller: one stand-in user starts and completes. */
+export const OAUTH_NO_AUTH_USER = 'anonymous';
+
+/** The state and the install cookie live ten minutes. */
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** A provider name from a route: 'slack', 'google-drive' or 'google_drive'. */
+export function oauthProvider(value: string): OAuthProvider {
+  const normalized = value.replace(/-/g, '_');
+  if (normalized === 'slack' || normalized === 'google_drive') return normalized;
+  throw new NotFoundException(`Unknown OAuth provider: ${value}`);
+}
+
+/** Where the provider sends the browser back to. */
+export function oauthRedirectUri(provider: OAuthProvider): string | undefined {
+  const config = loadConfig();
+  const apiUrl = config.EVE_API_URL ?? process.env.EVE_API_URL;
+  if (!apiUrl) return undefined;
+  return `${apiUrl}/integrations/${provider === 'slack' ? 'slack' : 'google-drive'}/oauth/callback`;
+}
+
+/** What the public callback answers: waiting for the user to complete, or done (signed-link install). */
+export type OAuthCallbackResult =
+  | { ok: true; pending: true; message: string }
+  | { ok: true; pending?: undefined; integration_id: string; account_id: string; team_id?: string };
+
+function sha256(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
 @Injectable()
 export class IntegrationsService {
   private integrations: ReturnType<typeof integrationQueries>;
@@ -31,14 +85,12 @@ export class IntegrationsService {
   private users: ReturnType<typeof userQueries>;
   private memberships: ReturnType<typeof membershipQueries>;
   private oauthAppConfigs: ReturnType<typeof oauthAppConfigQueries>;
+  private oauthStates: ReturnType<typeof oauthStateQueries>;
   /** Integration tokens and OAuth client secrets are sealed at rest once the instance writes v2. */
   private readonly cipher: SecretCipher;
 
   /** Track redeemed link token JTIs (in-memory, sufficient for pre-MVP). */
   private redeemedJtis = new Set<string>();
-
-  /** OAuth state tokens: state → { orgId, expiresAt } */
-  private oauthStates = new Map<string, { orgId: string; expiresAt: number }>();
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -50,6 +102,7 @@ export class IntegrationsService {
     this.users = userQueries(db);
     this.memberships = membershipQueries(db);
     this.oauthAppConfigs = oauthAppConfigQueries(db);
+    this.oauthStates = oauthStateQueries(db);
     this.cipher = new SecretCipher(db, security);
   }
 
@@ -743,34 +796,251 @@ export class IntegrationsService {
   }
 
   // ---------------------------------------------------------------------------
-  // OAuth state management
+  // OAuth state: stored with its expiry, bound to who started the install
   // ---------------------------------------------------------------------------
 
-  private static OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-
-  generateOAuthState(orgId: string): string {
+  /** Start an install for an Eve user: only that user can complete it. */
+  async createOAuthState(provider: OAuthProvider, orgId: string, userId: string): Promise<string> {
     const state = crypto.randomBytes(32).toString('hex');
-    this.oauthStates.set(state, {
-      orgId,
-      expiresAt: Date.now() + IntegrationsService.OAUTH_STATE_TTL_MS,
+    await this.oauthStates.deleteExpired();
+    await this.oauthStates.create({
+      id: sha256(state),
+      provider,
+      org_id: orgId,
+      user_id: userId,
+      install_binding: null,
+      expires_at: new Date(Date.now() + OAUTH_STATE_TTL_MS),
     });
-
-    // Evict expired states
-    const now = Date.now();
-    for (const [key, val] of this.oauthStates) {
-      if (val.expiresAt < now) this.oauthStates.delete(key);
-    }
-
     return state;
   }
 
-  validateOAuthState(state: string): string | null {
-    const entry = this.oauthStates.get(state);
-    if (!entry) return null;
-    this.oauthStates.delete(state); // single-use
+  /**
+   * Start a signed-link Slack install, which has no Eve user: the state is
+   * bound to a cookie for the browser that started it.
+   */
+  async createInstallOAuthState(orgId: string): Promise<{ state: string; cookie: string; maxAgeSeconds: number }> {
+    const state = crypto.randomBytes(32).toString('hex');
+    const cookie = crypto.randomBytes(32).toString('base64url');
+    await this.oauthStates.deleteExpired();
+    await this.oauthStates.create({
+      id: sha256(state),
+      provider: 'slack',
+      org_id: orgId,
+      user_id: null,
+      install_binding: sha256(cookie),
+      expires_at: new Date(Date.now() + OAUTH_STATE_TTL_MS),
+    });
+    return { state, cookie, maxAgeSeconds: OAUTH_STATE_TTL_MS / 1000 };
+  }
 
-    if (Date.now() > entry.expiresAt) return null;
-    return entry.orgId;
+  /**
+   * The provider's redirect back, which is public. For an install a user
+   * started, it records the code and exchanges nothing: that user completes
+   * it (completeOAuth). A signed-link install completes here, and only for
+   * the browser holding its cookie.
+   */
+  async acceptOAuthCallback(
+    provider: OAuthProvider,
+    state: string,
+    code: string,
+    installCookie?: string,
+  ): Promise<OAuthCallbackResult> {
+    const id = sha256(state);
+    const row = await this.oauthStates.find(id);
+    if (!row || row.provider !== provider || row.expires_at.getTime() <= Date.now()) {
+      throw new BadRequestException('Invalid or expired state token');
+    }
+
+    if (row.install_binding !== null) {
+      if (!installCookie || !crypto.timingSafeEqual(Buffer.from(sha256(installCookie)), Buffer.from(row.install_binding))) {
+        throw new ForbiddenException('Finish this install in the browser that started it');
+      }
+      const taken = await this.oauthStates.consumeForInstall(id, row.install_binding);
+      if (!taken) throw new BadRequestException('Invalid or expired state token');
+      return { ok: true, ...(await this.exchangeOAuthCode(provider, taken.org_id, code)) };
+    }
+
+    if (!(await this.oauthStates.recordCode(id, code))) {
+      throw new BadRequestException('Invalid or expired state token');
+    }
+    return {
+      ok: true,
+      pending: true,
+      message: 'Authorised. Return to the client that started this install to finish it.',
+    };
+  }
+
+  /**
+   * Finish an install: only the user who started it, once the provider has
+   * sent the browser back with a code (409 before then).
+   */
+  async completeOAuth(
+    providerName: string,
+    state: string,
+    userId: string,
+  ): Promise<{ ok: true; provider: OAuthProvider; integration_id: string; account_id: string }> {
+    const provider = oauthProvider(providerName);
+    const id = sha256(state);
+    const row = await this.oauthStates.find(id);
+    if (!row || row.provider !== provider || row.expires_at.getTime() <= Date.now()) {
+      throw new BadRequestException('Invalid or expired state token');
+    }
+    if (row.user_id !== userId) {
+      throw new ForbiddenException('Only the user who started this install can complete it');
+    }
+    if (row.code === null) {
+      throw new ConflictException('Not authorised yet: approve the install in the browser, then complete it');
+    }
+    const taken = await this.oauthStates.consumeForUser(id, userId);
+    if (!taken?.code) throw new BadRequestException('Invalid or expired state token');
+    const connected = await this.exchangeOAuthCode(provider, taken.org_id, taken.code);
+    return { ok: true, provider, integration_id: connected.integration_id, account_id: connected.account_id };
+  }
+
+  /** Exchange a provider code with the org's own OAuth app, and store the integration. */
+  private async exchangeOAuthCode(
+    provider: OAuthProvider,
+    orgId: string,
+    code: string,
+  ): Promise<{ integration_id: string; account_id: string; team_id?: string }> {
+    const appConfig = await this.getOAuthAppConfig(orgId, provider);
+    if (!appConfig) {
+      throw new InternalServerErrorException(`${provider === 'slack' ? 'Slack' : 'Google Drive'} OAuth app not configured for this org`);
+    }
+    try {
+      return provider === 'slack'
+        ? await this.exchangeSlackCode(orgId, appConfig, code)
+        : await this.exchangeGoogleDriveCode(orgId, appConfig, code);
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      logger.warn({
+        event: `${provider}.oauth.callback_error`,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new InternalServerErrorException('Internal error during OAuth callback');
+    }
+  }
+
+  private async exchangeSlackCode(
+    orgId: string,
+    appConfig: OAuthAppConfig,
+    code: string,
+  ): Promise<{ integration_id: string; account_id: string; team_id: string }> {
+    const redirectUri = oauthRedirectUri('slack');
+    const params: Record<string, string> = {
+      client_id: appConfig.client_id,
+      client_secret: appConfig.client_secret,
+      code,
+    };
+    if (redirectUri) params.redirect_uri = redirectUri;
+
+    const tokenResp = await fetch('https://slack.com/api/oauth.v2.access', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params),
+    });
+
+    const tokenData = await tokenResp.json() as {
+      ok?: boolean;
+      error?: string;
+      team?: { id: string; name?: string };
+      access_token?: string;
+      bot_user_id?: string;
+      authed_user?: { id: string; access_token?: string };
+    };
+
+    if (!tokenData.ok || !tokenData.team?.id) {
+      logger.warn({ event: 'slack.oauth.token_exchange_failed', error: tokenData.error });
+      throw new BadRequestException(`Slack token exchange failed: ${tokenData.error ?? 'unknown'}`);
+    }
+
+    const integration = await this.connectSlack(orgId, {
+      team_id: tokenData.team.id,
+      tokens_json: {
+        access_token: tokenData.access_token,
+        bot_user_id: tokenData.bot_user_id,
+        team_id: tokenData.team.id,
+        team_name: tokenData.team.name,
+        authed_user: tokenData.authed_user,
+      },
+      status: 'active',
+    });
+
+    logger.log({ event: 'slack.oauth.connected', orgId, teamId: tokenData.team.id, integrationId: integration.id });
+    return { integration_id: integration.id, account_id: tokenData.team.id, team_id: tokenData.team.id };
+  }
+
+  private async exchangeGoogleDriveCode(
+    orgId: string,
+    appConfig: OAuthAppConfig,
+    code: string,
+  ): Promise<{ integration_id: string; account_id: string }> {
+    const redirectUri = oauthRedirectUri('google_drive');
+    const tokenParams: Record<string, string> = {
+      client_id: appConfig.client_id,
+      client_secret: appConfig.client_secret,
+      code,
+      grant_type: 'authorization_code',
+    };
+    if (redirectUri) tokenParams.redirect_uri = redirectUri;
+
+    const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(tokenParams),
+    });
+
+    const tokenData = (await tokenResp.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      token_type?: string;
+      expires_in?: number;
+      scope?: string;
+      error?: string;
+      error_description?: string;
+    };
+
+    if (tokenData.error || !tokenData.access_token) {
+      logger.warn({
+        event: 'google_drive.oauth.token_exchange_failed',
+        error: tokenData.error,
+        description: tokenData.error_description,
+      });
+      throw new BadRequestException(
+        `Google token exchange failed: ${tokenData.error_description ?? tokenData.error ?? 'unknown'}`,
+      );
+    }
+
+    // Fetch user info from Google Drive to get account identifier
+    const aboutResp = await fetch(
+      'https://www.googleapis.com/drive/v3/about?fields=user',
+      { headers: { Authorization: `Bearer ${tokenData.access_token}` } },
+    );
+
+    if (!aboutResp.ok) {
+      const body = await aboutResp.text().catch(() => '<unreadable>');
+      logger.warn({ event: 'google_drive.oauth.about_failed', status: aboutResp.status, body });
+      throw new InternalServerErrorException('Failed to fetch Google Drive user info');
+    }
+
+    const aboutData = (await aboutResp.json()) as {
+      user?: { emailAddress?: string; displayName?: string; permissionId?: string };
+    };
+
+    const accountId = aboutData.user?.emailAddress ?? aboutData.user?.permissionId ?? 'unknown';
+
+    const integration = await this.connectProvider(orgId, 'google_drive', accountId, {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      token_type: tokenData.token_type,
+      expiry_date: Date.now() + (tokenData.expires_in ?? 3600) * 1000,
+      scope: tokenData.scope,
+      email: aboutData.user?.emailAddress,
+      display_name: aboutData.user?.displayName,
+    });
+
+    logger.log({ event: 'google_drive.oauth.connected', orgId, accountId, integrationId: integration.id });
+    return { integration_id: integration.id, account_id: accountId };
   }
 
   // ---------------------------------------------------------------------------

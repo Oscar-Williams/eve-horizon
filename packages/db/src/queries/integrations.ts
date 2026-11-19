@@ -19,6 +19,20 @@ export interface Integration {
   updated_at: Date;
 }
 
+/** An OAuth install in flight, bound to the user or install cookie that started it. */
+export interface OAuthState {
+  /** SHA-256 (hex) of the state value. */
+  id: string;
+  provider: string;
+  org_id: string;
+  user_id: string | null;
+  /** SHA-256 (hex) of the install cookie, for the signed-link install. */
+  install_binding: string | null;
+  code: string | null;
+  expires_at: Date;
+  created_at: Date;
+}
+
 export interface ExternalIdentity {
   id: string;
   provider: string;
@@ -287,6 +301,58 @@ export function membershipRequestQueries(db: Db) {
         LIMIT 1
       `;
       return row;
+    },
+  };
+}
+
+export function oauthStateQueries(db: Db) {
+  return {
+    async create(state: Omit<OAuthState, 'code' | 'created_at'>): Promise<void> {
+      await db`
+        INSERT INTO oauth_states (id, provider, org_id, user_id, install_binding, expires_at)
+        VALUES (
+          ${state.id}, ${state.provider}, ${state.org_id}, ${state.user_id},
+          ${state.install_binding}, ${state.expires_at}
+        )
+      `;
+    },
+
+    async find(id: string): Promise<OAuthState | undefined> {
+      const [row] = await db<OAuthState[]>`SELECT * FROM oauth_states WHERE id = ${id}`;
+      return row;
+    },
+
+    /** The callback's code, recorded once, before expiry. */
+    async recordCode(id: string, code: string): Promise<boolean> {
+      const result = await db`
+        UPDATE oauth_states SET code = ${code}
+        WHERE id = ${id} AND code IS NULL AND expires_at > NOW()
+      `;
+      return result.count > 0;
+    },
+
+    /** Take a state with its code, for the user who started it, once, before expiry. */
+    async consumeForUser(id: string, userId: string): Promise<OAuthState | undefined> {
+      const [row] = await db<OAuthState[]>`
+        DELETE FROM oauth_states
+        WHERE id = ${id} AND user_id = ${userId} AND code IS NOT NULL AND expires_at > NOW()
+        RETURNING *
+      `;
+      return row;
+    },
+
+    /** Take a signed-link install state, for the browser holding its cookie, once, before expiry. */
+    async consumeForInstall(id: string, binding: string): Promise<OAuthState | undefined> {
+      const [row] = await db<OAuthState[]>`
+        DELETE FROM oauth_states
+        WHERE id = ${id} AND install_binding = ${binding} AND expires_at > NOW()
+        RETURNING *
+      `;
+      return row;
+    },
+
+    async deleteExpired(): Promise<void> {
+      await db`DELETE FROM oauth_states WHERE expires_at <= NOW()`;
     },
   };
 }

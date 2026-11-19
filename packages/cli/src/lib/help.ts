@@ -2325,6 +2325,17 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
           '--status <status>    Integration status (default: active)',
         ],
       },
+      connect: {
+        description: 'Install an OAuth integration (slack, google-drive): open the printed URL, approve it, and the CLI completes the install as you',
+        usage: 'eve integrations connect <provider> [--org <org_id>] [--no-wait]',
+        options: [
+          '--no-wait      Print the URL and the complete command instead of waiting',
+        ],
+      },
+      complete: {
+        description: 'Complete an OAuth install you started with --no-wait (only the user who started it can)',
+        usage: 'eve integrations complete <provider> --state <state>',
+      },
       test: {
         description: 'Test an integration',
         usage: 'eve integrations test <integration_id>',

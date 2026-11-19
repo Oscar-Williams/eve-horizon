@@ -1,8 +1,19 @@
 import type { FlagValue } from '../lib/args';
-import { getStringFlag } from '../lib/args';
+import { getBooleanFlag, getStringFlag } from '../lib/args';
 import type { ResolvedContext } from '../lib/context';
-import { requestJson } from '../lib/client';
+import { requestJson, requestRaw } from '../lib/client';
 import { outputJson } from '../lib/output';
+
+type OAuthCompleteResponse = {
+  ok: boolean;
+  provider: string;
+  integration_id: string;
+  account_id: string;
+};
+
+/** How long `connect` waits for the browser (the state lives ten minutes). */
+const CONNECT_WAIT_MS = 10 * 60 * 1000;
+const CONNECT_POLL_MS = 3000;
 
 type IntegrationResponse = {
   id: string;
@@ -206,31 +217,52 @@ export async function handleIntegrations(
     }
 
     case 'connect': {
-      // eve integrations connect <provider> — shorthand for initiating OAuth
+      // eve integrations connect <provider>: start the OAuth install as the
+      // caller, then complete it once the browser has approved it.
       const provider = positionals[0];
       if (!provider) {
-        throw new Error('Usage: eve integrations connect <provider>\n\nProviders: google-drive, slack');
+        throw new Error('Usage: eve integrations connect <provider> [--no-wait]\n\nProviders: google-drive, slack');
       }
       if (!orgId) {
         throw new Error('Missing org id. Provide --org or set a profile default.');
       }
 
-      const normalizedProvider = normalizeProvider(provider);
-      let authorizePath: string;
-      switch (normalizedProvider) {
-        case 'google_drive':
-          authorizePath = `/orgs/${orgId}/integrations/google-drive/authorize`;
-          break;
-        case 'slack':
-          authorizePath = `/orgs/${orgId}/integrations/slack/authorize`;
-          break;
-        default:
-          throw new Error(`Unknown provider: ${provider}. Supported: google-drive, slack`);
+      const routeProvider = oauthRouteProvider(provider);
+      const started = await requestRaw(context, `/orgs/${orgId}/integrations/${routeProvider}/authorize`, {
+        redirect: 'manual',
+      });
+      const authorizeUrl = started.headers.get('location');
+      if (started.status < 300 || started.status >= 400 || !authorizeUrl) {
+        const detail = started.text ? `: ${started.text}` : '';
+        throw new Error(`HTTP ${started.status}: could not start the ${provider} install${detail}`);
+      }
+      const state = new URL(authorizeUrl).searchParams.get('state');
+      if (!state) {
+        throw new Error(`The ${provider} authorize URL carries no state`);
       }
 
-      const authorizeUrl = `${context.apiUrl}${authorizePath}`;
       console.log(`Open this URL in your browser to connect ${provider}:\n`);
       console.log(`  ${authorizeUrl}\n`);
+      if (getBooleanFlag(flags, ['no-wait'])) {
+        console.log('After approving it, finish with:');
+        console.log(`  eve integrations complete ${provider} --state ${state}`);
+        return;
+      }
+      console.log('Waiting for the browser to finish (Ctrl-C to stop)...');
+      const result = await completeOAuth(context, routeProvider, state, CONNECT_WAIT_MS);
+      outputJson(result, json, `✓ ${provider} connected: ${result.integration_id} (${result.account_id})`);
+      return;
+    }
+
+    case 'complete': {
+      // eve integrations complete <provider> --state <state>: finish an install started with --no-wait.
+      const provider = positionals[0];
+      const state = getStringFlag(flags, ['state']);
+      if (!provider || !state) {
+        throw new Error('Usage: eve integrations complete <provider> --state <state>');
+      }
+      const result = await completeOAuth(context, oauthRouteProvider(provider), state, 0);
+      outputJson(result, json, `✓ ${provider} connected: ${result.integration_id} (${result.account_id})`);
       return;
     }
 
@@ -374,4 +406,43 @@ function parseTtl(value: string): number {
   const unit = match[2] ?? 's';
   const multiplier: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
   return num * multiplier[unit];
+}
+
+/** The provider segment of the OAuth routes: slack or google-drive. */
+function oauthRouteProvider(name: string): 'slack' | 'google-drive' {
+  switch (normalizeProvider(name)) {
+    case 'google_drive':
+      return 'google-drive';
+    case 'slack':
+      return 'slack';
+    default:
+      throw new Error(`Unknown provider: ${name}. Supported: google-drive, slack`);
+  }
+}
+
+/**
+ * Complete an install this caller started. The API answers 409 until the
+ * browser has come back from the provider; with a wait, poll until then.
+ */
+async function completeOAuth(
+  context: ResolvedContext,
+  routeProvider: string,
+  state: string,
+  waitMs: number,
+): Promise<OAuthCompleteResponse> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const response = await requestRaw(context, `/integrations/${routeProvider}/oauth/complete`, {
+      method: 'POST',
+      body: { state },
+    });
+    if (response.ok) return response.data as OAuthCompleteResponse;
+    if (response.status !== 409 || Date.now() >= deadline) {
+      const message = typeof response.data === 'object' && response.data && 'message' in response.data
+        ? String((response.data as { message: unknown }).message)
+        : response.text;
+      throw new Error(`HTTP ${response.status}: could not complete the install: ${message}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, CONNECT_POLL_MS));
+  }
 }

@@ -5,6 +5,7 @@ import { IntegrationsInternalController } from './integrations.internal.controll
 import { IdentityLinkController } from './identity-link.controller.js';
 import { SlackOAuthController } from './slack-oauth.controller.js';
 import { OAuthAppConfigController } from './oauth-app-config.controller.js';
+import { OAuthCompleteController } from './oauth-complete.controller.js';
 import { EventsModule } from '../events/events.module.js';
 import { SecretsModule } from '../secrets/secrets.module.js';
 import { IntegrationsService } from './integrations.service.js';
@@ -20,6 +21,7 @@ import { IntegrationsService } from './integrations.service.js';
     IdentityLinkController,
     SlackOAuthController,
     OAuthAppConfigController,
+    OAuthCompleteController,
   ],
   providers: [IntegrationsService],
   exports: [IntegrationsService],

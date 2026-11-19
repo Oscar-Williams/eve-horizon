@@ -4,16 +4,26 @@ import {
   Get,
   HttpException,
   HttpStatus,
-  InternalServerErrorException,
   Param,
   Query,
   Redirect,
+  Req,
+  Res,
 } from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { RequirePermission } from '../auth/permission.decorator.js';
 import { Public } from '../auth/auth.decorator.js';
-import { IntegrationsService } from './integrations.service.js';
-import { createJsonLogger, loadConfig } from '@eve/shared';
+import { CurrentUser } from '../common/request-decorators.js';
+import type { AuthUser } from '../auth/auth.types.js';
+import {
+  IntegrationsService,
+  OAUTH_NO_AUTH_USER,
+  SLACK_INSTALL_COOKIE,
+  oauthRedirectUri,
+  type OAuthCallbackResult,
+} from './integrations.service.js';
+import { createJsonLogger } from '@eve/shared';
 
 const logger = createJsonLogger('api');
 
@@ -31,9 +41,12 @@ const SLACK_SCOPES = [
  *
  * Admins register their own Slack app via
  * POST /orgs/:org_id/integrations/providers/slack/config,
- * then initiate from GET /orgs/:org_id/integrations/slack/authorize.
- * Slack redirects back to GET /integrations/slack/oauth/callback
- * with a code we exchange using the org's credentials.
+ * then start from GET /orgs/:org_id/integrations/slack/authorize. Slack
+ * redirects the browser back to GET /integrations/slack/oauth/callback,
+ * which stores the code against the state; the user who started the
+ * install completes it with POST /integrations/slack/oauth/complete and
+ * their own token. The signed-link install (no Eve user) is bound to a
+ * cookie instead, and completes at the callback.
  */
 @ApiTags('integrations')
 @Controller()
@@ -43,9 +56,12 @@ export class SlackOAuthController {
   @RequirePermission('integrations:write')
   @Get('orgs/:org_id/integrations/slack/authorize')
   @Redirect()
-  @ApiOperation({ summary: 'Redirect to Slack OAuth for workspace install' })
+  @ApiOperation({ summary: 'Redirect to Slack OAuth for workspace install; the state is bound to the caller' })
   @ApiParam({ name: 'org_id', description: 'Organization ID' })
-  async authorize(@Param('org_id') orgId: string): Promise<{ url: string }> {
+  async authorize(
+    @Param('org_id') orgId: string,
+    @CurrentUser() caller?: AuthUser,
+  ): Promise<{ url: string }> {
     const appConfig = await this.integrationsService.getOAuthAppConfig(orgId, 'slack');
     if (!appConfig) {
       throw new BadRequestException(
@@ -54,23 +70,22 @@ export class SlackOAuthController {
       );
     }
 
-    const state = this.integrationsService.generateOAuthState(orgId);
-    const redirectUri = buildRedirectUri();
-
-    const url = new URL('https://slack.com/oauth/v2/authorize');
-    url.searchParams.set('client_id', appConfig.client_id);
-    url.searchParams.set('scope', SLACK_SCOPES);
-    url.searchParams.set('state', state);
-    if (redirectUri) url.searchParams.set('redirect_uri', redirectUri);
-
-    return { url: url.toString() };
+    const state = await this.integrationsService.createOAuthState(
+      'slack',
+      appConfig.org_id,
+      caller?.user_id ?? OAUTH_NO_AUTH_USER,
+    );
+    return { url: slackAuthorizeUrl(appConfig.client_id, state) };
   }
 
   @Public()
   @Get('integrations/slack/install')
   @Redirect()
-  @ApiOperation({ summary: 'Public Slack install via signed token (no Eve auth required)' })
-  async install(@Query('token') token: string | undefined): Promise<{ url: string }> {
+  @ApiOperation({ summary: 'Public Slack install via signed token (no Eve auth required); bound to this browser by a cookie' })
+  async install(
+    @Query('token') token: string | undefined,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<{ url: string }> {
     if (!token) {
       throw new BadRequestException('Missing token parameter');
     }
@@ -85,26 +100,25 @@ export class SlackOAuthController {
       throw new BadRequestException('No Slack OAuth app configured for this org');
     }
 
-    const state = this.integrationsService.generateOAuthState(result.orgId);
-    const redirectUri = buildRedirectUri();
-
-    const url = new URL('https://slack.com/oauth/v2/authorize');
-    url.searchParams.set('client_id', appConfig.client_id);
-    url.searchParams.set('scope', SLACK_SCOPES);
-    url.searchParams.set('state', state);
-    if (redirectUri) url.searchParams.set('redirect_uri', redirectUri);
-
-    return { url: url.toString() };
+    const { state, cookie, maxAgeSeconds } = await this.integrationsService.createInstallOAuthState(appConfig.org_id);
+    // __Host-: Secure, path /, no Domain. Lax, so the browser sends it on Slack's top-level redirect back.
+    reply.header('set-cookie', installCookie(cookie, maxAgeSeconds));
+    return { url: slackAuthorizeUrl(appConfig.client_id, state) };
   }
 
   @Public()
   @Get('integrations/slack/oauth/callback')
-  @ApiOperation({ summary: 'Handle Slack OAuth callback' })
+  @ApiOperation({
+    summary: 'Handle Slack OAuth callback: stores the code for the user who started the install to complete; ' +
+      'a signed-link install completes here with its cookie',
+  })
   async callback(
     @Query('code') code: string | undefined,
     @Query('state') state: string | undefined,
     @Query('error') error: string | undefined,
-  ): Promise<{ ok: boolean; integration_id?: string; team_id?: string }> {
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply?: FastifyReply,
+  ): Promise<OAuthCallbackResult> {
     if (error) {
       logger.warn({ event: 'slack.oauth.error', error });
       throw new HttpException({ ok: false, error: `Slack OAuth error: ${error}` }, HttpStatus.BAD_REQUEST);
@@ -114,80 +128,37 @@ export class SlackOAuthController {
       throw new BadRequestException('Missing code or state parameter');
     }
 
-    const orgId = this.integrationsService.validateOAuthState(state);
-    if (!orgId) {
-      throw new BadRequestException('Invalid or expired state token');
+    const cookie = readCookie(req.headers?.cookie, SLACK_INSTALL_COOKIE);
+    const result = await this.integrationsService.acceptOAuthCallback('slack', state, code, cookie);
+    if (cookie !== undefined && !result.pending) {
+      reply?.header('set-cookie', installCookie('', 0));
     }
-
-    // Look up per-org OAuth app credentials
-    const appConfig = await this.integrationsService.getOAuthAppConfig(orgId, 'slack');
-    if (!appConfig) {
-      throw new InternalServerErrorException('Slack OAuth app not configured for this org');
-    }
-
-    try {
-      const redirectUri = buildRedirectUri();
-      const params: Record<string, string> = {
-        client_id: appConfig.client_id,
-        client_secret: appConfig.client_secret,
-        code,
-      };
-      if (redirectUri) params.redirect_uri = redirectUri;
-
-      const tokenResp = await fetch('https://slack.com/api/oauth.v2.access', {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(params),
-      });
-
-      const tokenData = await tokenResp.json() as {
-        ok?: boolean;
-        error?: string;
-        team?: { id: string; name?: string };
-        access_token?: string;
-        bot_user_id?: string;
-        authed_user?: { id: string; access_token?: string };
-      };
-
-      if (!tokenData.ok || !tokenData.team?.id) {
-        logger.warn({ event: 'slack.oauth.token_exchange_failed', error: tokenData.error });
-        throw new BadRequestException(`Slack token exchange failed: ${tokenData.error ?? 'unknown'}`);
-      }
-
-      const integration = await this.integrationsService.connectSlack(orgId, {
-        team_id: tokenData.team.id,
-        tokens_json: {
-          access_token: tokenData.access_token,
-          bot_user_id: tokenData.bot_user_id,
-          team_id: tokenData.team.id,
-          team_name: tokenData.team.name,
-          authed_user: tokenData.authed_user,
-        },
-        status: 'active',
-      });
-
-      logger.log({
-        event: 'slack.oauth.connected',
-        orgId,
-        teamId: tokenData.team.id,
-        integrationId: integration.id,
-      });
-
-      return { ok: true, integration_id: integration.id, team_id: tokenData.team.id };
-    } catch (err) {
-      if (err instanceof HttpException) throw err;
-      logger.warn({
-        event: 'slack.oauth.callback_error',
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw new InternalServerErrorException('Internal error during OAuth callback');
-    }
+    return result;
   }
 }
 
-function buildRedirectUri(): string | undefined {
-  const config = loadConfig();
-  const apiUrl = config.EVE_API_URL ?? process.env.EVE_API_URL;
-  if (!apiUrl) return undefined;
-  return `${apiUrl}/integrations/slack/oauth/callback`;
+function slackAuthorizeUrl(clientId: string, state: string): string {
+  const url = new URL('https://slack.com/oauth/v2/authorize');
+  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('scope', SLACK_SCOPES);
+  url.searchParams.set('state', state);
+  const redirectUri = oauthRedirectUri('slack');
+  if (redirectUri) url.searchParams.set('redirect_uri', redirectUri);
+  return url.toString();
+}
+
+function installCookie(value: string, maxAgeSeconds: number): string {
+  return `${SLACK_INSTALL_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+
+/** One cookie's value from a Cookie header. */
+export function readCookie(header: string | string[] | undefined, name: string): string | undefined {
+  const raw = Array.isArray(header) ? header.join('; ') : header;
+  if (!raw) return undefined;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
 }

@@ -109,7 +109,7 @@ export async function requestRaw(
   context: ResolvedContext,
   path: string,
   options: RequestOptions = {},
-): Promise<{ status: number; ok: boolean; data: unknown; text: string }>
+): Promise<{ status: number; ok: boolean; data: unknown; text: string; headers: Headers }>
 {
   const headers: Record<string, string> = {
     ...options.headers,
@@ -144,7 +144,7 @@ export async function requestRaw(
     }
   }
 
-  return { status: response.status, ok: response.ok, data, text };
+  return { status: response.status, ok: response.ok, data, text, headers: response.headers };
 }
 
 /**

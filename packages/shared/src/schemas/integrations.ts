@@ -177,3 +177,19 @@ export const ProviderSetupInfoResponseSchema = z.object({
 });
 
 export type ProviderSetupInfoResponse = z.infer<typeof ProviderSetupInfoResponseSchema>;
+
+/** Finish an OAuth install the caller started: the provider's callback has stored the code. */
+export const OAuthCompleteRequestSchema = z.object({
+  state: z.string().min(1),
+});
+
+export type OAuthCompleteRequest = z.infer<typeof OAuthCompleteRequestSchema>;
+
+export const OAuthCompleteResponseSchema = z.object({
+  ok: z.boolean(),
+  provider: z.string(),
+  integration_id: z.string(),
+  account_id: z.string(),
+});
+
+export type OAuthCompleteResponse = z.infer<typeof OAuthCompleteResponseSchema>;
