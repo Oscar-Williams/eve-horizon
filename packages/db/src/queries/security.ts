@@ -1,5 +1,6 @@
 import type { Db } from '../client.js';
 import {
+  SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
   generateSecurityFindingId,
   resolveSecurityProfile,
@@ -36,7 +37,11 @@ export interface NewSecurityFinding {
 export interface SecurityProfileRow {
   org_id: string | null;
   org_profile: string | null;
+  /** The rule set the org's `strict` covers (NULL reads as 1). */
+  org_ruleset?: number | null;
   project_profile: string | null;
+  /** The rule set the project's `strict` covers (NULL reads as 1). */
+  project_ruleset?: number | null;
 }
 
 export interface ScopeProfileRow {
@@ -44,6 +49,7 @@ export interface ScopeProfileRow {
   slug: string;
   org_id?: string;
   security_profile: string | null;
+  security_profile_ruleset?: number | null;
 }
 
 export function securityQueries(db: Db) {
@@ -52,7 +58,9 @@ export function securityQueries(db: Db) {
     async getProfiles(scope: { orgId?: string | null; projectId?: string | null }): Promise<SecurityProfileRow> {
       if (scope.projectId) {
         const [row] = await db<SecurityProfileRow[]>`
-          SELECT p.org_id, o.security_profile AS org_profile, p.security_profile AS project_profile
+          SELECT p.org_id,
+                 o.security_profile AS org_profile, o.security_profile_ruleset AS org_ruleset,
+                 p.security_profile AS project_profile, p.security_profile_ruleset AS project_ruleset
           FROM projects p JOIN orgs o ON o.id = p.org_id
           WHERE p.id = ${scope.projectId}
         `;
@@ -61,25 +69,32 @@ export function securityQueries(db: Db) {
       if (scope.orgId) {
         // Org routes may name the org by slug; slugs are unique.
         const [row] = await db<SecurityProfileRow[]>`
-          SELECT id AS org_id, security_profile AS org_profile, NULL::text AS project_profile
+          SELECT id AS org_id, security_profile AS org_profile, security_profile_ruleset AS org_ruleset,
+                 NULL::text AS project_profile, NULL::integer AS project_ruleset
           FROM orgs WHERE id = ${scope.orgId} OR slug = ${scope.orgId}
           LIMIT 1
         `;
         if (row) return row;
       }
-      return { org_id: scope.orgId ?? null, org_profile: null, project_profile: null };
+      return { org_id: scope.orgId ?? null, org_profile: null, org_ruleset: null, project_profile: null, project_ruleset: null };
     },
 
-    async setOrgProfile(orgId: string, profile: string | null): Promise<boolean> {
+    /** Set an org's profile and its stamp (the rule set a `strict` covers; NULL otherwise). */
+    async setOrgProfile(orgId: string, profile: string | null, ruleset: number | null = null): Promise<boolean> {
+      const stamp = profile === 'strict' ? ruleset : null;
       const result = await db`
-        UPDATE orgs SET security_profile = ${profile}, updated_at = NOW() WHERE id = ${orgId}
+        UPDATE orgs SET security_profile = ${profile}, security_profile_ruleset = ${stamp}, updated_at = NOW()
+        WHERE id = ${orgId}
       `;
       return result.count > 0;
     },
 
-    async setProjectProfile(projectId: string, profile: string | null): Promise<boolean> {
+    /** Set a project's profile and its stamp (the rule set a `strict` covers; NULL otherwise). */
+    async setProjectProfile(projectId: string, profile: string | null, ruleset: number | null = null): Promise<boolean> {
+      const stamp = profile === 'strict' ? ruleset : null;
       const result = await db`
-        UPDATE projects SET security_profile = ${profile}, updated_at = NOW() WHERE id = ${projectId}
+        UPDATE projects SET security_profile = ${profile}, security_profile_ruleset = ${stamp}, updated_at = NOW()
+        WHERE id = ${projectId}
       `;
       return result.count > 0;
     },
@@ -87,28 +102,31 @@ export function securityQueries(db: Db) {
     async listOrgProfiles(orgId?: string): Promise<ScopeProfileRow[]> {
       return orgId
         ? db<ScopeProfileRow[]>`
-            SELECT id, slug, security_profile FROM orgs WHERE id = ${orgId} AND deleted_at IS NULL
+            SELECT id, slug, security_profile, security_profile_ruleset
+            FROM orgs WHERE id = ${orgId} AND deleted_at IS NULL
           `
         : db<ScopeProfileRow[]>`
-            SELECT id, slug, security_profile FROM orgs WHERE deleted_at IS NULL ORDER BY slug
+            SELECT id, slug, security_profile, security_profile_ruleset
+            FROM orgs WHERE deleted_at IS NULL ORDER BY slug
           `;
     },
 
     async listProjectProfiles(scope: { orgId?: string; projectId?: string }): Promise<ScopeProfileRow[]> {
       if (scope.projectId) {
         return db<ScopeProfileRow[]>`
-          SELECT id, slug, org_id, security_profile FROM projects
+          SELECT id, slug, org_id, security_profile, security_profile_ruleset FROM projects
           WHERE id = ${scope.projectId} AND deleted_at IS NULL
         `;
       }
       if (scope.orgId) {
         return db<ScopeProfileRow[]>`
-          SELECT id, slug, org_id, security_profile FROM projects
+          SELECT id, slug, org_id, security_profile, security_profile_ruleset FROM projects
           WHERE org_id = ${scope.orgId} AND deleted_at IS NULL ORDER BY slug
         `;
       }
       return db<ScopeProfileRow[]>`
-        SELECT id, slug, org_id, security_profile FROM projects WHERE deleted_at IS NULL ORDER BY org_id, slug
+        SELECT id, slug, org_id, security_profile, security_profile_ruleset
+        FROM projects WHERE deleted_at IS NULL ORDER BY org_id, slug
       `;
     },
 
@@ -177,41 +195,49 @@ export function securityQueries(db: Db) {
 /**
  * The profile that governs a rule for a scope, outside the API, without
  * recording anything: for code that only reports what a rule means (preview
- * URLs). Uncached.
+ * URLs). With a rule, a `strict` stamped before the rule's rule set gives
+ * `audit`. Uncached.
  */
 export async function governingSecurityProfile(
   db: Db,
-  ctx: { orgId?: string | null; projectId?: string | null; governing: SecurityGoverningScope },
+  ctx: { orgId?: string | null; projectId?: string | null; governing: SecurityGoverningScope; rule?: string },
 ): Promise<SecurityProfile> {
-  return (await resolveGoverning(db, ctx)).profile;
+  return (await resolveGoverning(db, ctx, ctx.rule)).profile;
 }
 
 async function resolveGoverning(
   db: Db,
   ctx: { orgId?: string | null; projectId?: string | null; governing: SecurityGoverningScope },
+  rule: string | undefined,
 ): Promise<{ profile: SecurityProfile; row: SecurityProfileRow | null }> {
-  const [setting] = await db<{ value: string }[]>`
-    SELECT value FROM system_settings WHERE key = ${SECURITY_PROFILE_SETTING}
+  const settings = await db<{ key: string; value: string }[]>`
+    SELECT key, value FROM system_settings
+    WHERE key IN (${SECURITY_PROFILE_SETTING}, ${SECURITY_PROFILE_RULESET_SETTING})
   `;
-  const instance = setting?.value ?? null;
+  const instance = settings.find((s) => s.key === SECURITY_PROFILE_SETTING)?.value ?? null;
+  const instanceRuleset = settings.find((s) => s.key === SECURITY_PROFILE_RULESET_SETTING)?.value ?? null;
   const row = ctx.projectId || ctx.orgId
     ? await securityQueries(db).getProfiles({ orgId: ctx.orgId, projectId: ctx.projectId })
     : null;
   const profile = ctx.governing === 'instance'
-    ? resolveSecurityProfile({ instance })
+    ? resolveSecurityProfile({ instance, instanceRuleset }, rule)
     : resolveSecurityProfile({
         project: ctx.governing === 'project' ? row?.project_profile : null,
+        projectRuleset: ctx.governing === 'project' ? row?.project_ruleset : null,
         org: row?.org_profile,
+        orgRuleset: row?.org_ruleset,
         instance,
-      });
+        instanceRuleset,
+      }, rule);
   return { profile, row };
 }
 
 /**
  * Decide a security rule outside the API (orchestrator, worker): resolve the
- * governing profile and record a finding under `audit` and `strict`. Returns
- * the profile; the caller enforces when it is `strict`. Uncached: for code
- * that runs once per job or deploy, not per request.
+ * governing profile, honouring the stamps as the API does, and record a
+ * finding under `audit` and `strict`. Returns the profile; the caller
+ * enforces when it is `strict`. Uncached: for code that runs once per job or
+ * deploy, not per request.
  */
 export async function decideSecurityRule(
   db: Db,
@@ -225,7 +251,7 @@ export async function decideSecurityRule(
     detail?: Record<string, string | number | boolean | null>;
   },
 ): Promise<SecurityProfile> {
-  const { profile, row } = await resolveGoverning(db, ctx);
+  const { profile, row } = await resolveGoverning(db, ctx, rule);
   if (profile !== 'legacy') {
     try {
       await securityQueries(db).recordFinding({

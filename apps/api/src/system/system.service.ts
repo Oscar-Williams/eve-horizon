@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import {
+  SECURITY_CURRENT_RULESET,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
+  SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
   isSecurityProfile,
 } from '@eve/shared';
@@ -604,6 +606,12 @@ export class SystemService {
       && !isSecurityProfile(value)
     ) {
       throw new BadRequestException(`${key} must be legacy, audit or strict`);
+    }
+    if (
+      key === SECURITY_PROFILE_RULESET_SETTING
+      && !(/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= SECURITY_CURRENT_RULESET)
+    ) {
+      throw new BadRequestException(`${key} must be a rule set from 1 to ${SECURITY_CURRENT_RULESET}`);
     }
     const settings = systemSettingsQueries(this.db);
     return settings.set(key, value, updatedBy, description);

@@ -9,13 +9,18 @@ import {
 import type { Db, SecurityProfileRow } from '@eve/db';
 import { auditQueries, securityQueries, systemSettingsQueries } from '@eve/db';
 import {
+  SECURITY_CURRENT_RULESET,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
+  SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
   generateSecurityFindingId,
+  governingSecurityLevel,
   isSecurityProfile,
+  parseSecurityRuleset,
   resolveSecurityProfile,
   type SecurityGoverningScope,
   type SecurityProfile,
+  type SecurityProfileLevels,
 } from '@eve/shared';
 import type { AuthUser } from '../auth/auth.types.js';
 
@@ -61,9 +66,17 @@ export class SecurityService {
     this.security = securityQueries(db);
   }
 
-  /** The profile that governs a rule for this scope. */
-  async effectiveProfile(scope: SecurityScope, governing: SecurityGoverningScope): Promise<SecurityProfile> {
-    return (await this.resolve(scope, governing)).profile;
+  /**
+   * The profile that governs a rule for this scope. With the rule, a
+   * `strict` stamped before the rule's rule set gives `audit`; without it,
+   * the rule set is 1.
+   */
+  async effectiveProfile(
+    scope: SecurityScope,
+    governing: SecurityGoverningScope,
+    rule?: string,
+  ): Promise<SecurityProfile> {
+    return (await this.resolve(scope, governing, rule)).profile;
   }
 
   /**
@@ -72,7 +85,7 @@ export class SecurityService {
    * other than refuse (for example, mint a narrower token).
    */
   async decide(rule: string, ctx: SecurityGateContext): Promise<SecurityProfile> {
-    const { profile, orgId } = await this.resolve(ctx, ctx.governing);
+    const { profile, orgId } = await this.resolve(ctx, ctx.governing, rule);
     if (profile !== 'legacy') {
       await this.record(rule, profile, orgId, ctx);
     }
@@ -97,7 +110,7 @@ export class SecurityService {
     target: SecurityProfileTarget,
     profile: SecurityProfile | null,
     actorUserId: string,
-  ): Promise<{ scope: string; id: string | null; profile: SecurityProfile | null }> {
+  ): Promise<{ scope: string; id: string | null; profile: SecurityProfile | null; ruleset: number | null }> {
     if (profile !== null && !isSecurityProfile(profile)) {
       throw new BadRequestException(`Security profile must be legacy, audit or strict, not "${String(profile)}"`);
     }
@@ -105,6 +118,9 @@ export class SecurityService {
     if ((target.scope === 'org' || target.scope === 'project') && !target.id) {
       throw new BadRequestException(`A ${target.scope} security profile needs the ${target.scope} id`);
     }
+    // A strict profile covers the rules of the current rule set; any other
+    // profile carries no stamp.
+    const ruleset = profile === 'strict' ? SECURITY_CURRENT_RULESET : null;
     // The change and its audit record commit together, or neither does.
     const result = await this.db.begin(async (rawTx) => {
       const tx = rawTx as unknown as Db;
@@ -121,8 +137,16 @@ export class SecurityService {
         } else {
           await settings.set(key, profile, actorUserId);
         }
-        await recordProfileChange(audit, target.scope, previous, profile, actorUserId);
-        return { scope: target.scope, id: null, profile };
+        // New projects are stamped as they are created (applyNewProjectProfile).
+        if (target.scope === 'instance') {
+          if (ruleset === null) {
+            await settings.delete(SECURITY_PROFILE_RULESET_SETTING);
+          } else {
+            await settings.set(SECURITY_PROFILE_RULESET_SETTING, String(ruleset), actorUserId);
+          }
+        }
+        await recordProfileChange(audit, target.scope, previous, profile, actorUserId, target.scope === 'instance' ? ruleset : null);
+        return { scope: target.scope, id: null, profile, ruleset: target.scope === 'instance' ? ruleset : null };
       }
 
       const id = target.id!;
@@ -131,29 +155,31 @@ export class SecurityService {
         : await security.getProfiles({ projectId: id });
       const previous = target.scope === 'org' ? before.org_profile : before.project_profile;
       const updated = target.scope === 'org'
-        ? await security.setOrgProfile(id, profile)
-        : await security.setProjectProfile(id, profile);
+        ? await security.setOrgProfile(id, profile, ruleset)
+        : await security.setProjectProfile(id, profile, ruleset);
       if (!updated) {
         throw new NotFoundException(`${target.scope === 'org' ? 'Org' : 'Project'} ${id} not found`);
       }
-      await recordProfileChange(audit, `${target.scope}:${id}`, previous, profile, actorUserId);
-      return { scope: target.scope, id, profile };
+      await recordProfileChange(audit, `${target.scope}:${id}`, previous, profile, actorUserId, ruleset);
+      return { scope: target.scope, id, profile, ruleset };
     });
     if (result.id === null) {
       this.settingCache.delete(target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING);
+      this.settingCache.delete(SECURITY_PROFILE_RULESET_SETTING);
     } else {
       this.scopeCache.clear();
     }
     return result;
   }
 
-
-
-  /** Write the instance's profile for new projects onto a project just created. */
+  /**
+   * Write the instance's profile for new projects onto a project just
+   * created; a `strict` is stamped with the current rule set.
+   */
   async applyNewProjectProfile(projectId: string): Promise<void> {
     const value = await this.setting(SECURITY_NEW_PROJECT_PROFILE_SETTING);
     if (!isSecurityProfile(value)) return;
-    await this.security.setProjectProfile(projectId, value);
+    await this.security.setProjectProfile(projectId, value, value === 'strict' ? SECURITY_CURRENT_RULESET : null);
     this.scopeCache.delete(`project:${projectId}`);
   }
 
@@ -162,6 +188,7 @@ export class SecurityService {
     const days = Math.min(Math.max(Math.trunc(options.days ?? 14), 1), 90);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const instance = await this.setting(SECURITY_PROFILE_SETTING);
+    const instanceRuleset = await this.setting(SECURITY_PROFILE_RULESET_SETTING);
     const newProjects = await this.setting(SECURITY_NEW_PROJECT_PROFILE_SETTING);
 
     const projectRows = await this.security.listProjectProfiles({
@@ -170,7 +197,7 @@ export class SecurityService {
     });
     const orgFilter = options.orgId ?? (options.projectId ? projectRows[0]?.org_id : undefined);
     const orgRows = await this.security.listOrgProfiles(orgFilter);
-    const orgProfile = new Map(orgRows.map((o) => [o.id, o.security_profile]));
+    const orgById = new Map(orgRows.map((o) => [o.id, o]));
 
     const findings = await this.security.listFindings({
       since,
@@ -186,27 +213,45 @@ export class SecurityService {
       byRule.set(f.rule, entry);
     }
 
+    const own = (profile: string | null, stamp: number | null | undefined) => ({
+      profile: isSecurityProfile(profile) ? profile : null,
+      ruleset: profile === 'strict' ? parseSecurityRuleset(stamp) : null,
+    });
+    const effective = (levels: SecurityProfileLevels) => {
+      const level = governingSecurityLevel(levels);
+      return { effective: level.profile, effective_ruleset: level.ruleset };
+    };
+    const instanceLevel = governingSecurityLevel({ instance, instanceRuleset });
+
     return {
       days,
-      instance_profile: resolveSecurityProfile({ instance }),
+      current_ruleset: SECURITY_CURRENT_RULESET,
+      instance_profile: instanceLevel.profile,
+      instance_ruleset: instanceLevel.ruleset,
       new_project_profile: isSecurityProfile(newProjects) ? newProjects : null,
       orgs: orgRows.map((o) => ({
         id: o.id,
         slug: o.slug,
-        profile: isSecurityProfile(o.security_profile) ? o.security_profile : null,
-        effective: resolveSecurityProfile({ org: o.security_profile, instance }),
+        ...own(o.security_profile, o.security_profile_ruleset),
+        ...effective({ org: o.security_profile, orgRuleset: o.security_profile_ruleset, instance, instanceRuleset }),
       })),
-      projects: projectRows.map((p) => ({
-        id: p.id,
-        slug: p.slug,
-        org_id: p.org_id ?? null,
-        profile: isSecurityProfile(p.security_profile) ? p.security_profile : null,
-        effective: resolveSecurityProfile({
-          project: p.security_profile,
-          org: p.org_id ? orgProfile.get(p.org_id) : null,
-          instance,
-        }),
-      })),
+      projects: projectRows.map((p) => {
+        const org = p.org_id ? orgById.get(p.org_id) : undefined;
+        return {
+          id: p.id,
+          slug: p.slug,
+          org_id: p.org_id ?? null,
+          ...own(p.security_profile, p.security_profile_ruleset),
+          ...effective({
+            project: p.security_profile,
+            projectRuleset: p.security_profile_ruleset,
+            org: org?.security_profile,
+            orgRuleset: org?.security_profile_ruleset,
+            instance,
+            instanceRuleset,
+          }),
+        };
+      }),
       summary: [...byRule.values()]
         .map((r) => ({ rule: r.rule, count: r.count, projects: r.projects.size, actors: r.actors.size }))
         .sort((a, b) => b.count - a.count),
@@ -228,19 +273,24 @@ export class SecurityService {
   private async resolve(
     scope: SecurityScope,
     governing: SecurityGoverningScope,
+    rule?: string,
   ): Promise<{ profile: SecurityProfile; orgId: string | null }> {
     const instance = await this.setting(SECURITY_PROFILE_SETTING);
+    const instanceRuleset = await this.setting(SECURITY_PROFILE_RULESET_SETTING);
     const row = scope.projectId || scope.orgId ? await this.scopeProfiles(scope) : null;
     const orgId = row?.org_id ?? scope.orgId ?? null;
     if (governing === 'instance') {
-      return { profile: resolveSecurityProfile({ instance }), orgId };
+      return { profile: resolveSecurityProfile({ instance, instanceRuleset }, rule), orgId };
     }
     return {
       profile: resolveSecurityProfile({
         project: governing === 'project' ? row?.project_profile : null,
+        projectRuleset: governing === 'project' ? row?.project_ruleset : null,
         org: row?.org_profile,
+        orgRuleset: row?.org_ruleset,
         instance,
-      }),
+        instanceRuleset,
+      }, rule),
       orgId,
     };
   }
@@ -306,13 +356,14 @@ export function describeActor(actor: AuthUser | null | undefined): [string, stri
   return ['user', actor.user_id];
 }
 
-/** Who changed a profile, from what to what: an audit log entry. */
+/** Who changed a profile, from what to what, and the rule set a strict covers: an audit log entry. */
 async function recordProfileChange(
   audit: ReturnType<typeof auditQueries>,
   entityId: string,
   previous: string | null,
   profile: string | null,
   actorUserId: string,
+  ruleset: number | null,
 ): Promise<void> {
   await audit.log({
     entity_type: 'security_profile',
@@ -321,6 +372,6 @@ async function recordProfileChange(
     actor: actorUserId,
     actor_type: 'user',
     changes: { profile: { old: previous, new: profile } },
-    context: {},
+    context: ruleset === null ? {} : { ruleset },
   });
 }

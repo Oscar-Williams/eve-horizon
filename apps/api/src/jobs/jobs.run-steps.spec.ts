@@ -494,7 +494,7 @@ describe("a failure's cascade", () => {
       async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const text = strings.join('?');
         calls.push({ text, values });
-        if (/FROM system_settings/.test(text)) return [{ value: profile }];
+        if (/FROM system_settings/.test(text)) return [{ key: 'security.profile', value: profile }];
         if (/FROM projects p JOIN orgs/.test(text)) return [{ org_id: 'org_a', org_profile: null, project_profile: null }];
         if (/SELECT \* FROM jobs WHERE id/.test(text) || /RETURNING \*/.test(text)) return [{ ...m.state.jobs.get('a-run.1') }];
         return [];

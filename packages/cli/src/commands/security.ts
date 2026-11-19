@@ -5,11 +5,21 @@ import { requestJson } from '../lib/client';
 import { outputJson } from '../lib/output';
 import { buildQuery } from '../lib/format';
 
-type ScopeProfile = { id: string; slug: string; org_id?: string | null; profile: string | null; effective: string };
+type ScopeProfile = {
+  id: string;
+  slug: string;
+  org_id?: string | null;
+  profile: string | null;
+  ruleset?: number | null;
+  effective: string;
+  effective_ruleset?: number | null;
+};
 
 interface SecurityReport {
   days: number;
+  current_ruleset?: number;
   instance_profile: string;
+  instance_ruleset?: number | null;
   new_project_profile: string | null;
   orgs: ScopeProfile[];
   projects: ScopeProfile[];
@@ -48,16 +58,19 @@ export async function handleDoctor(
   }
 
   const own = (p: string | null) => (p ? p : 'inherited');
-  console.log(`Instance profile: ${report.instance_profile}`);
+  const current = report.current_ruleset ?? 1;
+  const stamped = (profile: string, ruleset: number | null | undefined) =>
+    describeStampedProfile(profile, ruleset, current);
+  console.log(`Instance profile: ${stamped(report.instance_profile, report.instance_ruleset)}`);
   console.log(`New projects:     ${report.new_project_profile ?? 'inherit'}`);
   console.log('');
   console.log('Orgs:');
   for (const org of report.orgs) {
-    console.log(`  ${org.slug.padEnd(24)} ${org.effective.padEnd(7)} (${own(org.profile)})  ${org.id}`);
+    console.log(`  ${org.slug.padEnd(24)} ${org.effective.padEnd(7)} (${own(org.profile)})  ${org.id}${stampNote(org, current)}`);
   }
   console.log('Projects:');
   for (const project of report.projects) {
-    console.log(`  ${project.slug.padEnd(24)} ${project.effective.padEnd(7)} (${own(project.profile)})  ${project.id}`);
+    console.log(`  ${project.slug.padEnd(24)} ${project.effective.padEnd(7)} (${own(project.profile)})  ${project.id}${stampNote(project, current)}`);
   }
   console.log('');
   if (report.summary.length === 0) {
@@ -75,6 +88,22 @@ export async function handleDoctor(
   }
   console.log('');
   console.log('A project with no findings can move to strict: eve system security profile strict --project <id>');
+  console.log('Setting strict again takes the newest rules.');
+}
+
+/**
+ * "strict", or "strict (P1 rules); P2 rules on audit" for a strict set
+ * before the newest rule set.
+ */
+export function describeStampedProfile(profile: string, ruleset: number | null | undefined, current: number): string {
+  if (profile !== 'strict' || !ruleset || ruleset >= current) return profile;
+  const newer = Array.from({ length: current - ruleset }, (_, i) => `P${ruleset + 1 + i}`).join(', ');
+  return `strict (${ruleset === 1 ? 'P1' : `P1-P${ruleset}`} rules); ${newer} rules on audit`;
+}
+
+function stampNote(scope: ScopeProfile, current: number): string {
+  const described = describeStampedProfile(scope.effective, scope.effective_ruleset, current);
+  return described === scope.effective ? '' : `  ${described}`;
 }
 
 /**
@@ -103,7 +132,7 @@ export async function handleSystemSecurity(
   const scope = org ? 'org' : project ? 'project' : newProjects ? 'new_projects' : 'instance';
   const body = { scope, ...(org || project ? { id: org ?? project } : {}), profile: value === 'clear' ? null : value };
 
-  const result = await requestJson<{ scope: string; id: string | null; profile: string | null }>(
+  const result = await requestJson<{ scope: string; id: string | null; profile: string | null; ruleset?: number | null }>(
     context,
     '/system/security/profile',
     { method: 'PUT', body },
@@ -118,5 +147,8 @@ export async function handleSystemSecurity(
     : result.scope === 'new_projects'
       ? 'cleared (new projects inherit)'
       : 'cleared (inherits)';
-  console.log(`Security profile for ${target}: ${result.profile ?? cleared}`);
+  const covers = result.profile === 'strict' && result.ruleset
+    ? ` (rule set ${result.ruleset}: ${result.ruleset === 1 ? 'P1' : `P1-P${result.ruleset}`} rules)`
+    : '';
+  console.log(`Security profile for ${target}: ${result.profile ?? cleared}${covers}`);
 }
