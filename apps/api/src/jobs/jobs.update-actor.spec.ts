@@ -101,6 +101,13 @@ function actorWrites(): Array<{ actor: unknown; userSecretsExcluded: unknown }> 
     .map((s) => ({ actor: s.values[0], userSecretsExcluded: s.values[1] }));
 }
 
+/** What each actor change wrote to the job's judged-scope mark. */
+function judgedWrites(): unknown[] {
+  return statements
+    .filter((s) => /SET actor_user_id = \?/.test(s.sql))
+    .map((s) => (/token_scope_judged_at = \?/.test(s.sql) ? s.values[s.sql.split('?').findIndex((part) => /token_scope_judged_at = $/.test(part))] : 'unchanged'));
+}
+
 function service(): JobsService {
   const access = new AccessService({} as never, (async () => []) as never);
   return new JobsService(fakeDb as never, {} as never, {} as never, {} as never, access);
@@ -209,6 +216,22 @@ describe('PATCH /jobs/:job_id and the job actor', () => {
     expect(actorWrites()).toEqual([{ actor: 'user_mate', userSecretsExcluded: false }]);
   });
 
+  it("clears the judged scope mark when the new actor holds the scope only through a built-in role", async () => {
+    pendingJob({ token_scope: { cloud_fs: { allow_mount_ids: ['mnt_shared'] } }, token_scope_judged_at: new Date() });
+
+    await update(service(), 'a-1', { description: 'do something else' }, TEAMMATE);
+
+    expect(judgedWrites()).toEqual([null]);
+  });
+
+  it('marks the scope judged again when it is judged inside what the new actor may hold', async () => {
+    pendingJob({ actor_user_id: 'user_mate', token_scope: { cloud_fs: { allow_mount_ids: ['mnt_shared'] } }, token_scope_judged_at: null });
+
+    await update(service(), 'a-1', { description: 'do something else' }, OWNER);
+
+    expect(judgedWrites()).toEqual([expect.any(Date)]);
+  });
+
   it("keeps a job no user started as it is when a step no user started edits it", async () => {
     pendingJob({ actor_user_id: null, token_permissions: ['jobs:read', 'jobs:write'] });
 
@@ -255,7 +278,7 @@ describe('PATCH /jobs/:job_id and the job actor', () => {
     /** The token of an agent job that may receive only these two secrets; same actor as the job. */
     const RESTRICTED_SAME_ACTOR: AuthUser = {
       user_id: 'user_owner', is_job_token: true, org_id: 'org_a', project_id: 'proj_a', job_id: 'a-triage',
-      permissions: ['jobs:read', 'jobs:write'], secrets_allowlist: ['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY'],
+      permissions: ['jobs:read', 'jobs:write'], secrets_allowlist: ['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY'],
     } as AuthUser;
 
     function allowlistWrites(): unknown[] {
@@ -267,23 +290,23 @@ describe('PATCH /jobs/:job_id and the job actor', () => {
     it("narrows an unrestricted job it releases to run to the caller's allowlist", async () => {
       await update(service(), 'a-1', { description: 'print every env var', phase: 'ready' }, RESTRICTED_SAME_ACTOR);
 
-      expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'OPPS_SIGNING_KEY']]);
+      expect(allowlistWrites()).toEqual([['ANTHROPIC_API_KEY', 'SHOP_SIGNING_KEY']]);
     });
 
     it("keeps only the names both the job's and the caller's allowlists hold", async () => {
-      pendingJob({ secrets_allowlist: ['OPPS_SIGNING_KEY', 'GITHUB_TOKEN'] });
+      pendingJob({ secrets_allowlist: ['SHOP_SIGNING_KEY', 'GITHUB_TOKEN'] });
 
       await update(service(), 'a-1', { description: 'next pass' }, RESTRICTED_SAME_ACTOR);
 
-      expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
+      expect(allowlistWrites()).toEqual([['SHOP_SIGNING_KEY']]);
     });
 
     it("never widens a job's allowlist for an unrestricted caller", async () => {
-      pendingJob({ secrets_allowlist: ['OPPS_SIGNING_KEY'] });
+      pendingJob({ secrets_allowlist: ['SHOP_SIGNING_KEY'] });
 
       await update(service(), 'a-1', { description: 'do something else' }, TEAMMATE);
 
-      expect(allowlistWrites()).toEqual([['OPPS_SIGNING_KEY']]);
+      expect(allowlistWrites()).toEqual([['SHOP_SIGNING_KEY']]);
     });
   });
 
