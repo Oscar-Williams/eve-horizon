@@ -1,8 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HarnessInvocation } from '@eve/shared';
-import { runInvocationInK8s } from './k8s-runner.js';
+import { dispatchToRunnerPod } from './runner-dispatch.js';
 
 const state = vi.hoisted(() => ({ calls: [] as string[][], ready: false }));
 vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: vi.fn((_command: string, args: string[], options: { signal?: AbortSignal }) => {
@@ -11,25 +10,24 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
   queueMicrotask(() => {
     if (options.signal?.aborted) { child.emit('error', options.signal.reason); return; }
     if (args.includes('get') && args.includes('json')) {
-      child.stdout.write(JSON.stringify({ status: { conditions: [{ type: 'Ready', status: state.ready ? 'True' : 'False' }] } }));
-    } else if (args.includes('jsonpath={.status.podIP}')) { child.stdout.write('10.0.0.1'); }
+      child.stdout.write(JSON.stringify({ status: { phase: 'Running', podIP: '10.0.0.1',
+        conditions: [{ type: 'Ready', status: state.ready ? 'True' : 'False' }] } }));
+    }
     child.stdout.end(); child.stderr.end(); child.emit('close', 0);
   });
   return child;
 }) }));
 
-const invocation = { jobId: 'job_test', attemptId: 'attempt_test', projectId: 'proj_test', text: '', workspacePath: '/opt/eve/workspaces/attempt_test' } as unknown as HarnessInvocation;
+const submit = { kind: 'agent' as const, job_id: 'job_test', attempt_id: 'attempt_test', project_id: 'proj_test', job_token: 't', api_url: 'http://api.test' };
 beforeEach(() => {
   state.calls = []; state.ready = false;
   vi.stubEnv('EVE_RUNNER_IMAGE', 'runtime:test');
-  vi.stubEnv('DATABASE_URL', 'postgres://test');
-  vi.stubEnv('EVE_API_URL', 'http://api.test');
-  vi.stubEnv('EVE_INTERNAL_API_KEY', 'test');
+  vi.stubEnv('EVE_K8S_RUNNER_POLL_MS', '1');
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
-function run(controller: AbortController, onCreated?: () => Promise<void>) {
-  return runInvocationInK8s(invocation, onCreated, undefined, { signal: controller.signal });
+function run(controller: AbortController, onCreated?: () => Promise<void>, readResult = async () => null) {
+  return dispatchToRunnerPod(submit, { pod: {}, readResult, onPodCreated: onCreated, signal: controller.signal });
 }
 
 describe('dedicated runner cancellation', () => {
@@ -45,21 +43,13 @@ describe('dedicated runner cancellation', () => {
     await expect(run(controller, async () => { controller.abort(new Error('job_cancelled')); }))
       .rejects.toThrow('job_cancelled');
     expect(state.calls).toContainEqual(expect.arrayContaining(['delete', 'pod', '--grace-period=5']));
-    expect(state.calls).toContainEqual(expect.arrayContaining(['delete', 'pvc']));
   });
 
-  it('aborts completion polling and cleans the running pod', async () => {
+  it('stops waiting for the result and removes the running pod', async () => {
     const controller = new AbortController(); state.ready = true;
-    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { signal?: AbortSignal }) => {
-      if (url.includes('/events')) {
-        expect(options?.signal).toBe(controller.signal);
-        controller.abort(new Error('job_cancelled'));
-        throw controller.signal.reason;
-      }
-      return { ok: true, json: async () => ({ accepted: true }) };
-    }));
-    await expect(run(controller)).rejects.toThrow('job_cancelled');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ accepted: true }), { status: 202 })));
+    const readResult = vi.fn(async () => { controller.abort(new Error('job_cancelled')); return null; });
+    await expect(run(controller, undefined, readResult)).rejects.toThrow('job_cancelled');
     expect(state.calls).toContainEqual(expect.arrayContaining(['delete', 'pod', '--grace-period=5']));
-    expect(state.calls).toContainEqual(expect.arrayContaining(['delete', 'pvc']));
   });
 });

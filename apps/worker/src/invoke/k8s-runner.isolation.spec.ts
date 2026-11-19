@@ -7,6 +7,7 @@ const KEYS = [
   'EVE_RUNNER_NODE_SELECTOR_KEY', 'EVE_RUNNER_NODE_SELECTOR_VALUE',
   'EVE_RUNNER_TAINT_KEY', 'EVE_RUNNER_TAINT_VALUE', 'EVE_RUNNER_TAINT_EFFECT',
   'EVE_RUNNER_POD_AFFINITY_KEY', 'EVE_RUNNER_POD_AFFINITY_VALUE',
+  'EVE_INTERNAL_API_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_WORKER_DEBUG', 'EVE_HARNESS_MODEL',
 ] as const;
 const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
@@ -71,6 +72,23 @@ describe('worker runner pod isolation', () => {
       labelSelector: { matchLabels: { 'app.kubernetes.io/name': 'eve-agent-runtime' } },
       topologyKey: 'kubernetes.io/hostname',
     }]);
+  });
+
+  it('gives job code no platform credential: no database URL, no internal key, no forwarded settings', () => {
+    process.env.EVE_INTERNAL_API_KEY = 'legacy-key';
+    process.env.EVE_INTERNAL_CORE_KEY = 'core-key';
+    process.env.EVE_WORKER_DEBUG = '1';
+    process.env.EVE_HARNESS_MODEL = 'model';
+    const manifest = buildRunnerManifests(invocation, 'eve', 'workspace', 'runner', undefined, 'f'.repeat(64));
+    const env = podSpec().containers[0].env.map((entry: { name: string }) => entry.name);
+    for (const name of ['DATABASE_URL', 'EVE_INTERNAL_API_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_INTERNAL_CALLER_HASHES',
+      'EVE_WORKER_DEBUG', 'EVE_HARNESS_MODEL', 'EVE_RUN_AS_UID']) {
+      expect(env).not.toContain(name);
+    }
+    expect(manifest).not.toContain('postgres://test');
+    expect(manifest).not.toContain('core-key');
+    expect(JSON.parse(manifest).items.find((item: { kind: string }) => item.kind === 'Pod').spec.containers[0].env)
+      .toContainEqual({ name: 'EVE_RUNNER_INBOUND_KEY_SHA256', value: 'f'.repeat(64) });
   });
 
   it('refuses to build a pod from half-configured placement', () => {

@@ -18,7 +18,7 @@ vi.mock('child_process', async (importOriginal) => {
   };
 });
 
-import { runInvocationInK8s } from './k8s-runner.js';
+import { dispatchToRunnerPod } from './runner-dispatch.js';
 
 const SECRETS = { DATABASE_URL: 'postgres://secret', EVE_INTERNAL_API_KEY: 'internal', GITHUB_TOKEN: 'gh' };
 const saved: Record<string, string | undefined> = {};
@@ -39,8 +39,11 @@ afterEach(() => {
 
 describe('worker runner kubectl', () => {
   it('runs kubectl without the worker credentials in its environment', async () => {
-    await expect(runInvocationInK8s({ jobId: 'job', attemptId: 'att', projectId: 'proj', text: '' } as never))
-      .rejects.toThrow(/Failed to apply runner manifests/);
+    const outcome = await dispatchToRunnerPod(
+      { kind: 'agent', job_id: 'job', attempt_id: 'att', project_id: 'proj', job_token: 't', api_url: 'http://api.test' },
+      { pod: {}, readResult: async () => null },
+    );
+    expect(outcome).toMatchObject({ success: false, error: expect.stringMatching(/Failed to create runner pod/) });
     expect(spawned.calls.length).toBeGreaterThan(0);
     for (const call of spawned.calls) {
       expect(call.command).toBe('kubectl');
