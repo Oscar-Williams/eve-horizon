@@ -31,6 +31,31 @@ describe("the worker's Claude credentials file in its own HOME", () => {
   });
 
   it('never serves a job with a secrets allowlist', async () => {
-    expect(await decide({ secrets_allowlist: ['OPPS_SIGNING_KEY'] })).toBeNull();
+    expect(await decide({ secrets_allowlist: ['SHOP_SIGNING_KEY'] })).toBeNull();
   });
 });
+
+describe("a job whose credentials come from secrets only (the project's strict profile)", () => {
+  it('gets neither the credentials file nor a key from the environment', async () => {
+    const service = new InvokeService(null as never);
+    const decision = await (service as any).resolveClaudeAuthDecision(
+      [],
+      { ANTHROPIC_API_KEY: 'sk-ant-api03-environment' },
+      { credentials_from_secrets_only: true },
+    );
+
+    expect(decision).toBeNull();
+  });
+
+  it('still gets a credential its own secrets hold', async () => {
+    const service = new InvokeService(null as never);
+    const decision = await (service as any).resolveClaudeAuthDecision(
+      [{ key: 'ANTHROPIC_API_KEY', value: 'sk-ant-api03-project', type: 'env_var', scope_type: 'project' }],
+      {},
+      { credentials_from_secrets_only: true },
+    );
+
+    expect(decision).not.toBeNull();
+  });
+});
+

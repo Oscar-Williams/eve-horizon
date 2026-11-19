@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@eve/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@eve/db')>()),
   decideSecurityRule: mocks.decide,
+  governingSecurityProfile: vi.fn(async () => mocks.profile),
   executionLogQueries: vi.fn(() => ({ appendLog: mocks.appendLog })),
   agentConfigQueries: vi.fn(() => ({ findLatestByProject: mocks.agentConfig })),
   projectManifestQueries: vi.fn(() => ({ findLatestByProject: mocks.manifest })),
@@ -18,7 +19,12 @@ vi.mock('@eve/db', async (importOriginal) => ({
 
 import { LoopService } from './loop.service';
 
-type Routing = { harnessSpec: string; profileHash: string | null; profileSource: string | null };
+type Routing = {
+  harnessSpec: string;
+  profileHash: string | null;
+  profileSource: string | null;
+  credentialsFromSecretsOnly?: boolean;
+};
 type Select = (job: Record<string, unknown>, attempt: Record<string, unknown>, executionType: string) => Promise<Routing>;
 
 const PROVIDER_ENV = ['Z_AI_API_KEY', 'ZAI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY'];
@@ -202,3 +208,51 @@ describe('a named profile at dispatch', () => {
     expect(mocks.decide).not.toHaveBeenCalled();
   });
 });
+
+describe('a harness credential only the host could supply', () => {
+  it('does not count under strict: an explicit harness fails at dispatch', async () => {
+    mocks.profile = 'strict';
+    process.env.GEMINI_API_KEY = 'gk-host';
+    const { select } = loop({ secrets: {} });
+
+    await expect(select(job({ harness: 'gemini' }), attempt, 'agent')).rejects.toThrow(/gemini.*credential/i);
+    expect(rulesDecided()).toEqual(['harness.missing_credential']);
+  });
+
+  it('does not count under strict: a preference moves on to a harness the secrets cover', async () => {
+    mocks.profile = 'strict';
+    process.env.GEMINI_API_KEY = 'gk-host';
+    const { select } = loop({ projectPreference: ['gemini', 'zai'], secrets: { Z_AI_API_KEY: 'zk' } });
+
+    const routing = await select(job(), attempt, 'agent');
+
+    expect(routing.harnessSpec).toBe('zai');
+    expect(routing.credentialsFromSecretsOnly).toBe(true);
+  });
+
+  it('still counts under audit, recorded as a missing credential', async () => {
+    mocks.profile = 'audit';
+    process.env.GEMINI_API_KEY = 'gk-host';
+    const { select } = loop({ secrets: {} });
+
+    const routing = await select(job({ harness: 'gemini' }), attempt, 'agent');
+
+    expect(routing.harnessSpec).toBe('gemini');
+    expect(routing.credentialsFromSecretsOnly).toBe(false);
+    expect(mocks.decide).toHaveBeenCalledWith(expect.anything(), 'harness.missing_credential', expect.objectContaining({
+      detail: expect.objectContaining({ harness: 'gemini', source: 'host' }),
+    }));
+  });
+
+  it('is recorded under audit for a preference too', async () => {
+    mocks.profile = 'audit';
+    process.env.GEMINI_API_KEY = 'gk-host';
+    const { select } = loop({ projectPreference: ['gemini'], secrets: {} });
+
+    const routing = await select(job(), attempt, 'agent');
+
+    expect(routing.harnessSpec).toBe('gemini');
+    expect(rulesDecided()).toEqual(['harness.missing_credential']);
+  });
+});
+
