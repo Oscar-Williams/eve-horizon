@@ -4593,6 +4593,9 @@ paths:
                   type: string
                 id:
                   type: string
+                chat_progress:
+                  type: boolean
+                  description: A chat job's progress, delivered to its chat thread and provider
               required:
                 - thread_id
                 - body
@@ -4686,6 +4689,224 @@ paths:
       security: *a41
       summary: Report the attempt's result, once (the attempt's job token only)
       tags: *a42
+  /projects/{project_id}/chat/route:
+    post:
+      operationId: ChatController_routeMessage
+      parameters:
+        - name: project_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRouteRequest"
+      responses:
+        "200":
+          description: Chat routed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatRouteResponse"
+      security: &a43
+        - bearer: []
+      summary: Route a chat message to agents/teams/workflows
+      tags: &a44
+        - chat
+  /projects/{project_id}/chat/simulate:
+    post:
+      operationId: ChatController_simulateMessage
+      parameters:
+        - name: project_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatSimulateRequest"
+      responses:
+        "200":
+          description: Chat routed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatRouteResponse"
+      security: *a43
+      summary: Simulate an inbound chat message (test-only)
+      tags: *a44
+  /internal/projects/{project_id}/chat/route:
+    post:
+      operationId: ChatInternalController_routeMessage
+      parameters:
+        - name: project_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRouteRequest"
+      responses:
+        "200":
+          description: Chat routed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatRouteResponse"
+      summary: Route a chat message (internal only)
+      tags: &a45
+        - internal
+  /internal/projects/{project_id}/chat/deliver:
+    post:
+      operationId: ChatInternalController_deliverOutbound
+      parameters:
+        - name: project_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatDeliverRequest"
+      responses:
+        "200":
+          description: Delivery result
+      summary: Deliver an agent result to the originating chat thread (internal only)
+      tags: *a45
+  /internal/orgs/{org_id}/chat/route:
+    post:
+      operationId: ChatGatewayController_routeBySlug
+      parameters:
+        - name: org_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRouteBySlugRequest"
+      responses:
+        "200":
+          description: Chat routed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatRouteResponse"
+      summary: Route a chat message to an org-scoped agent slug (internal only)
+      tags: &a46
+        - internal
+  /internal/orgs/{org_id}/chat/listen:
+    post:
+      operationId: ChatGatewayController_listen
+      parameters:
+        - name: org_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatListenRequest"
+      responses:
+        "200":
+          description: Listener subscription updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatListenResponse"
+      summary: Subscribe an agent slug to a channel or thread (internal only)
+      tags: *a46
+  /internal/orgs/{org_id}/chat/unlisten:
+    post:
+      operationId: ChatGatewayController_unlisten
+      parameters:
+        - name: org_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatListenRequest"
+      responses:
+        "200":
+          description: Listener subscription removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatUnlistenResponse"
+      summary: Remove a listener subscription (internal only)
+      tags: *a46
+  /internal/orgs/{org_id}/chat/listeners:
+    post:
+      operationId: ChatGatewayController_listeners
+      parameters:
+        - name: org_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatListenersRequest"
+      responses:
+        "200":
+          description: Listener list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatListenersResponse"
+      summary: List listeners for channel/thread (internal only)
+      tags: *a46
+  /internal/orgs/{org_id}/chat/dispatch:
+    post:
+      operationId: ChatGatewayController_dispatch
+      parameters:
+        - name: org_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatDispatchRequest"
+      responses:
+        "200":
+          description: Dispatch result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatDispatchResponse"
+      summary: Dispatch a message to all listeners (internal only)
+      tags: *a46
   /harnesses:
     get:
       operationId: HarnessesController_list
@@ -4710,7 +4931,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HarnessListResponse"
       summary: List harnesses and auth status
-      tags: &a43
+      tags: &a47
         - harnesses
   /harnesses/{name}:
     get:
@@ -4741,7 +4962,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HarnessInfoResponse"
       summary: Get harness details and auth status
-      tags: *a43
+      tags: *a47
   /projects/{project_id}/harness-profile/validate:
     post:
       operationId: HarnessesController_validate
@@ -4768,7 +4989,7 @@ paths:
       security:
         - bearer: []
       summary: Validate an inline harness_profile_override + env_overrides for a project
-      tags: *a43
+      tags: *a47
   /system/status:
     get:
       operationId: SystemController_getStatus
@@ -4776,10 +4997,10 @@ paths:
       responses:
         "200":
           description: System status including API, orchestrator, worker, and postgres
-      security: &a44
+      security: &a48
         - bearer: []
       summary: Get system health status
-      tags: &a45
+      tags: &a49
         - system
   /system/envs:
     get:
@@ -4810,9 +5031,9 @@ paths:
       responses:
         "200":
           description: List of environments (admin scope)
-      security: *a44
+      security: *a48
       summary: List environments across projects (admin scope)
-      tags: *a45
+      tags: *a49
   /system/logs/{service}:
     get:
       operationId: SystemController_getLogs
@@ -4838,9 +5059,9 @@ paths:
       responses:
         "200":
           description: Recent log entries
-      security: *a44
+      security: *a48
       summary: Get recent logs for a service
-      tags: *a45
+      tags: *a49
   /system/pods:
     get:
       operationId: SystemController_getPods
@@ -4848,9 +5069,9 @@ paths:
       responses:
         "200":
           description: List of pods with status, labels, and metadata
-      security: *a44
+      security: *a48
       summary: List pods with status
-      tags: *a45
+      tags: *a49
   /system/events:
     get:
       operationId: SystemController_getEvents
@@ -4864,9 +5085,9 @@ paths:
       responses:
         "200":
           description: Recent cluster events
-      security: *a44
+      security: *a48
       summary: Get recent cluster events
-      tags: *a45
+      tags: *a49
   /system/config:
     get:
       operationId: SystemController_getConfig
@@ -4874,9 +5095,9 @@ paths:
       responses:
         "200":
           description: Cluster and deployment configuration
-      security: *a44
+      security: *a48
       summary: Get deployment configuration summary
-      tags: *a45
+      tags: *a49
   /system/users:
     get:
       operationId: SystemController_getUsers
@@ -4884,9 +5105,9 @@ paths:
       responses:
         "200":
           description: List of all users with their org roles
-      security: *a44
+      security: *a48
       summary: List all users with org memberships (system_admin only)
-      tags: *a45
+      tags: *a49
   /system/settings:
     get:
       operationId: SystemController_getSettings
@@ -4894,9 +5115,9 @@ paths:
       responses:
         "200":
           description: List of all system settings
-      security: *a44
+      security: *a48
       summary: Get all system settings (system_admin only)
-      tags: *a45
+      tags: *a49
   /system/settings/{key}:
     get:
       operationId: SystemController_getSetting
@@ -4909,9 +5130,9 @@ paths:
       responses:
         "200":
           description: System setting value
-      security: *a44
+      security: *a48
       summary: Get a specific system setting (system_admin only)
-      tags: *a45
+      tags: *a49
     put:
       operationId: SystemController_setSetting
       parameters:
@@ -4923,9 +5144,9 @@ paths:
       responses:
         "200":
           description: Updated system setting
-      security: *a44
+      security: *a48
       summary: Set a system setting (system_admin only)
-      tags: *a45
+      tags: *a49
   /system/env-health:
     get:
       operationId: SystemController_getEnvHealth
@@ -4951,9 +5172,9 @@ paths:
       responses:
         "200":
           description: Environment health summary and details
-      security: *a44
+      security: *a48
       summary: Get environment health status across all orgs
-      tags: *a45
+      tags: *a49
   /projects/{id}/envs:
     post:
       operationId: EnvironmentsController_create
@@ -4976,10 +5197,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: &a46
+      security: &a50
         - bearer: []
       summary: Create an environment for a project (admin)
-      tags: &a47
+      tags: &a51
         - environments
     get:
       operationId: EnvironmentsController_list
@@ -5006,9 +5227,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentListResponse"
-      security: *a46
+      security: *a50
       summary: List environments for a project
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}:
     get:
       operationId: EnvironmentsController_findByName
@@ -5030,9 +5251,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a46
+      security: *a50
       summary: Get environment by name
-      tags: *a47
+      tags: *a51
     put:
       operationId: EnvironmentsController_update
       parameters:
@@ -5059,9 +5280,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a46
+      security: *a50
       summary: Update environment (admin)
-      tags: *a47
+      tags: *a51
     delete:
       operationId: EnvironmentsController_delete
       parameters:
@@ -5084,9 +5305,9 @@ paths:
       responses:
         "204":
           description: Environment deleted
-      security: *a46
+      security: *a50
       summary: Delete environment (admin)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/undeploy:
     post:
       operationId: EnvironmentsController_undeploy
@@ -5114,9 +5335,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a46
+      security: *a50
       summary: Undeploy an environment (tear down K8s, keep config)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/deploy:
     post:
       operationId: EnvironmentsController_deploy
@@ -5144,9 +5365,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeployResponse"
-      security: *a46
+      security: *a50
       summary: Deploy a release to an environment
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/rollback:
     post:
       operationId: EnvironmentsController_rollback
@@ -5164,9 +5385,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a46
+      security: *a50
       summary: Rollback environment to a specified release
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/reset:
     post:
       operationId: EnvironmentsController_reset
@@ -5184,9 +5405,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a46
+      security: *a50
       summary: Reset environment by tearing down workloads and redeploying release
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/recover:
     get:
       operationId: EnvironmentsController_recover
@@ -5204,9 +5425,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a46
+      security: *a50
       summary: Analyze environment state and suggest next recovery action
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/services/{service}/logs:
     get:
       operationId: EnvironmentsController_logs
@@ -5280,9 +5501,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvLogsResponse"
-      security: *a46
+      security: *a50
       summary: Get logs for a service in an environment (k8s-only)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/services/{service}/logs/stream:
     get:
       operationId: EnvironmentsController_streamLogs
@@ -5346,9 +5567,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a46
+      security: *a50
       summary: Stream logs for a service in an environment (k8s-only)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/health:
     get:
       operationId: EnvironmentsController_health
@@ -5370,9 +5591,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvHealthResponse"
-      security: *a46
+      security: *a50
       summary: Get deployment health for an environment (k8s-only)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/diagnose:
     get:
       operationId: EnvironmentsController_diagnose
@@ -5412,9 +5633,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvDiagnoseResponse"
-      security: *a46
+      security: *a50
       summary: Diagnose environment deployments (k8s-only)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/suspend:
     post:
       operationId: EnvironmentsController_suspend
@@ -5442,9 +5663,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuspendEnvironmentResponse"
-      security: *a46
+      security: *a50
       summary: Suspend an environment (admin/org-owner)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/resume:
     post:
       operationId: EnvironmentsController_resume
@@ -5466,9 +5687,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ResumeEnvironmentResponse"
-      security: *a46
+      security: *a50
       summary: Resume a suspended environment (admin/org-owner)
-      tags: *a47
+      tags: *a51
   /projects/{id}/envs/{name}/db/schema:
     get:
       operationId: EnvDbController_schema
@@ -5495,10 +5716,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbSchemaResponse"
-      security: &a48
+      security: &a52
         - bearer: []
       summary: Get environment DB schema
-      tags: &a49
+      tags: &a53
         - env-db
   /projects/{id}/envs/{name}/db/rls:
     get:
@@ -5526,9 +5747,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbRlsResponse"
-      security: *a48
+      security: *a52
       summary: Get environment DB RLS policies
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/extensions:
     get:
       operationId: EnvDbController_extensions
@@ -5555,9 +5776,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbExtensionsResponse"
-      security: *a48
+      security: *a52
       summary: List environment DB extensions
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/sql:
     post:
       operationId: EnvDbController_sql
@@ -5590,9 +5811,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbSqlResponse"
-      security: *a48
+      security: *a52
       summary: Execute SQL against environment DB
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/migrate:
     post:
       operationId: EnvDbController_migrate[0]
@@ -5625,9 +5846,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrateResponse"
-      security: *a48
+      security: *a52
       summary: Apply migrations to environment DB
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/migrate:
     post:
       operationId: EnvDbController_migrate[1]
@@ -5660,9 +5881,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrateResponse"
-      security: *a48
+      security: *a52
       summary: Apply migrations to environment DB
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/migrations:
     get:
       operationId: EnvDbController_listMigrations[0]
@@ -5689,9 +5910,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrationsResponse"
-      security: *a48
+      security: *a52
       summary: List applied migrations for environment DB
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/migrations:
     get:
       operationId: EnvDbController_listMigrations[1]
@@ -5718,9 +5939,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrationsResponse"
-      security: *a48
+      security: *a52
       summary: List applied migrations for environment DB
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/reset:
     post:
       operationId: EnvDbController_reset
@@ -5753,9 +5974,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbResetResponse"
-      security: *a48
+      security: *a52
       summary: Reset environment DB schema and optionally re-apply migrations
-      tags: *a49
+      tags: *a53
   /projects/{id}/envs/{name}/db/managed:
     get:
       operationId: ManagedDbController_getManagedDb
@@ -5773,10 +5994,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a50
+      security: &a54
         - bearer: []
       summary: Get managed DB status for environment
-      tags: &a51
+      tags: &a55
         - managed-db
     delete:
       operationId: ManagedDbController_destroyManagedDb
@@ -5799,9 +6020,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a54
       summary: Destroy managed DB for environment
-      tags: *a51
+      tags: *a55
   /projects/{id}/envs/{name}/db/managed/rotate:
     post:
       operationId: ManagedDbController_rotateCredentials
@@ -5819,9 +6040,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a54
       summary: Rotate managed DB credentials
-      tags: *a51
+      tags: *a55
   /projects/{id}/envs/{name}/db/managed/scale:
     post:
       operationId: ManagedDbController_scaleManagedDb
@@ -5839,9 +6060,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a54
       summary: Scale managed DB class
-      tags: *a51
+      tags: *a55
   /admin/managed-db/instances:
     get:
       operationId: ManagedDbController_listInstances
@@ -5849,18 +6070,18 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a54
       summary: List managed DB instances (admin)
-      tags: *a51
+      tags: *a55
     post:
       operationId: ManagedDbController_registerInstance
       parameters: []
       responses:
         "201":
           description: ""
-      security: *a50
+      security: *a54
       summary: Register managed DB instance (admin)
-      tags: *a51
+      tags: *a55
   /admin/managed-db/instances/{instanceId}:
     get:
       operationId: ManagedDbController_getInstance
@@ -5873,9 +6094,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a54
       summary: Get managed DB instance details (admin)
-      tags: *a51
+      tags: *a55
   /projects/{id}/envs/{name}/db/snapshots:
     post:
       operationId: ManagedDbSnapshotController_createSnapshot
@@ -5893,10 +6114,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a52
+      security: &a56
         - bearer: []
       summary: Create managed DB snapshot
-      tags: &a53
+      tags: &a57
         - managed-db-snapshots
     get:
       operationId: ManagedDbSnapshotController_listSnapshots
@@ -5924,9 +6145,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: List managed DB snapshots
-      tags: *a53
+      tags: *a57
   /projects/{id}/envs/{name}/db/snapshots/{snapshotId}:
     get:
       operationId: ManagedDbSnapshotController_getSnapshot
@@ -5949,9 +6170,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: Get managed DB snapshot details
-      tags: *a53
+      tags: *a57
     delete:
       operationId: ManagedDbSnapshotController_deleteSnapshot
       parameters:
@@ -5973,9 +6194,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: Delete managed DB snapshot
-      tags: *a53
+      tags: *a57
   /projects/{id}/envs/{name}/db/restore:
     post:
       operationId: ManagedDbSnapshotController_restoreFromSnapshot
@@ -5993,9 +6214,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: Restore managed DB from snapshot
-      tags: *a53
+      tags: *a57
   /projects/{id}/envs/{name}/db/snapshots/{snapshotId}/download:
     get:
       operationId: ManagedDbSnapshotController_downloadSnapshot
@@ -6018,10 +6239,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: Get presigned download URL for snapshot (needs envdb:export under a
         strict project)
-      tags: *a53
+      tags: *a57
   /projects/{id}/envs/{name}/db/backup-status:
     get:
       operationId: ManagedDbSnapshotController_getBackupStatus
@@ -6039,9 +6260,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a52
+      security: *a56
       summary: Get managed DB backup schedule and status
-      tags: *a53
+      tags: *a57
   /projects/{id}/pipelines:
     get:
       operationId: PipelinesController_list
@@ -6058,10 +6279,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineListResponse"
-      security: &a54
+      security: &a58
         - bearer: []
       summary: List pipelines for a project (manifest-defined)
-      tags: &a55
+      tags: &a59
         - pipelines
   /projects/{id}/pipelines/{name}:
     get:
@@ -6084,9 +6305,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineResponse"
-      security: *a54
+      security: *a58
       summary: Get pipeline by name (manifest-defined)
-      tags: *a55
+      tags: *a59
     delete:
       operationId: PipelinesController_delete
       parameters:
@@ -6103,9 +6324,9 @@ paths:
       responses:
         "204":
           description: Pipeline runs deleted
-      security: *a54
+      security: *a58
       summary: Delete all pipeline runs for a named pipeline
-      tags: *a55
+      tags: *a59
   /projects/{id}/pipelines/{name}/run:
     post:
       operationId: PipelineRunsController_createRun
@@ -6151,10 +6372,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: &a56
+      security: &a60
         - bearer: []
       summary: Create a pipeline run
-      tags: &a57
+      tags: &a61
         - pipeline-runs
   /projects/{id}/pipelines/{name}/runs:
     get:
@@ -6187,9 +6408,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunListResponse"
-      security: *a56
+      security: *a60
       summary: List pipeline runs for a pipeline
-      tags: *a57
+      tags: *a61
     post:
       description: Creates a pipeline run and expands the pipeline definition into a
         job graph. Each step becomes a job with appropriate phase (ready or
@@ -6220,10 +6441,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunWithJobsResponse"
-      security: &a59
+      security: &a63
         - bearer: []
       summary: Create a pipeline run (expands into job graph)
-      tags: &a60
+      tags: &a64
         - pipeline-expander
   /projects/{id}/pipelines/{name}/runs/{runId}:
     get:
@@ -6251,9 +6472,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a56
+      security: *a60
       summary: Get pipeline run details
-      tags: *a57
+      tags: *a61
   /pipeline-runs/{runId}/approve:
     post:
       operationId: PipelineRunsController_approveRun
@@ -6270,9 +6491,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a56
+      security: *a60
       summary: Approve a pipeline run awaiting approval
-      tags: *a57
+      tags: *a61
   /pipeline-runs/{runId}/cancel:
     post:
       operationId: PipelineRunsController_cancelRun
@@ -6289,9 +6510,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a56
+      security: *a60
       summary: Cancel a pipeline run
-      tags: *a57
+      tags: *a61
   /pipeline-runs/{runId}/stream:
     get:
       operationId: PipelineRunsController_streamRunLogs
@@ -6304,9 +6525,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream of pipeline logs
-      security: *a56
+      security: *a60
       summary: Stream logs for all steps in a pipeline run (SSE)
-      tags: *a57
+      tags: *a61
   /pipeline-runs/{runId}/steps/{name}/stream:
     get:
       operationId: PipelineRunsController_streamStepLogs
@@ -6324,9 +6545,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream of pipeline step logs
-      security: *a56
+      security: *a60
       summary: Stream logs for a single pipeline step (SSE)
-      tags: *a57
+      tags: *a61
   /pipeline-runs/{runId}/logs:
     get:
       operationId: PipelineRunsController_getRunLogs
@@ -6357,9 +6578,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a56
+      security: *a60
       summary: Get logs for a pipeline run
-      tags: *a57
+      tags: *a61
   /internal/pipeline-runs/{runId}:
     patch:
       operationId: PipelineRunsInternalController_updateRun
@@ -6388,7 +6609,7 @@ paths:
         "200":
           description: Pipeline run updated
       summary: Update pipeline run status (internal only)
-      tags: &a58
+      tags: &a62
         - internal
   /internal/pipeline-runs/{runId}/steps/{stepId}:
     patch:
@@ -6433,7 +6654,7 @@ paths:
         "200":
           description: Pipeline step updated
       summary: Update pipeline step status (internal only)
-      tags: *a58
+      tags: *a62
   /internal/pipeline-runs/{runId}/steps/{stepId}/logs:
     post:
       operationId: PipelineRunsInternalController_appendLog
@@ -6466,7 +6687,7 @@ paths:
         "200":
           description: Log appended successfully
       summary: Append pipeline step log (internal only)
-      tags: *a58
+      tags: *a62
   /projects/{id}/runs/{runId}:
     get:
       description: Retrieves a pipeline run along with all associated jobs and their
@@ -6490,9 +6711,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunWithJobsResponse"
-      security: *a59
+      security: *a63
       summary: Get pipeline run with its job graph
-      tags: *a60
+      tags: *a64
   /projects/{id}/runs/{runId}/jobs:
     get:
       description: Lists all jobs associated with a pipeline run, ordered by priority.
@@ -6515,9 +6736,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineJobListResponse"
-      security: *a59
+      security: *a63
       summary: List jobs for a pipeline run
-      tags: *a60
+      tags: *a64
   /internal/projects/{id}/pipelines/{name}/runs:
     post:
       operationId: PipelineExpanderInternalController_createRun
@@ -6631,10 +6852,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowListResponse"
-      security: &a61
+      security: &a65
         - bearer: []
       summary: List workflows for a project (manifest-defined)
-      tags: &a62
+      tags: &a66
         - workflows
   /projects/{id}/workflows/{name}:
     get:
@@ -6657,9 +6878,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowResponse"
-      security: *a61
+      security: *a65
       summary: Get workflow by name (manifest-defined)
-      tags: *a62
+      tags: *a66
   /projects/{id}/workflows/{name}/invoke:
     post:
       operationId: WorkflowsController_invoke
@@ -6690,9 +6911,9 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/WorkflowInvokeResponse"
                   - $ref: "#/components/schemas/WorkflowInvokeResult"
-      security: *a61
+      security: *a65
       summary: Invoke a workflow by creating a job
-      tags: *a62
+      tags: *a66
   /projects/{id}/workflows/retry:
     post:
       operationId: WorkflowsController_retry
@@ -6709,9 +6930,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowRetryResponse"
-      security: *a61
+      security: *a65
       summary: Retry failed workflow steps without rerunning successful steps
-      tags: *a62
+      tags: *a66
   /internal/projects/{id}/workflows/{name}/invoke:
     post:
       operationId: WorkflowsInternalController_invoke
@@ -6784,10 +7005,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationListResponse"
-      security: &a63
+      security: &a67
         - bearer: []
       summary: List integrations for an org
-      tags: &a64
+      tags: &a68
         - integrations
   /orgs/{org_id}/integrations/slack/connect:
     post:
@@ -6811,9 +7032,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationResponse"
-      security: *a63
+      security: *a67
       summary: Connect a Slack workspace to an org
-      tags: *a64
+      tags: *a68
   /orgs/{org_id}/integrations/slack/install-token:
     post:
       operationId: OrgIntegrationsController_generateSlackInstallToken
@@ -6835,9 +7056,9 @@ paths:
       responses:
         "200":
           description: Install URL and expiry
-      security: *a63
+      security: *a67
       summary: Generate a shareable Slack install link (no Eve auth needed to redeem)
-      tags: *a64
+      tags: *a68
   /orgs/{org_id}/integrations/{integration_id}/settings:
     patch:
       operationId: OrgIntegrationsController_updateSettings
@@ -6866,9 +7087,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationResponse"
-      security: *a63
+      security: *a67
       summary: Update integration settings (e.g., admin_channel_id)
-      tags: *a64
+      tags: *a68
   /orgs/{org_id}/integrations/{integration_id}/test:
     post:
       operationId: IntegrationsController_test
@@ -6919,10 +7140,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestListResponse"
-      security: &a65
+      security: &a69
         - bearer: []
       summary: List membership requests for an org
-      tags: &a66
+      tags: &a70
         - integrations
   /orgs/{org_id}/membership-requests/{request_id}/approve:
     post:
@@ -6951,9 +7172,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestResponse"
-      security: *a65
+      security: *a69
       summary: Approve a membership request
-      tags: *a66
+      tags: *a70
   /orgs/{org_id}/membership-requests/{request_id}/deny:
     post:
       operationId: MembershipRequestsController_deny
@@ -6975,9 +7196,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestResponse"
-      security: *a65
+      security: *a69
       summary: Deny a membership request
-      tags: *a66
+      tags: *a70
   /internal/integrations/resolve:
     post:
       operationId: IntegrationsInternalController_resolveIntegration
@@ -6996,7 +7217,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IntegrationResolveResponse"
       summary: Resolve integration by provider + account (internal only)
-      tags: &a67
+      tags: &a71
         - internal
   /internal/integrations/external-identities/resolve:
     post:
@@ -7016,7 +7237,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ExternalIdentityResolveResponse"
       summary: Resolve external identity and create membership request (internal only)
-      tags: *a67
+      tags: *a71
   /internal/integrations/tokens:
     post:
       operationId: IntegrationsInternalController_fetchTokens
@@ -7035,7 +7256,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IntegrationTokensResponse"
       summary: Fetch integration tokens (internal only)
-      tags: *a67
+      tags: *a71
   /internal/identity-link-tokens/redeem:
     post:
       operationId: IntegrationsInternalController_redeemLinkToken
@@ -7054,7 +7275,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IdentityLinkRedeemResponse"
       summary: Redeem an identity link token (internal, called by gateway)
-      tags: *a67
+      tags: *a71
   /internal/integrations/active:
     get:
       operationId: IntegrationsInternalController_listActiveIntegrations
@@ -7063,7 +7284,7 @@ paths:
         "200":
           description: ""
       summary: List active integrations for gateway bootstrap (internal only)
-      tags: *a67
+      tags: *a71
   /users/me/identity-link-tokens:
     post:
       operationId: IdentityLinkController_generateLinkToken
@@ -7101,7 +7322,7 @@ paths:
           description: ""
       summary: Redirect to Slack OAuth for workspace install; the state is bound to
         the caller
-      tags: &a68
+      tags: &a72
         - integrations
   /integrations/slack/install:
     get:
@@ -7112,7 +7333,7 @@ paths:
           description: ""
       summary: Public Slack install via signed token (no Eve auth required); bound to
         this browser by a cookie
-      tags: *a68
+      tags: *a72
   /integrations/slack/oauth/callback:
     get:
       operationId: SlackOAuthController_callback
@@ -7123,7 +7344,7 @@ paths:
       summary: "Handle Slack OAuth callback: stores the code for the user who started
         the install to complete; a signed-link install completes here with its
         cookie"
-      tags: *a68
+      tags: *a72
   /orgs/{org_id}/integrations/providers/{provider}/config:
     post:
       operationId: OAuthAppConfigController_upsertConfig
@@ -7144,7 +7365,7 @@ paths:
         "201":
           description: ""
       summary: Create or update OAuth app credentials for a provider
-      tags: &a69
+      tags: &a73
         - integrations
     get:
       operationId: OAuthAppConfigController_getConfig
@@ -7165,7 +7386,7 @@ paths:
         "200":
           description: ""
       summary: Get OAuth app config for a provider (secrets redacted)
-      tags: *a69
+      tags: *a73
     delete:
       operationId: OAuthAppConfigController_removeConfig
       parameters:
@@ -7185,7 +7406,7 @@ paths:
         "200":
           description: ""
       summary: Remove OAuth app config for a provider
-      tags: *a69
+      tags: *a73
   /orgs/{org_id}/integrations/providers/{provider}/setup-info:
     get:
       operationId: OAuthAppConfigController_getSetupInfo
@@ -7205,7 +7426,7 @@ paths:
         "200":
           description: ""
       summary: Get setup instructions and URLs for configuring an OAuth app
-      tags: *a69
+      tags: *a73
   /integrations/{provider}/oauth/complete:
     post:
       operationId: OAuthCompleteController_complete
@@ -7256,10 +7477,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecResponse"
-      security: &a70
+      security: &a74
         - bearer: []
       summary: Create a build spec
-      tags: &a71
+      tags: &a75
         - builds
     get:
       operationId: BuildsController_listSpecs
@@ -7286,9 +7507,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecListResponse"
-      security: *a70
+      security: *a74
       summary: List build specs for a project
-      tags: *a71
+      tags: *a75
   /builds/{build_id}:
     get:
       operationId: BuildsController_getSpec
@@ -7305,9 +7526,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecResponse"
-      security: *a70
+      security: *a74
       summary: Get a build spec
-      tags: *a71
+      tags: *a75
     delete:
       operationId: BuildsController_delete
       parameters:
@@ -7319,9 +7540,9 @@ paths:
       responses:
         "204":
           description: Build deleted
-      security: *a70
+      security: *a74
       summary: Delete a build spec and all associated runs/artifacts/logs
-      tags: *a71
+      tags: *a75
   /builds/{build_id}/runs:
     post:
       operationId: BuildsController_createRun
@@ -7344,9 +7565,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunResponse"
-      security: *a70
+      security: *a74
       summary: Create a build run
-      tags: *a71
+      tags: *a75
     get:
       operationId: BuildsController_listRuns
       parameters:
@@ -7372,9 +7593,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunListResponse"
-      security: *a70
+      security: *a74
       summary: List build runs for a build spec
-      tags: *a71
+      tags: *a75
   /builds/{build_id}/artifacts:
     get:
       operationId: BuildsController_listArtifacts
@@ -7401,9 +7622,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildArtifactListResponse"
-      security: *a70
+      security: *a74
       summary: List build artifacts
-      tags: *a71
+      tags: *a75
   /builds/{build_id}/logs:
     get:
       operationId: BuildsController_getLogs
@@ -7430,9 +7651,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildLogsResponse"
-      security: *a70
+      security: *a74
       summary: Get build logs (optionally after a sequence)
-      tags: *a71
+      tags: *a75
   /projects/{project_id}/builds/prune:
     post:
       operationId: BuildsController_prune
@@ -7455,9 +7676,9 @@ paths:
       responses:
         "200":
           description: Prune result
-      security: *a70
+      security: *a74
       summary: Prune old builds, keeping the most recent N
-      tags: *a71
+      tags: *a75
   /builds/{build_id}/cancel:
     post:
       operationId: BuildsController_cancel
@@ -7480,9 +7701,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunResponse"
-      security: *a70
+      security: *a74
       summary: Cancel a build run
-      tags: *a71
+      tags: *a75
   /threads/{thread_id}:
     get:
       operationId: ThreadsController_findById
@@ -7499,10 +7720,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: &a72
+      security: &a76
         - bearer: []
       summary: Get thread by id
-      tags: &a73
+      tags: &a77
         - threads
     delete:
       operationId: ThreadsController_delete
@@ -7515,9 +7736,9 @@ paths:
       responses:
         "204":
           description: Thread deleted
-      security: *a72
+      security: *a76
       summary: Delete a thread and all its messages
-      tags: *a73
+      tags: *a77
   /threads/{thread_id}/stream:
     get:
       operationId: ThreadsController_streamMessages
@@ -7530,9 +7751,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a72
+      security: *a76
       summary: Stream messages in a thread (SSE)
-      tags: *a73
+      tags: *a77
   /threads/{thread_id}/events/stream:
     get:
       operationId: ThreadsController_streamEvents
@@ -7586,9 +7807,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a72
+      security: *a76
       summary: Stream normalized conversation events in a thread (SSE)
-      tags: *a73
+      tags: *a77
   /threads/{thread_id}/events:
     get:
       operationId: ThreadsController_listEvents
@@ -7647,9 +7868,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventListResponse"
-      security: *a72
+      security: *a76
       summary: List normalized conversation events in a thread
-      tags: *a73
+      tags: *a77
     post:
       operationId: ThreadsController_createEvent
       parameters:
@@ -7671,9 +7892,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventResponse"
-      security: *a72
+      security: *a76
       summary: Emit an app-defined conversation event into a thread
-      tags: *a73
+      tags: *a77
   /threads/{thread_id}/messages:
     get:
       operationId: ThreadsController_listMessages
@@ -7702,9 +7923,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageListResponse"
-      security: *a72
+      security: *a76
       summary: List messages in a thread
-      tags: *a73
+      tags: *a77
     post:
       operationId: ThreadsController_createMessage
       parameters:
@@ -7726,9 +7947,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageResponse"
-      security: *a72
+      security: *a76
       summary: Post a message to a thread
-      tags: *a73
+      tags: *a77
   /threads/{thread_id}/chat:
     post:
       operationId: ThreadsController_continueChat
@@ -7751,9 +7972,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
-      security: *a72
+      security: *a76
       summary: Continue an existing chat thread and trigger agent processing
-      tags: *a73
+      tags: *a77
   /orgs/{org_id}/threads:
     post:
       operationId: OrgThreadsController_create
@@ -7771,10 +7992,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: &a74
+      security: &a78
         - bearer: []
       summary: Create or retrieve an org-scoped thread
-      tags: &a75
+      tags: &a79
         - org-threads
     get:
       operationId: OrgThreadsController_list
@@ -7814,9 +8035,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadListResponse"
-      security: *a74
+      security: *a78
       summary: List org-scoped threads
-      tags: *a75
+      tags: *a79
   /orgs/{org_id}/threads/{thread_id}:
     get:
       operationId: OrgThreadsController_show
@@ -7840,9 +8061,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: *a74
+      security: *a78
       summary: Get an org-scoped thread by ID
-      tags: *a75
+      tags: *a79
   /orgs/{org_id}/threads/{thread_id}/messages:
     post:
       operationId: OrgThreadsController_postMessage
@@ -7866,9 +8087,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageResponse"
-      security: *a74
+      security: *a78
       summary: Post a message to an org thread
-      tags: *a75
+      tags: *a79
     get:
       operationId: OrgThreadsController_listMessages
       parameters:
@@ -7902,226 +8123,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageListResponse"
-      security: *a74
+      security: *a78
       summary: List messages in an org thread
-      tags: *a75
-  /projects/{project_id}/chat/route:
-    post:
-      operationId: ChatController_routeMessage
-      parameters:
-        - name: project_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatRouteRequest"
-      responses:
-        "200":
-          description: Chat routed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatRouteResponse"
-      security: &a76
-        - bearer: []
-      summary: Route a chat message to agents/teams/workflows
-      tags: &a77
-        - chat
-  /projects/{project_id}/chat/simulate:
-    post:
-      operationId: ChatController_simulateMessage
-      parameters:
-        - name: project_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatSimulateRequest"
-      responses:
-        "200":
-          description: Chat routed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatRouteResponse"
-      security: *a76
-      summary: Simulate an inbound chat message (test-only)
-      tags: *a77
-  /internal/projects/{project_id}/chat/route:
-    post:
-      operationId: ChatInternalController_routeMessage
-      parameters:
-        - name: project_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatRouteRequest"
-      responses:
-        "200":
-          description: Chat routed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatRouteResponse"
-      summary: Route a chat message (internal only)
-      tags: &a78
-        - internal
-  /internal/projects/{project_id}/chat/deliver:
-    post:
-      operationId: ChatInternalController_deliverOutbound
-      parameters:
-        - name: project_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatDeliverRequest"
-      responses:
-        "200":
-          description: Delivery result
-      summary: Deliver an agent result to the originating chat thread (internal only)
-      tags: *a78
-  /internal/orgs/{org_id}/chat/route:
-    post:
-      operationId: ChatGatewayController_routeBySlug
-      parameters:
-        - name: org_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatRouteBySlugRequest"
-      responses:
-        "200":
-          description: Chat routed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatRouteResponse"
-      summary: Route a chat message to an org-scoped agent slug (internal only)
-      tags: &a79
-        - internal
-  /internal/orgs/{org_id}/chat/listen:
-    post:
-      operationId: ChatGatewayController_listen
-      parameters:
-        - name: org_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatListenRequest"
-      responses:
-        "200":
-          description: Listener subscription updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatListenResponse"
-      summary: Subscribe an agent slug to a channel or thread (internal only)
-      tags: *a79
-  /internal/orgs/{org_id}/chat/unlisten:
-    post:
-      operationId: ChatGatewayController_unlisten
-      parameters:
-        - name: org_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatListenRequest"
-      responses:
-        "200":
-          description: Listener subscription removed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatUnlistenResponse"
-      summary: Remove a listener subscription (internal only)
-      tags: *a79
-  /internal/orgs/{org_id}/chat/listeners:
-    post:
-      operationId: ChatGatewayController_listeners
-      parameters:
-        - name: org_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatListenersRequest"
-      responses:
-        "200":
-          description: Listener list
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatListenersResponse"
-      summary: List listeners for channel/thread (internal only)
-      tags: *a79
-  /internal/orgs/{org_id}/chat/dispatch:
-    post:
-      operationId: ChatGatewayController_dispatch
-      parameters:
-        - name: org_id
-          required: true
-          in: path
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatDispatchRequest"
-      responses:
-        "200":
-          description: Dispatch result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChatDispatchResponse"
-      summary: Dispatch a message to all listeners (internal only)
       tags: *a79
   /projects/{project_id}/conversations:
     post:
@@ -21103,6 +21106,460 @@ components:
       required:
         - logs
       additionalProperties: false
+    ChatRouteRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          minLength: 1
+        account_id:
+          type: string
+          minLength: 1
+        channel_id:
+          type: string
+        user_id:
+          type: string
+        text:
+          type: string
+          minLength: 1
+        thread_key:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        hints:
+          type: object
+          properties:
+            harness_profile_override:
+              type: object
+              properties:
+                harness:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                reasoning_effort:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - x-high
+                variant:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+              required:
+                - harness
+              additionalProperties: false
+            env_overrides:
+              type: object
+              additionalProperties:
+                type: string
+                maxLength: 2048
+          additionalProperties: false
+      required:
+        - provider
+        - account_id
+        - text
+      additionalProperties: false
+    ChatRouteResponse:
+      type: object
+      properties:
+        thread_id:
+          type: string
+        thread_key:
+          type: string
+          nullable: true
+        route_id:
+          type: string
+          nullable: true
+        target:
+          type: string
+          nullable: true
+        job_ids:
+          type: array
+          items:
+            type: string
+        event_id:
+          type: string
+          nullable: true
+        denied:
+          type: boolean
+        denial_reason:
+          type: string
+      required:
+        - thread_id
+        - thread_key
+        - route_id
+        - target
+        - job_ids
+        - event_id
+      additionalProperties: false
+    ChatSimulateRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          minLength: 1
+        team_id:
+          type: string
+          minLength: 1
+        channel_id:
+          type: string
+        user_id:
+          type: string
+        text:
+          type: string
+          minLength: 1
+        thread_key:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        hints:
+          type: object
+          properties:
+            harness_profile_override:
+              type: object
+              properties:
+                harness:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                reasoning_effort:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - x-high
+                variant:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+              required:
+                - harness
+              additionalProperties: false
+            env_overrides:
+              type: object
+              additionalProperties:
+                type: string
+                maxLength: 2048
+          additionalProperties: false
+      required:
+        - provider
+        - team_id
+        - text
+      additionalProperties: false
+    ChatDeliverRequest:
+      type: object
+      properties:
+        job_id:
+          type: string
+          minLength: 1
+        thread_id:
+          type: string
+          minLength: 1
+        text:
+          type: string
+          minLength: 1
+        agent_id:
+          type: string
+        progress:
+          type: boolean
+      required:
+        - thread_id
+        - text
+      additionalProperties: false
+    ChatRouteBySlugRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          minLength: 1
+        account_id:
+          type: string
+          minLength: 1
+        channel_id:
+          type: string
+        user_id:
+          type: string
+        text:
+          type: string
+          minLength: 1
+        thread_key:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        hints:
+          type: object
+          properties:
+            harness_profile_override:
+              type: object
+              properties:
+                harness:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                reasoning_effort:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - x-high
+                variant:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+              required:
+                - harness
+              additionalProperties: false
+            env_overrides:
+              type: object
+              additionalProperties:
+                type: string
+                maxLength: 2048
+          additionalProperties: false
+        agent_slug_hint:
+          type: string
+          minLength: 1
+        command_text:
+          type: string
+        raw_text:
+          type: string
+          minLength: 1
+      required:
+        - provider
+        - account_id
+        - text
+        - agent_slug_hint
+        - raw_text
+      additionalProperties: false
+    ChatListenRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          minLength: 1
+        account_id:
+          type: string
+          minLength: 1
+        channel_id:
+          type: string
+        thread_key:
+          type: string
+          minLength: 1
+        scope:
+          type: string
+          enum:
+            - channel
+            - thread
+        agent_slug:
+          type: string
+          minLength: 1
+        metadata:
+          type: object
+          additionalProperties: {}
+      required:
+        - provider
+        - account_id
+        - thread_key
+        - scope
+        - agent_slug
+      additionalProperties: false
+    ChatListenResponse:
+      type: object
+      properties:
+        thread_id:
+          type: string
+        thread_key:
+          type: string
+        scope:
+          type: string
+          enum:
+            - channel
+            - thread
+        agent_id:
+          type: string
+        agent_slug:
+          type: string
+          minLength: 1
+        project_id:
+          type: string
+        project_slug:
+          type: string
+      required:
+        - thread_id
+        - thread_key
+        - scope
+        - agent_id
+        - agent_slug
+        - project_id
+        - project_slug
+      additionalProperties: false
+    ChatUnlistenResponse:
+      type: object
+      properties:
+        removed:
+          type: boolean
+        scope:
+          type: string
+          enum:
+            - channel
+            - thread
+        agent_slug:
+          type: string
+          minLength: 1
+        project_slug:
+          type: string
+      required:
+        - removed
+        - scope
+        - agent_slug
+        - project_slug
+      additionalProperties: false
+    ChatListenersRequest:
+      type: object
+      properties:
+        channel_key:
+          type: string
+        thread_key:
+          type: string
+      additionalProperties: false
+    ChatListenersResponse:
+      type: object
+      properties:
+        channel_key:
+          type: string
+          nullable: true
+        thread_key:
+          type: string
+          nullable: true
+        channel_listeners:
+          type: array
+          items:
+            type: object
+            properties:
+              project_id:
+                type: string
+              project_slug:
+                type: string
+              project_name:
+                type: string
+              agent_id:
+                type: string
+              agent_slug:
+                type: string
+                nullable: true
+              agent_name:
+                type: string
+                nullable: true
+              agent_description:
+                type: string
+                nullable: true
+            required:
+              - project_id
+              - project_slug
+              - project_name
+              - agent_id
+              - agent_slug
+              - agent_name
+              - agent_description
+            additionalProperties: false
+        thread_listeners:
+          type: array
+          items:
+            $ref: "#/definitions/ChatListenersResponse/properties/channel_listeners/items"
+      required:
+        - channel_key
+        - thread_key
+        - channel_listeners
+        - thread_listeners
+      additionalProperties: false
+    ChatDispatchRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          minLength: 1
+        account_id:
+          type: string
+          minLength: 1
+        channel_id:
+          type: string
+        user_id:
+          type: string
+        text:
+          type: string
+          minLength: 1
+        thread_key:
+          type: string
+          minLength: 1
+        metadata:
+          type: object
+          additionalProperties: {}
+        hints:
+          type: object
+          properties:
+            harness_profile_override:
+              type: object
+              properties:
+                harness:
+                  type: string
+                  minLength: 1
+                model:
+                  type: string
+                reasoning_effort:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - x-high
+                variant:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+              required:
+                - harness
+              additionalProperties: false
+            env_overrides:
+              type: object
+              additionalProperties:
+                type: string
+                maxLength: 2048
+          additionalProperties: false
+        channel_key:
+          type: string
+      required:
+        - provider
+        - account_id
+        - text
+        - thread_key
+      additionalProperties: false
+    ChatDispatchResponse:
+      type: object
+      properties:
+        job_ids:
+          type: array
+          items:
+            type: string
+      required:
+        - job_ids
+      additionalProperties: false
     HarnessListResponse:
       type: object
       properties:
@@ -25879,460 +26336,6 @@ components:
           type: string
         reason:
           type: string
-      additionalProperties: false
-    ChatRouteRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          minLength: 1
-        account_id:
-          type: string
-          minLength: 1
-        channel_id:
-          type: string
-        user_id:
-          type: string
-        text:
-          type: string
-          minLength: 1
-        thread_key:
-          type: string
-        metadata:
-          type: object
-          additionalProperties: {}
-        hints:
-          type: object
-          properties:
-            harness_profile_override:
-              type: object
-              properties:
-                harness:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                reasoning_effort:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - x-high
-                variant:
-                  type: string
-                temperature:
-                  type: number
-                  minimum: 0
-                  maximum: 2
-              required:
-                - harness
-              additionalProperties: false
-            env_overrides:
-              type: object
-              additionalProperties:
-                type: string
-                maxLength: 2048
-          additionalProperties: false
-      required:
-        - provider
-        - account_id
-        - text
-      additionalProperties: false
-    ChatRouteResponse:
-      type: object
-      properties:
-        thread_id:
-          type: string
-        thread_key:
-          type: string
-          nullable: true
-        route_id:
-          type: string
-          nullable: true
-        target:
-          type: string
-          nullable: true
-        job_ids:
-          type: array
-          items:
-            type: string
-        event_id:
-          type: string
-          nullable: true
-        denied:
-          type: boolean
-        denial_reason:
-          type: string
-      required:
-        - thread_id
-        - thread_key
-        - route_id
-        - target
-        - job_ids
-        - event_id
-      additionalProperties: false
-    ChatSimulateRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          minLength: 1
-        team_id:
-          type: string
-          minLength: 1
-        channel_id:
-          type: string
-        user_id:
-          type: string
-        text:
-          type: string
-          minLength: 1
-        thread_key:
-          type: string
-        metadata:
-          type: object
-          additionalProperties: {}
-        hints:
-          type: object
-          properties:
-            harness_profile_override:
-              type: object
-              properties:
-                harness:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                reasoning_effort:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - x-high
-                variant:
-                  type: string
-                temperature:
-                  type: number
-                  minimum: 0
-                  maximum: 2
-              required:
-                - harness
-              additionalProperties: false
-            env_overrides:
-              type: object
-              additionalProperties:
-                type: string
-                maxLength: 2048
-          additionalProperties: false
-      required:
-        - provider
-        - team_id
-        - text
-      additionalProperties: false
-    ChatDeliverRequest:
-      type: object
-      properties:
-        job_id:
-          type: string
-          minLength: 1
-        thread_id:
-          type: string
-          minLength: 1
-        text:
-          type: string
-          minLength: 1
-        agent_id:
-          type: string
-        progress:
-          type: boolean
-      required:
-        - thread_id
-        - text
-      additionalProperties: false
-    ChatRouteBySlugRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          minLength: 1
-        account_id:
-          type: string
-          minLength: 1
-        channel_id:
-          type: string
-        user_id:
-          type: string
-        text:
-          type: string
-          minLength: 1
-        thread_key:
-          type: string
-        metadata:
-          type: object
-          additionalProperties: {}
-        hints:
-          type: object
-          properties:
-            harness_profile_override:
-              type: object
-              properties:
-                harness:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                reasoning_effort:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - x-high
-                variant:
-                  type: string
-                temperature:
-                  type: number
-                  minimum: 0
-                  maximum: 2
-              required:
-                - harness
-              additionalProperties: false
-            env_overrides:
-              type: object
-              additionalProperties:
-                type: string
-                maxLength: 2048
-          additionalProperties: false
-        agent_slug_hint:
-          type: string
-          minLength: 1
-        command_text:
-          type: string
-        raw_text:
-          type: string
-          minLength: 1
-      required:
-        - provider
-        - account_id
-        - text
-        - agent_slug_hint
-        - raw_text
-      additionalProperties: false
-    ChatListenRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          minLength: 1
-        account_id:
-          type: string
-          minLength: 1
-        channel_id:
-          type: string
-        thread_key:
-          type: string
-          minLength: 1
-        scope:
-          type: string
-          enum:
-            - channel
-            - thread
-        agent_slug:
-          type: string
-          minLength: 1
-        metadata:
-          type: object
-          additionalProperties: {}
-      required:
-        - provider
-        - account_id
-        - thread_key
-        - scope
-        - agent_slug
-      additionalProperties: false
-    ChatListenResponse:
-      type: object
-      properties:
-        thread_id:
-          type: string
-        thread_key:
-          type: string
-        scope:
-          type: string
-          enum:
-            - channel
-            - thread
-        agent_id:
-          type: string
-        agent_slug:
-          type: string
-          minLength: 1
-        project_id:
-          type: string
-        project_slug:
-          type: string
-      required:
-        - thread_id
-        - thread_key
-        - scope
-        - agent_id
-        - agent_slug
-        - project_id
-        - project_slug
-      additionalProperties: false
-    ChatUnlistenResponse:
-      type: object
-      properties:
-        removed:
-          type: boolean
-        scope:
-          type: string
-          enum:
-            - channel
-            - thread
-        agent_slug:
-          type: string
-          minLength: 1
-        project_slug:
-          type: string
-      required:
-        - removed
-        - scope
-        - agent_slug
-        - project_slug
-      additionalProperties: false
-    ChatListenersRequest:
-      type: object
-      properties:
-        channel_key:
-          type: string
-        thread_key:
-          type: string
-      additionalProperties: false
-    ChatListenersResponse:
-      type: object
-      properties:
-        channel_key:
-          type: string
-          nullable: true
-        thread_key:
-          type: string
-          nullable: true
-        channel_listeners:
-          type: array
-          items:
-            type: object
-            properties:
-              project_id:
-                type: string
-              project_slug:
-                type: string
-              project_name:
-                type: string
-              agent_id:
-                type: string
-              agent_slug:
-                type: string
-                nullable: true
-              agent_name:
-                type: string
-                nullable: true
-              agent_description:
-                type: string
-                nullable: true
-            required:
-              - project_id
-              - project_slug
-              - project_name
-              - agent_id
-              - agent_slug
-              - agent_name
-              - agent_description
-            additionalProperties: false
-        thread_listeners:
-          type: array
-          items:
-            $ref: "#/definitions/ChatListenersResponse/properties/channel_listeners/items"
-      required:
-        - channel_key
-        - thread_key
-        - channel_listeners
-        - thread_listeners
-      additionalProperties: false
-    ChatDispatchRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          minLength: 1
-        account_id:
-          type: string
-          minLength: 1
-        channel_id:
-          type: string
-        user_id:
-          type: string
-        text:
-          type: string
-          minLength: 1
-        thread_key:
-          type: string
-          minLength: 1
-        metadata:
-          type: object
-          additionalProperties: {}
-        hints:
-          type: object
-          properties:
-            harness_profile_override:
-              type: object
-              properties:
-                harness:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                reasoning_effort:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                    - x-high
-                variant:
-                  type: string
-                temperature:
-                  type: number
-                  minimum: 0
-                  maximum: 2
-              required:
-                - harness
-              additionalProperties: false
-            env_overrides:
-              type: object
-              additionalProperties:
-                type: string
-                maxLength: 2048
-          additionalProperties: false
-        channel_key:
-          type: string
-      required:
-        - provider
-        - account_id
-        - text
-        - thread_key
-      additionalProperties: false
-    ChatDispatchResponse:
-      type: object
-      properties:
-        job_ids:
-          type: array
-          items:
-            type: string
-      required:
-        - job_ids
       additionalProperties: false
     ThreadResponse:
       type: object

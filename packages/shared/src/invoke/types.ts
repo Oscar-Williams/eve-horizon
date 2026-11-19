@@ -114,6 +114,21 @@ export type ResourceHydrationEventType =
 export interface ChatDeliveryContext {
   threadId: string;
   projectId: string;
+  /**
+   * How progress reaches the chat thread. Omitted: the internal chat
+   * delivery route (needs an internal key). A runner pod, which holds none,
+   * passes its attempt's thread-messages route.
+   */
+  deliver?: (input: { job_id: string; thread_id: string; text: string; agent_id?: string; progress: true }) => Promise<void>;
+}
+
+/**
+ * The chat thread a job's replies go to: a job labelled `chat` with a
+ * `thread_id` hint (set by the chat service). Null for any other job.
+ */
+export function chatThreadIdOf(job: { labels?: string[] | null; hints?: Record<string, unknown> | null } | null | undefined): string | null {
+  const threadId = job?.hints?.thread_id;
+  return job?.labels?.includes('chat') && typeof threadId === 'string' && threadId ? threadId : null;
 }
 
 // ---------------------------------------------------------------------------

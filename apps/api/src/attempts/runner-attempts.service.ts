@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
@@ -21,6 +23,9 @@ import {
 } from '@eve/db';
 import {
   CODEX_ID_TOKEN_JWKS_URL,
+  EVE_MESSAGE_CHAT_MAX_PER_JOB,
+  EVE_MESSAGE_CHAT_RATE_LIMIT_MS,
+  chatThreadIdOf,
   RUNNER_EVENT_TYPES,
   RUNNER_FINDING_RULES,
   RUNNER_RUNTIME_META_KEYS,
@@ -37,6 +42,7 @@ import type { AuthUser, JobTokenPayload } from '../auth/auth.types.js';
 import { assertJobRunning } from '../auth/job-liveness.js';
 import { SecretsService } from '../secrets/secrets.service.js';
 import { SecurityService } from '../security/security.service.js';
+import { ChatService } from '../chat/chat.service.js';
 
 /** Supplies the Codex token issuer's signing keys (JWKS). */
 export const CODEX_JWKS_SOURCE = 'CODEX_JWKS_SOURCE';
@@ -77,6 +83,7 @@ export class RunnerAttemptsService {
     private readonly secrets: SecretsService,
     private readonly security: SecurityService,
     @Optional() @Inject(CODEX_JWKS_SOURCE) private readonly codexJwks: CodexJwksSource = fetchCodexJwks,
+    @Optional() private readonly chat?: ChatService,
   ) {
     this.jobs = jobQueries(db);
   }
@@ -184,6 +191,10 @@ export class RunnerAttemptsService {
       throw new BadRequestException('thread_id and a body of at most 16 KiB are required');
     }
     if (actorType !== 'agent' && actorType !== 'system') throw new BadRequestException('actor_type must be agent or system');
+    if (body.chat_progress === true) {
+      await this.deliverChatProgress(token, threadId, text, typeof body.actor_id === 'string' ? body.actor_id : undefined);
+      return;
+    }
     if (!(await this.jobThreads(token.job_id)).has(threadId)) {
       throw new ForbiddenException("A runner posts only to its job's own chat or coordination thread");
     }
@@ -196,6 +207,39 @@ export class RunnerAttemptsService {
       body: text,
       job_id: token.job_id,
     } as never);
+  }
+
+  /**
+   * eve-message progress from a chat job's runner, delivered to its chat
+   * thread and provider exactly as the inline path's internal chat delivery
+   * route does. Only the job's own chat thread, and within the relay's
+   * limits, since job code holds the same token.
+   */
+  private async deliverChatProgress(token: JobTokenPayload, threadId: string, text: string, agentId?: string): Promise<void> {
+    if (!this.chat) throw new HttpException('Chat delivery is not available', HttpStatus.SERVICE_UNAVAILABLE);
+    const threads = threadQueries(this.db);
+    const reader = { findThreadProjectId: async (id: string) => (await threads.findById(id))?.project_id ?? null };
+    const job = await this.jobs.findById(token.job_id) as { labels?: string[] | null; hints?: Record<string, unknown> | null; project_id: string } | null;
+    const chatThread = await projectThreadId(reader, chatThreadIdOf(job), job?.project_id);
+    if (!chatThread || chatThread !== threadId) {
+      throw new ForbiddenException("Chat progress goes only to a chat job's own chat thread");
+    }
+    const [sent] = await this.db<{ count: number; last: Date | null }[]>`
+      SELECT COUNT(*)::int AS count, MAX(created_at) AS last FROM thread_messages
+      WHERE job_id = ${token.job_id} AND kind = 'progress'
+    `;
+    if ((sent?.count ?? 0) >= EVE_MESSAGE_CHAT_MAX_PER_JOB
+      || (sent?.last && Date.now() - new Date(sent.last).getTime() < EVE_MESSAGE_CHAT_RATE_LIMIT_MS)) {
+      throw new HttpException('Chat progress limit reached for this job', HttpStatus.TOO_MANY_REQUESTS);
+    }
+    await this.chat.deliverChatResult({
+      projectId: token.project_id,
+      job_id: token.job_id,
+      thread_id: threadId,
+      text: text.length > 503 ? `${text.slice(0, 500)}...` : text,
+      agent_id: agentId,
+      progress: true,
+    });
   }
 
   private async jobThreads(jobId: string): Promise<Set<string>> {

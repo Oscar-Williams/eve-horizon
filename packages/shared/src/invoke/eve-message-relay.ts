@@ -220,6 +220,22 @@ export class EveMessageRelay {
     this.lastChatDeliveryTime = now;
     this.chatDeliveryCount++;
 
+    const delivery = {
+      job_id: this.jobId,
+      thread_id: this.chatContext!.threadId,
+      text: displayText,
+      agent_id: this.assignee ?? undefined,
+      progress: true as const,
+    };
+    if (this.chatContext!.deliver) {
+      try {
+        await this.chatContext!.deliver(delivery);
+      } catch (err) {
+        console.error(`[eve-message] Chat delivery failed for job ${this.jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
     try {
       const config = loadConfig();
       const apiUrl = config.EVE_API_URL ?? process.env.EVE_API_URL;
@@ -232,13 +248,7 @@ export class EveMessageRelay {
           'content-type': 'application/json',
           ...internalAuthHeaders(),
         },
-        body: JSON.stringify({
-          job_id: this.jobId,
-          thread_id: this.chatContext!.threadId,
-          text: displayText,
-          agent_id: this.assignee ?? undefined,
-          progress: true,
-        }),
+        body: JSON.stringify(delivery),
       });
 
       if (!response.ok) {

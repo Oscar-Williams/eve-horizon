@@ -33,6 +33,7 @@ export {
   readPositiveNumber,
   readMaxCostHint,
   parseDurationToMs,
+  chatThreadIdOf,
 } from './types.js';
 
 // Result extraction

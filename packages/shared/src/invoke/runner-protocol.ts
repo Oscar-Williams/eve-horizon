@@ -126,6 +126,8 @@ export interface PreparedAgentJob {
    * (RUNNER_DECIDED_RULES), decided by the worker: a runner has no database.
    */
   rule_profiles?: Record<string, SecurityProfile>;
+  /** For a chat job: the chat thread its eve-message progress goes to. */
+  chat?: { thread_id: string } | null;
 }
 
 /** A script step (or `action: run`), prepared by the worker. */

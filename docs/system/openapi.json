@@ -7892,6 +7892,10 @@
                   },
                   "id": {
                     "type": "string"
+                  },
+                  "chat_progress": {
+                    "type": "boolean",
+                    "description": "A chat job's progress, delivered to its chat thread and provider"
                   }
                 },
                 "required": [
@@ -8053,6 +8057,378 @@
         "summary": "Report the attempt's result, once (the attempt's job token only)",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/projects/{project_id}/chat/route": {
+      "post": {
+        "operationId": "ChatController_routeMessage",
+        "parameters": [
+          {
+            "name": "project_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chat routed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRouteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Route a chat message to agents/teams/workflows",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/projects/{project_id}/chat/simulate": {
+      "post": {
+        "operationId": "ChatController_simulateMessage",
+        "parameters": [
+          {
+            "name": "project_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSimulateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chat routed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRouteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Simulate an inbound chat message (test-only)",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/internal/projects/{project_id}/chat/route": {
+      "post": {
+        "operationId": "ChatInternalController_routeMessage",
+        "parameters": [
+          {
+            "name": "project_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chat routed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRouteResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Route a chat message (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/projects/{project_id}/chat/deliver": {
+      "post": {
+        "operationId": "ChatInternalController_deliverOutbound",
+        "parameters": [
+          {
+            "name": "project_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatDeliverRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delivery result"
+          }
+        },
+        "summary": "Deliver an agent result to the originating chat thread (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/orgs/{org_id}/chat/route": {
+      "post": {
+        "operationId": "ChatGatewayController_routeBySlug",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRouteBySlugRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chat routed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRouteResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Route a chat message to an org-scoped agent slug (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/orgs/{org_id}/chat/listen": {
+      "post": {
+        "operationId": "ChatGatewayController_listen",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatListenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Listener subscription updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatListenResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Subscribe an agent slug to a channel or thread (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/orgs/{org_id}/chat/unlisten": {
+      "post": {
+        "operationId": "ChatGatewayController_unlisten",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatListenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Listener subscription removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatUnlistenResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Remove a listener subscription (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/orgs/{org_id}/chat/listeners": {
+      "post": {
+        "operationId": "ChatGatewayController_listeners",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatListenersRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Listener list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatListenersResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List listeners for channel/thread (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/orgs/{org_id}/chat/dispatch": {
+      "post": {
+        "operationId": "ChatGatewayController_dispatch",
+        "parameters": [
+          {
+            "name": "org_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatDispatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Dispatch result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatDispatchResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Dispatch a message to all listeners (internal only)",
+        "tags": [
+          "internal"
         ]
       }
     },
@@ -13646,378 +14022,6 @@
         "summary": "List messages in an org thread",
         "tags": [
           "org-threads"
-        ]
-      }
-    },
-    "/projects/{project_id}/chat/route": {
-      "post": {
-        "operationId": "ChatController_routeMessage",
-        "parameters": [
-          {
-            "name": "project_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatRouteRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Chat routed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatRouteResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Route a chat message to agents/teams/workflows",
-        "tags": [
-          "chat"
-        ]
-      }
-    },
-    "/projects/{project_id}/chat/simulate": {
-      "post": {
-        "operationId": "ChatController_simulateMessage",
-        "parameters": [
-          {
-            "name": "project_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatSimulateRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Chat routed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatRouteResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Simulate an inbound chat message (test-only)",
-        "tags": [
-          "chat"
-        ]
-      }
-    },
-    "/internal/projects/{project_id}/chat/route": {
-      "post": {
-        "operationId": "ChatInternalController_routeMessage",
-        "parameters": [
-          {
-            "name": "project_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatRouteRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Chat routed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatRouteResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Route a chat message (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/projects/{project_id}/chat/deliver": {
-      "post": {
-        "operationId": "ChatInternalController_deliverOutbound",
-        "parameters": [
-          {
-            "name": "project_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatDeliverRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Delivery result"
-          }
-        },
-        "summary": "Deliver an agent result to the originating chat thread (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/orgs/{org_id}/chat/route": {
-      "post": {
-        "operationId": "ChatGatewayController_routeBySlug",
-        "parameters": [
-          {
-            "name": "org_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatRouteBySlugRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Chat routed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatRouteResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Route a chat message to an org-scoped agent slug (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/orgs/{org_id}/chat/listen": {
-      "post": {
-        "operationId": "ChatGatewayController_listen",
-        "parameters": [
-          {
-            "name": "org_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatListenRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Listener subscription updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatListenResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Subscribe an agent slug to a channel or thread (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/orgs/{org_id}/chat/unlisten": {
-      "post": {
-        "operationId": "ChatGatewayController_unlisten",
-        "parameters": [
-          {
-            "name": "org_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatListenRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Listener subscription removed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatUnlistenResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Remove a listener subscription (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/orgs/{org_id}/chat/listeners": {
-      "post": {
-        "operationId": "ChatGatewayController_listeners",
-        "parameters": [
-          {
-            "name": "org_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatListenersRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Listener list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatListenersResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "List listeners for channel/thread (internal only)",
-        "tags": [
-          "internal"
-        ]
-      }
-    },
-    "/internal/orgs/{org_id}/chat/dispatch": {
-      "post": {
-        "operationId": "ChatGatewayController_dispatch",
-        "parameters": [
-          {
-            "name": "org_id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatDispatchRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Dispatch result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatDispatchResponse"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Dispatch a message to all listeners (internal only)",
-        "tags": [
-          "internal"
         ]
       }
     },
@@ -33113,6 +33117,633 @@
         ],
         "additionalProperties": false
       },
+      "ChatRouteRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "account_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thread_key": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "hints": {
+            "type": "object",
+            "properties": {
+              "harness_profile_override": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "reasoning_effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "x-high"
+                    ]
+                  },
+                  "variant": {
+                    "type": "string"
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  }
+                },
+                "required": [
+                  "harness"
+                ],
+                "additionalProperties": false
+              },
+              "env_overrides": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "provider",
+          "account_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ChatRouteResponse": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "thread_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "route_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "target": {
+            "type": "string",
+            "nullable": true
+          },
+          "job_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "event_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "denied": {
+            "type": "boolean"
+          },
+          "denial_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "thread_key",
+          "route_id",
+          "target",
+          "job_ids",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "ChatSimulateRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "team_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thread_key": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "hints": {
+            "type": "object",
+            "properties": {
+              "harness_profile_override": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "reasoning_effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "x-high"
+                    ]
+                  },
+                  "variant": {
+                    "type": "string"
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  }
+                },
+                "required": [
+                  "harness"
+                ],
+                "additionalProperties": false
+              },
+              "env_overrides": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "provider",
+          "team_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ChatDeliverRequest": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thread_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "thread_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ChatRouteBySlugRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "account_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thread_key": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "hints": {
+            "type": "object",
+            "properties": {
+              "harness_profile_override": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "reasoning_effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "x-high"
+                    ]
+                  },
+                  "variant": {
+                    "type": "string"
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  }
+                },
+                "required": [
+                  "harness"
+                ],
+                "additionalProperties": false
+              },
+              "env_overrides": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "agent_slug_hint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "command_text": {
+            "type": "string"
+          },
+          "raw_text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "provider",
+          "account_id",
+          "text",
+          "agent_slug_hint",
+          "raw_text"
+        ],
+        "additionalProperties": false
+      },
+      "ChatListenRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "account_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "thread_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "channel",
+              "thread"
+            ]
+          },
+          "agent_slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "provider",
+          "account_id",
+          "thread_key",
+          "scope",
+          "agent_slug"
+        ],
+        "additionalProperties": false
+      },
+      "ChatListenResponse": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "thread_key": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "channel",
+              "thread"
+            ]
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "thread_key",
+          "scope",
+          "agent_id",
+          "agent_slug",
+          "project_id",
+          "project_slug"
+        ],
+        "additionalProperties": false
+      },
+      "ChatUnlistenResponse": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "channel",
+              "thread"
+            ]
+          },
+          "agent_slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "removed",
+          "scope",
+          "agent_slug",
+          "project_slug"
+        ],
+        "additionalProperties": false
+      },
+      "ChatListenersRequest": {
+        "type": "object",
+        "properties": {
+          "channel_key": {
+            "type": "string"
+          },
+          "thread_key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatListenersResponse": {
+        "type": "object",
+        "properties": {
+          "channel_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "thread_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_listeners": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "string"
+                },
+                "project_slug": {
+                  "type": "string"
+                },
+                "project_name": {
+                  "type": "string"
+                },
+                "agent_id": {
+                  "type": "string"
+                },
+                "agent_slug": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "agent_name": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "agent_description": {
+                  "type": "string",
+                  "nullable": true
+                }
+              },
+              "required": [
+                "project_id",
+                "project_slug",
+                "project_name",
+                "agent_id",
+                "agent_slug",
+                "agent_name",
+                "agent_description"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "thread_listeners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ChatListenersResponse/properties/channel_listeners/items"
+            }
+          }
+        },
+        "required": [
+          "channel_key",
+          "thread_key",
+          "channel_listeners",
+          "thread_listeners"
+        ],
+        "additionalProperties": false
+      },
+      "ChatDispatchRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "account_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thread_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "hints": {
+            "type": "object",
+            "properties": {
+              "harness_profile_override": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "reasoning_effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "x-high"
+                    ]
+                  },
+                  "variant": {
+                    "type": "string"
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  }
+                },
+                "required": [
+                  "harness"
+                ],
+                "additionalProperties": false
+              },
+              "env_overrides": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "channel_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "account_id",
+          "text",
+          "thread_key"
+        ],
+        "additionalProperties": false
+      },
+      "ChatDispatchResponse": {
+        "type": "object",
+        "properties": {
+          "job_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "job_ids"
+        ],
+        "additionalProperties": false
+      },
       "HarnessListResponse": {
         "type": "object",
         "properties": {
@@ -39712,633 +40343,6 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
-      },
-      "ChatRouteRequest": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string",
-            "minLength": 1
-          },
-          "account_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "channel_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "thread_key": {
-            "type": "string"
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "hints": {
-            "type": "object",
-            "properties": {
-              "harness_profile_override": {
-                "type": "object",
-                "properties": {
-                  "harness": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "model": {
-                    "type": "string"
-                  },
-                  "reasoning_effort": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "x-high"
-                    ]
-                  },
-                  "variant": {
-                    "type": "string"
-                  },
-                  "temperature": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 2
-                  }
-                },
-                "required": [
-                  "harness"
-                ],
-                "additionalProperties": false
-              },
-              "env_overrides": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "maxLength": 2048
-                }
-              }
-            },
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "provider",
-          "account_id",
-          "text"
-        ],
-        "additionalProperties": false
-      },
-      "ChatRouteResponse": {
-        "type": "object",
-        "properties": {
-          "thread_id": {
-            "type": "string"
-          },
-          "thread_key": {
-            "type": "string",
-            "nullable": true
-          },
-          "route_id": {
-            "type": "string",
-            "nullable": true
-          },
-          "target": {
-            "type": "string",
-            "nullable": true
-          },
-          "job_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "event_id": {
-            "type": "string",
-            "nullable": true
-          },
-          "denied": {
-            "type": "boolean"
-          },
-          "denial_reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "thread_id",
-          "thread_key",
-          "route_id",
-          "target",
-          "job_ids",
-          "event_id"
-        ],
-        "additionalProperties": false
-      },
-      "ChatSimulateRequest": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string",
-            "minLength": 1
-          },
-          "team_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "channel_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "thread_key": {
-            "type": "string"
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "hints": {
-            "type": "object",
-            "properties": {
-              "harness_profile_override": {
-                "type": "object",
-                "properties": {
-                  "harness": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "model": {
-                    "type": "string"
-                  },
-                  "reasoning_effort": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "x-high"
-                    ]
-                  },
-                  "variant": {
-                    "type": "string"
-                  },
-                  "temperature": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 2
-                  }
-                },
-                "required": [
-                  "harness"
-                ],
-                "additionalProperties": false
-              },
-              "env_overrides": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "maxLength": 2048
-                }
-              }
-            },
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "provider",
-          "team_id",
-          "text"
-        ],
-        "additionalProperties": false
-      },
-      "ChatDeliverRequest": {
-        "type": "object",
-        "properties": {
-          "job_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "thread_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "agent_id": {
-            "type": "string"
-          },
-          "progress": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "thread_id",
-          "text"
-        ],
-        "additionalProperties": false
-      },
-      "ChatRouteBySlugRequest": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string",
-            "minLength": 1
-          },
-          "account_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "channel_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "thread_key": {
-            "type": "string"
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "hints": {
-            "type": "object",
-            "properties": {
-              "harness_profile_override": {
-                "type": "object",
-                "properties": {
-                  "harness": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "model": {
-                    "type": "string"
-                  },
-                  "reasoning_effort": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "x-high"
-                    ]
-                  },
-                  "variant": {
-                    "type": "string"
-                  },
-                  "temperature": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 2
-                  }
-                },
-                "required": [
-                  "harness"
-                ],
-                "additionalProperties": false
-              },
-              "env_overrides": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "maxLength": 2048
-                }
-              }
-            },
-            "additionalProperties": false
-          },
-          "agent_slug_hint": {
-            "type": "string",
-            "minLength": 1
-          },
-          "command_text": {
-            "type": "string"
-          },
-          "raw_text": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "provider",
-          "account_id",
-          "text",
-          "agent_slug_hint",
-          "raw_text"
-        ],
-        "additionalProperties": false
-      },
-      "ChatListenRequest": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string",
-            "minLength": 1
-          },
-          "account_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "channel_id": {
-            "type": "string"
-          },
-          "thread_key": {
-            "type": "string",
-            "minLength": 1
-          },
-          "scope": {
-            "type": "string",
-            "enum": [
-              "channel",
-              "thread"
-            ]
-          },
-          "agent_slug": {
-            "type": "string",
-            "minLength": 1
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {}
-          }
-        },
-        "required": [
-          "provider",
-          "account_id",
-          "thread_key",
-          "scope",
-          "agent_slug"
-        ],
-        "additionalProperties": false
-      },
-      "ChatListenResponse": {
-        "type": "object",
-        "properties": {
-          "thread_id": {
-            "type": "string"
-          },
-          "thread_key": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string",
-            "enum": [
-              "channel",
-              "thread"
-            ]
-          },
-          "agent_id": {
-            "type": "string"
-          },
-          "agent_slug": {
-            "type": "string",
-            "minLength": 1
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "project_slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "thread_id",
-          "thread_key",
-          "scope",
-          "agent_id",
-          "agent_slug",
-          "project_id",
-          "project_slug"
-        ],
-        "additionalProperties": false
-      },
-      "ChatUnlistenResponse": {
-        "type": "object",
-        "properties": {
-          "removed": {
-            "type": "boolean"
-          },
-          "scope": {
-            "type": "string",
-            "enum": [
-              "channel",
-              "thread"
-            ]
-          },
-          "agent_slug": {
-            "type": "string",
-            "minLength": 1
-          },
-          "project_slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "removed",
-          "scope",
-          "agent_slug",
-          "project_slug"
-        ],
-        "additionalProperties": false
-      },
-      "ChatListenersRequest": {
-        "type": "object",
-        "properties": {
-          "channel_key": {
-            "type": "string"
-          },
-          "thread_key": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
-      },
-      "ChatListenersResponse": {
-        "type": "object",
-        "properties": {
-          "channel_key": {
-            "type": "string",
-            "nullable": true
-          },
-          "thread_key": {
-            "type": "string",
-            "nullable": true
-          },
-          "channel_listeners": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "project_id": {
-                  "type": "string"
-                },
-                "project_slug": {
-                  "type": "string"
-                },
-                "project_name": {
-                  "type": "string"
-                },
-                "agent_id": {
-                  "type": "string"
-                },
-                "agent_slug": {
-                  "type": "string",
-                  "nullable": true
-                },
-                "agent_name": {
-                  "type": "string",
-                  "nullable": true
-                },
-                "agent_description": {
-                  "type": "string",
-                  "nullable": true
-                }
-              },
-              "required": [
-                "project_id",
-                "project_slug",
-                "project_name",
-                "agent_id",
-                "agent_slug",
-                "agent_name",
-                "agent_description"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "thread_listeners": {
-            "type": "array",
-            "items": {
-              "$ref": "#/definitions/ChatListenersResponse/properties/channel_listeners/items"
-            }
-          }
-        },
-        "required": [
-          "channel_key",
-          "thread_key",
-          "channel_listeners",
-          "thread_listeners"
-        ],
-        "additionalProperties": false
-      },
-      "ChatDispatchRequest": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string",
-            "minLength": 1
-          },
-          "account_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "channel_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string",
-            "minLength": 1
-          },
-          "thread_key": {
-            "type": "string",
-            "minLength": 1
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "hints": {
-            "type": "object",
-            "properties": {
-              "harness_profile_override": {
-                "type": "object",
-                "properties": {
-                  "harness": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "model": {
-                    "type": "string"
-                  },
-                  "reasoning_effort": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "x-high"
-                    ]
-                  },
-                  "variant": {
-                    "type": "string"
-                  },
-                  "temperature": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 2
-                  }
-                },
-                "required": [
-                  "harness"
-                ],
-                "additionalProperties": false
-              },
-              "env_overrides": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "maxLength": 2048
-                }
-              }
-            },
-            "additionalProperties": false
-          },
-          "channel_key": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "account_id",
-          "text",
-          "thread_key"
-        ],
-        "additionalProperties": false
-      },
-      "ChatDispatchResponse": {
-        "type": "object",
-        "properties": {
-          "job_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "job_ids"
-        ],
         "additionalProperties": false
       },
       "ThreadResponse": {

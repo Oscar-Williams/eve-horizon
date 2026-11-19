@@ -64,6 +64,7 @@ The worker prepares everything:
 | `app_apis` | App APIs and app links, each link's token already minted for the attempt. |
 | `budget` | The budget enforcement config (rate card, FX, resource class). |
 | `relay` | The job's and parent's hints and the threads they name, for the message relay. |
+| `chat` | For a chat job (label `chat`, a `thread_id` hint): its chat thread, for `eve-message` progress. The final reply is delivered by the orchestrator from the attempt's result text, wherever the job ran. |
 | `script.*` | For a step: command, timeout, repo, env name and namespace, env overrides and the reserved-name decision, app-link env, toolchains. |
 
 ## Secrets
@@ -103,7 +104,7 @@ Another attempt's routes get 403. None returns platform data.
 | `logs` | `{ entries: [{ type, content }] }`, up to 500 per call. |
 | `events` | `system.resource.hydration.{started,completed,failed}` only, on the job's project. |
 | `runtime-meta` | Only `orgfs_mount`, `resource_hydration`, `resource_index_path`, `browser`, `toolchains`, `self_check` (400 otherwise); toolchain image IDs the worker recorded are kept. |
-| `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. |
+| `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. With `chat_progress: true`, a chat job's `eve-message` progress, delivered to its chat thread and provider through the same chat delivery the inline path uses; only for a chat job's own chat thread, at most 10 per job and 30 s apart (429 otherwise), 500 characters. |
 | `credential` | A refreshed `CODEX_AUTH_JSON_B64` only. Accepted when the account claim (`https://api.openai.com/auth`.`chatgpt_account_id`) of its `id_token`, verified against the issuer's published keys (`https://auth.openai.com/.well-known/jwks.json`, or `EVE_CODEX_JWKS_URL`), names the stored credential's account; the plain `account_id` field is ignored. It goes to the secret's own scope, or, under the project's strict `secrets.job_org_write`, to project scope only. A mismatch is refused (409) and logged; the job does not fail. |
 | `result` | The attempt's result, once (`job_attempt_runner_results`); a second gets 409. |
 

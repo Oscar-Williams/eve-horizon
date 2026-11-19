@@ -62,6 +62,8 @@ import {
   mayReadJobAttachment,
   DEFAULT_AGENT_PERMISSIONS,
   RunnerApiClient,
+  chatThreadIdOf,
+  type ChatDeliveryContext,
   RUNNER_DECIDED_RULES,
   RUNNER_SETTINGS,
   selectRunnerClass,
@@ -1382,6 +1384,8 @@ export class InvokeService implements OnModuleInit {
     const job = await this.jobs.findById(invocation.jobId);
     const project = await this.projects.findById(invocation.projectId);
     if (!project) throw new Error(`Project ${invocation.projectId} not found`);
+    // A chat job's eve-message progress goes to its chat thread (the API checks it is the job's own).
+    const chatThread = chatThreadIdOf(job as { labels?: string[] | null; hints?: Record<string, unknown> | null } | null);
 
     return {
       invocation,
@@ -1396,6 +1400,7 @@ export class InvokeService implements OnModuleInit {
       relay: await this.relayLookups(invocation),
       actor_user_id: (job as { actor_user_id?: string | null } | null)?.actor_user_id ?? null,
       rule_profiles: await this.ruleProfilesFor(invocation.projectId),
+      chat: chatThread ? { thread_id: chatThread } : null,
     };
   }
 
@@ -1484,6 +1489,39 @@ export class InvokeService implements OnModuleInit {
       ...resolvedApis.map((api) => ({ ...api, type: api.type ?? 'openapi' })),
       ...links,
     ] as Array<Record<string, unknown>>;
+  }
+
+  /**
+   * The relay for the job's eve-message blocks: to its parent's coordination
+   * thread, and, for a chat job, as progress to its originating chat thread
+   * (as the agent runtime's inline path does). In the worker's process the
+   * progress goes through the internal chat delivery route; in a runner pod,
+   * through the attempt's thread-messages route.
+   */
+  async createMessageRelay(invocation: HarnessInvocation): Promise<EveMessageRelay> {
+    let chat: ChatDeliveryContext | null = null;
+    if (this.runner) {
+      const threadId = this.runner.prepared.chat?.thread_id;
+      const client = this.runner.client;
+      if (threadId) {
+        chat = {
+          threadId,
+          projectId: invocation.projectId,
+          deliver: (input) => client.deliverChatProgress({ thread_id: input.thread_id, text: input.text, agent_id: input.agent_id }),
+        };
+      }
+    } else {
+      try {
+        const [row] = await this.db<{ hints: Record<string, unknown> | null; labels: string[] | null }[]>`
+          SELECT hints, labels FROM jobs WHERE id = ${invocation.jobId}
+        `;
+        const threadId = chatThreadIdOf(row);
+        if (threadId) chat = { threadId, projectId: invocation.projectId };
+      } catch (err) {
+        console.warn(`[eve-message] Failed to look up chat context: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return new EveMessageRelay(this.buildRelayDb(), invocation.jobId, invocation.parentJobId ?? null, invocation.agentId ?? null, chat);
   }
 
   /** The job and parent hints, and the threads they name, that the message relay looks up. */
@@ -2586,6 +2624,7 @@ export class InvokeService implements OnModuleInit {
 
       await cancellation?.check();
       cancellation?.signal.throwIfAborted();
+      const messageRelay = await this.createMessageRelay(invocation);
       return new Promise((resolve) => {
       const fullArgs = [...prefixArgs, ...args];
       console.log(`[harness] Executing: ${binary} ${fullArgs.join(' ')}`);
@@ -2775,12 +2814,6 @@ export class InvokeService implements OnModuleInit {
         }
       };
 
-      const messageRelay = new EveMessageRelay(
-        this.buildRelayDb(),
-        invocation.jobId,
-        invocation.parentJobId ?? null,
-        invocation.agentId ?? null,
-      );
       const isClaudeHarness = options.harness === 'claude' || options.harness === 'mclaude';
       let claudeApiKeySource: string | null = null;
       let claudeAuthFailureCandidate: { reason: string; apiKeySource?: string } | null = null;

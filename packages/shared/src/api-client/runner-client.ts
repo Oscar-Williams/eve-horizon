@@ -70,6 +70,17 @@ export class RunnerApiClient {
     return this.post('thread-messages', message);
   }
 
+  /** Progress for a chat job's originating chat thread (and its provider), as the relay sends it. */
+  deliverChatProgress(input: { thread_id: string; text: string; agent_id?: string }): Promise<void> {
+    return this.post('thread-messages', {
+      thread_id: input.thread_id,
+      body: input.text,
+      actor_type: 'agent',
+      ...(input.agent_id ? { actor_id: input.agent_id } : {}),
+      chat_progress: true,
+    });
+  }
+
   writeBackCredential(key: string, value: string): Promise<void> {
     return this.post('credential', { key, value });
   }
