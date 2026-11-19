@@ -10,6 +10,9 @@
 -- The instance goes strict (registry.internal_key) and the legacy internal
 -- key is removed only once no environment is stale.
 
+-- Do not queue behind a long transaction holding the table.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE environments
   ADD COLUMN IF NOT EXISTS registry_key_version TEXT,
   ADD COLUMN IF NOT EXISTS registry_key_epoch INTEGER;
