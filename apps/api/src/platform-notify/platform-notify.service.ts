@@ -1,7 +1,7 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import { systemSettingsQueries, environmentHealthQueries } from '@eve/db';
-import { loadConfig } from '@eve/shared';
+import { internalAuthHeaders, loadConfig } from '@eve/shared';
 
 /** Structured alert from the orchestrator's env-health watchdog. */
 export interface PlatformAlert {
@@ -102,7 +102,7 @@ export class PlatformNotifyService {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-eve-internal-token': config.EVE_INTERNAL_API_KEY ?? '',
+          ...internalAuthHeaders(),
         },
         body: JSON.stringify({
           provider: 'slack',

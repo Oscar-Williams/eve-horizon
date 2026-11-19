@@ -1,34 +1,10 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { internalAuthHeaders, type InternalKeyService } from './internal-keys.js';
 
-/** Header used for internal service-to-service authentication. */
-export const INTERNAL_TOKEN_HEADER = 'x-eve-internal-token';
-
-/**
- * Check a presented internal token against the configured
- * `EVE_INTERNAL_API_KEY` in constant time.
- *
- * Fails closed: an unset key, or a missing, empty or non-string token, never
- * matches. Both values are hashed before comparison so neither the key's
- * content nor its length leaks through timing.
- */
-export function internalTokenMatches(presented: unknown, expected: string | undefined): boolean {
-  if (!expected || typeof presented !== 'string' || presented.length === 0) {
-    return false;
-  }
-  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
-  return timingSafeEqual(digest(presented), digest(expected));
-}
-
-/**
- * Headers that authenticate a service-to-service call: the internal token
- * header when a key is configured, otherwise nothing (the callee then refuses
- * the call, which is the fail-closed outcome).
- */
-export function internalAuthHeaders(
-  key: string | undefined = process.env.EVE_INTERNAL_API_KEY,
-): Record<string, string> {
-  return key ? { [INTERNAL_TOKEN_HEADER]: key } : {};
-}
+export {
+  INTERNAL_TOKEN_HEADER,
+  internalAuthHeaders,
+  internalTokenMatches,
+} from './internal-keys.js';
 
 /** Percent-encoded dot, slash or backslash. */
 const ENCODED_PATH_CHARACTER = /%(2e|2f|5c)/i;
@@ -87,7 +63,9 @@ export interface InternalApiFetchOptions {
   body?: unknown;
   /** Override the API base URL (defaults to `EVE_API_URL` from the environment). */
   baseUrl?: string;
-  /** Override the internal token (defaults to `EVE_INTERNAL_API_KEY` from the environment). */
+  /** The service the call is made as (defaults to `core`); its key comes from the environment. */
+  service?: InternalKeyService;
+  /** Override the legacy internal token (defaults to `EVE_INTERNAL_API_KEY` from the environment). */
   internalToken?: string;
   /** Extra headers merged over the defaults. */
   headers?: Record<string, string>;
@@ -97,12 +75,13 @@ export interface InternalApiFetchOptions {
  * Perform an authenticated fetch against an internal Eve API endpoint.
  *
  * Builds the URL from `EVE_API_URL` (or `opts.baseUrl`) and attaches the
- * `x-eve-internal-token` header from `EVE_INTERNAL_API_KEY` (or
- * `opts.internalToken`). Returns the raw `Response` — callers own their
- * error semantics (throw vs return-null) and response parsing.
+ * service key of `opts.service` (core by default), plus the legacy
+ * `x-eve-internal-token` while `EVE_INTERNAL_API_KEY` (or
+ * `opts.internalToken`) is set. Returns the raw `Response` — callers own
+ * their error semantics (throw vs return-null) and response parsing.
  *
  * Refuses (throws) a path that is not plain (see `isPlainApiPath`), so the
- * internal token only ever goes to the route the caller named.
+ * keys only ever go to the route the caller named.
  */
 export async function internalApiFetch(
   path: string,
@@ -118,7 +97,7 @@ export async function internalApiFetch(
   }
 
   const headers: Record<string, string> = {
-    [INTERNAL_TOKEN_HEADER]: opts.internalToken ?? process.env.EVE_INTERNAL_API_KEY ?? '',
+    ...internalAuthHeaders({ service: opts.service, legacyKey: opts.internalToken }),
     ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
     ...opts.headers,
   };

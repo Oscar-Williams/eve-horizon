@@ -23,4 +23,8 @@ export const SIGNUP_ALLOWED_DOMAINS: string[] = (process.env.EVE_SIGNUP_ALLOWED_
   .split(',')
   .map(d => d.trim().toLowerCase())
   .filter(Boolean);
+// The legacy shared internal key, sent beside the SSO's own key until it is
+// removed from the SSO's env.
 export const EVE_INTERNAL_API_KEY = process.env.EVE_INTERNAL_API_KEY ?? '';
+// The SSO's own internal key: the API accepts it on the SSO's routes only.
+export const EVE_INTERNAL_SSO_KEY = process.env.EVE_INTERNAL_SSO_KEY ?? '';

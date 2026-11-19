@@ -23,6 +23,7 @@ import {
 import type { OAuthAppConfig } from '@eve/db';
 import { SecurityService } from '../security/security.service.js';
 import { SecretCipher } from '../secrets/secret-cipher.js';
+import { platformSigningKeys } from '../common/platform-signing-key.js';
 import {
   generateIntegrationId,
   generateExternalIdentityId,
@@ -518,8 +519,7 @@ export class IntegrationsService {
   // ---------------------------------------------------------------------------
 
   generateLinkToken(eveUserId: string, provider: string, orgId: string): { token: string; expiresIn: number } {
-    const config = loadConfig();
-    const secret = config.EVE_INTERNAL_API_KEY;
+    const secret = platformSigningKeys('identity-link').sign;
     if (!secret) {
       throw new BadRequestException('Internal API key not configured');
     }
@@ -549,9 +549,8 @@ export class IntegrationsService {
     accountId: string,
     externalUserId: string,
   ): Promise<{ ok: boolean; external_identity_id?: string; error?: string }> {
-    const config = loadConfig();
-    const secret = config.EVE_INTERNAL_API_KEY;
-    if (!secret) {
+    const secrets = platformSigningKeys('identity-link').verify;
+    if (secrets.length === 0) {
       return { ok: false, error: 'Internal API key not configured' };
     }
 
@@ -566,8 +565,7 @@ export class IntegrationsService {
     const sig = raw.slice(dotIdx + 1);
 
     // Verify signature
-    const expectedSig = crypto.createHmac('sha256', secret).update(payloadB64).digest('base64url');
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
+    if (!signatureMatches(secrets, payloadB64, sig)) {
       return { ok: false, error: 'Invalid token signature' };
     }
 
@@ -1051,8 +1049,7 @@ export class IntegrationsService {
   private static MAX_INSTALL_TTL_S = 7 * 86400; // 7 days
 
   generateSlackInstallToken(orgId: string, ttlSeconds?: number): { token: string; expiresAt: string } {
-    const config = loadConfig();
-    const secret = config.EVE_INTERNAL_API_KEY;
+    const secret = platformSigningKeys('slack-install').sign;
     if (!secret) {
       throw new BadRequestException('Internal API key not configured');
     }
@@ -1073,9 +1070,8 @@ export class IntegrationsService {
   }
 
   validateSlackInstallToken(token: string): { orgId: string } | null {
-    const config = loadConfig();
-    const secret = config.EVE_INTERNAL_API_KEY;
-    if (!secret) return null;
+    const secrets = platformSigningKeys('slack-install').verify;
+    if (secrets.length === 0) return null;
 
     const raw = token.startsWith('eve-slack-install-') ? token.slice('eve-slack-install-'.length) : token;
     const dotIdx = raw.lastIndexOf('.');
@@ -1084,9 +1080,7 @@ export class IntegrationsService {
     const payloadB64 = raw.slice(0, dotIdx);
     const sig = raw.slice(dotIdx + 1);
 
-    const expectedSig = crypto.createHmac('sha256', secret).update(payloadB64).digest('base64url');
-    if (sig.length !== expectedSig.length) return null;
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return null;
+    if (!signatureMatches(secrets, payloadB64, sig)) return null;
 
     let payload: { org_id: string; jti: string; exp: number };
     try {
@@ -1103,4 +1097,13 @@ export class IntegrationsService {
 
     return { orgId: payload.org_id };
   }
+}
+
+/** True when `sig` is the HMAC-SHA256 (base64url) of `payload` under any of the keys. */
+function signatureMatches(keys: string[], payload: string, sig: string): boolean {
+  const presented = Buffer.from(sig);
+  return keys.some((key) => {
+    const expected = Buffer.from(crypto.createHmac('sha256', key).update(payload).digest('base64url'));
+    return expected.length === presented.length && crypto.timingSafeEqual(expected, presented);
+  });
 }

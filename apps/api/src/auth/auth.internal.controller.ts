@@ -13,7 +13,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DEFAULT_SERVICE_PERMISSIONS, AccessBindingScopeSchema, agentSecretsAllowlist, narrowSecretsAllowlist, type AccessBindingScope } from '@eve/shared';
 import { type Db, agentQueries, findJobAgent, jobQueries, projectQueries } from '@eve/db';
 import { Public } from './auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { AuthService } from './auth.service.js';
 import { AccessService } from './access.service.js';
 import { jobTokenPermissionsFor } from './token-scope.js';
@@ -116,6 +116,7 @@ export class AuthInternalController {
 
   @Public()
   @Post('magic-link-wrap/inspect')
+  @InternalCallers('sso')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Inspect a magic-link wrap (read-only with telemetry bump)',
@@ -161,6 +162,7 @@ export class AuthInternalController {
 
   @Public()
   @Post('magic-link-wrap/consume')
+  @InternalCallers('sso')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Consume a magic-link wrap and reveal the GoTrue action_link',

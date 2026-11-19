@@ -14,12 +14,13 @@ import {
 } from '@eve/shared';
 import { zodSchemaToOpenApi } from '../openapi.js';
 import { Public } from '../auth/auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { OrgsService } from './orgs.service.js';
 
 @ApiTags('internal')
 @Controller('internal/orgs/:org_id/agents')
 @UseGuards(InternalTokenGuard)
+@InternalCallers('gateway')
 export class OrgsInternalController {
   constructor(private readonly orgsService: OrgsService) {}
 

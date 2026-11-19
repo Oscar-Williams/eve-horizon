@@ -43,6 +43,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { from, timer, type Observable, switchMap, concatMap, share } from 'rxjs';
 import { buildApiError } from '../system/api-errors.js';
 import { StorageService } from '../storage/storage.service.js';
+import { platformSigningKeys } from '../common/platform-signing-key.js';
 
 const ENROLLMENT_TTL_MS = 10 * 60 * 1000;
 const STREAM_BATCH_LIMIT = 200;
@@ -217,18 +218,27 @@ export class OrgFsSyncService {
     };
   }
 
-  private getGatewayTokenSecret(requestId?: string): string {
+  /**
+   * Keys for org filesystem link tokens: `EVE_ORG_FS_LINK_TOKEN_SECRET` when
+   * set; otherwise the platform signing key for this purpose (derived from
+   * the core key), with tokens the legacy internal key signed still verifying
+   * while that key is set.
+   */
+  private getGatewayTokenSecrets(requestId?: string): { sign: string; verify: string[] } {
     const config = loadConfig();
-    const secret = config.EVE_ORG_FS_LINK_TOKEN_SECRET ?? config.EVE_INTERNAL_API_KEY;
-    if (!secret) {
+    if (config.EVE_ORG_FS_LINK_TOKEN_SECRET) {
+      return { sign: config.EVE_ORG_FS_LINK_TOKEN_SECRET, verify: [config.EVE_ORG_FS_LINK_TOKEN_SECRET] };
+    }
+    const keys = platformSigningKeys('org-fs-link');
+    if (!keys.sign) {
       throw buildApiError(
         500,
         'fs_gateway_token_secret_missing',
-        'Missing EVE_ORG_FS_LINK_TOKEN_SECRET or EVE_INTERNAL_API_KEY',
+        'Missing EVE_ORG_FS_LINK_TOKEN_SECRET, EVE_INTERNAL_CORE_KEY or EVE_INTERNAL_API_KEY',
         { requestId },
       );
     }
-    return secret;
+    return { sign: keys.sign, verify: keys.verify };
   }
 
   private encodeTokenSegment(value: Record<string, unknown>): string {
@@ -247,7 +257,7 @@ export class OrgFsSyncService {
     const header = this.encodeTokenSegment({ alg: 'HS256', typ: 'EVE_FS_LINK' });
     const payload = this.encodeTokenSegment(claims);
     const signingInput = `${header}.${payload}`;
-    const signature = createHmac('sha256', this.getGatewayTokenSecret(requestId))
+    const signature = createHmac('sha256', this.getGatewayTokenSecrets(requestId).sign)
       .update(signingInput)
       .digest('base64url');
     return `${signingInput}.${signature}`;
@@ -260,11 +270,12 @@ export class OrgFsSyncService {
     }
     const [headerRaw, payloadRaw, signatureRaw] = parts;
     const signingInput = `${headerRaw}.${payloadRaw}`;
-    const expected = createHmac('sha256', this.getGatewayTokenSecret(requestId))
-      .update(signingInput)
-      .digest();
     const received = Buffer.from(signatureRaw, 'base64url');
-    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+    const verified = this.getGatewayTokenSecrets(requestId).verify.some((secret) => {
+      const expected = createHmac('sha256', secret).update(signingInput).digest();
+      return expected.length === received.length && timingSafeEqual(expected, received);
+    });
+    if (!verified) {
       throw buildApiError(401, 'fs_gateway_token_invalid', 'Invalid gateway token signature', { requestId });
     }
     const header = this.decodeTokenSegment<Record<string, unknown>>(headerRaw, requestId);

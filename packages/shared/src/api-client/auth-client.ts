@@ -3,6 +3,7 @@ import {
   getCorrelationHeaders,
 } from '../index.js';
 import { DEFAULT_AGENT_PERMISSIONS } from '../permissions.js';
+import { hasInternalCredential, internalAuthHeaders } from './internal-keys.js';
 import type { AccessBindingScope } from '../schemas/auth.js';
 
 export interface JobTokenResult {
@@ -57,8 +58,8 @@ export async function mintServiceToken(
     return null;
   }
 
-  if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
-    console.warn('[auth-client] Missing EVE_INTERNAL_API_KEY or EVE_API_URL — cannot mint service token');
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    console.warn('[auth-client] Missing an internal key or EVE_API_URL — cannot mint service token');
     return null;
   }
 
@@ -68,7 +69,7 @@ export async function mintServiceToken(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+        ...internalAuthHeaders(),
         ...getCorrelationHeaders(),
       },
       body: JSON.stringify({
@@ -112,8 +113,8 @@ export async function mintJobToken(
 ): Promise<JobTokenResult | null> {
   const config = loadConfig();
 
-  if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
-    console.warn('[auth-client] Missing EVE_INTERNAL_API_KEY or EVE_API_URL — cannot mint job token');
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    console.warn('[auth-client] Missing an internal key or EVE_API_URL — cannot mint job token');
     return null;
   }
 
@@ -123,7 +124,7 @@ export async function mintJobToken(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+        ...internalAuthHeaders(),
         ...getCorrelationHeaders(),
       },
       body: JSON.stringify({
@@ -168,8 +169,8 @@ export async function mintAppLinkToken(
     return null;
   }
 
-  if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
-    console.warn('[auth-client] Missing EVE_INTERNAL_API_KEY or EVE_API_URL — cannot mint app-link token');
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    console.warn('[auth-client] Missing an internal key or EVE_API_URL — cannot mint app-link token');
     return null;
   }
 
@@ -179,7 +180,7 @@ export async function mintAppLinkToken(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+        ...internalAuthHeaders(),
         ...getCorrelationHeaders(),
       },
       body: JSON.stringify({

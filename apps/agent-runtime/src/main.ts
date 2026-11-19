@@ -7,8 +7,10 @@ import {
   assertInternalApiKeyConfigured,
   initServiceTelemetry,
   registerCorrelationIdHook,
+  legacyInternalKeyJudge,
   registerInternalAuthHook,
 } from '@eve/shared';
+import { internalLegacyKeyDecider, type Db } from '@eve/db';
 import { AppModule } from './app.module';
 import { checkProcessIsolation } from '@eve/shared';
 
@@ -21,7 +23,7 @@ async function bootstrap() {
   const port = resolvePort();
 
   const logger = (await initServiceTelemetry('agent-runtime')) as LoggerService;
-  // Every route except /health requires the internal key (fails closed).
+  // Every route except /health requires an internal key (fails closed).
   assertInternalApiKeyConfigured(logger, 'AGENT_RUNTIME');
 
   // Harnesses run as this process's UID; they must not be able to read its
@@ -35,7 +37,11 @@ async function bootstrap() {
   );
 
   registerCorrelationIdHook(app.getHttpAdapter().getInstance());
-  registerInternalAuthHook(app.getHttpAdapter().getInstance());
+  // The core key passes; a call with only the legacy key follows the
+  // instance's internal.service_key rule (refused under strict).
+  registerInternalAuthHook(app.getHttpAdapter().getInstance(), {
+    onLegacyKey: legacyInternalKeyJudge(internalLegacyKeyDecider(app.get<Db>('DB'), 'agent-runtime')),
+  });
 
   app.enableShutdownHooks();
   await app.listen(port, '0.0.0.0');

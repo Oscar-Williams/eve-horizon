@@ -5,10 +5,11 @@ import {
   type SecretResolveItem,
 } from '../index.js';
 import { apiPath } from './internal-fetch.js';
+import { hasInternalCredential, internalAuthHeaders } from './internal-keys.js';
 
 /**
  * Update an existing secret via the internal write-back API.
- * Uses the same EVE_API_URL + EVE_INTERNAL_API_KEY credentials as resolveProjectSecrets.
+ * Uses the same EVE_API_URL and internal key as resolveProjectSecrets.
  * Throws on non-2xx responses; callers should wrap in try/catch.
  * Only updates existing secrets — does not create new ones.
  */
@@ -19,8 +20,8 @@ export async function updateSecret(
   value: string,
 ): Promise<void> {
   const config = loadConfig();
-  if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
-    throw new Error(`Cannot update secret: EVE_API_URL or EVE_INTERNAL_API_KEY not configured`);
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    throw new Error(`Cannot update secret: EVE_API_URL or an internal key not configured`);
   }
 
   const url = `${config.EVE_API_URL}${apiPath`/internal/secrets/${scopeType}/${scopeId}/${key}`}`;
@@ -28,7 +29,7 @@ export async function updateSecret(
     method: 'PATCH',
     headers: {
       'content-type': 'application/json',
-      'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+      ...internalAuthHeaders(),
       ...getCorrelationHeaders(),
     },
     body: JSON.stringify({ value }),
@@ -60,12 +61,12 @@ export async function resolveProjectSecrets(
 ): Promise<SecretResolutionResult> {
   const config = loadConfig();
 
-  if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
-    console.error(`[secrets] Cannot resolve secrets: EVE_API_URL=${config.EVE_API_URL ? 'set' : 'MISSING'}, EVE_INTERNAL_API_KEY=${config.EVE_INTERNAL_API_KEY ? 'set' : 'MISSING'}`);
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    console.error(`[secrets] Cannot resolve secrets: EVE_API_URL=${config.EVE_API_URL ? 'set' : 'MISSING'}, internal key=${hasInternalCredential() ? 'set' : 'MISSING'}`);
     return {
       secrets: [],
       resolved: false,
-      error: `Worker missing ${!config.EVE_API_URL ? 'EVE_API_URL' : ''}${!config.EVE_API_URL && !config.EVE_INTERNAL_API_KEY ? ' and ' : ''}${!config.EVE_INTERNAL_API_KEY ? 'EVE_INTERNAL_API_KEY' : ''} — cannot reach secrets API`,
+      error: `Worker missing ${!config.EVE_API_URL ? 'EVE_API_URL' : ''}${!config.EVE_API_URL && !hasInternalCredential() ? ' and ' : ''}${!hasInternalCredential() ? 'EVE_INTERNAL_CORE_KEY (or EVE_INTERNAL_API_KEY)' : ''} — cannot reach secrets API`,
     };
   }
 
@@ -81,7 +82,7 @@ export async function resolveProjectSecrets(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+        ...internalAuthHeaders(),
         ...getCorrelationHeaders(),
       },
       body: JSON.stringify(body),

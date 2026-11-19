@@ -36,11 +36,23 @@ spec:
         - name: orchestrator
           image: eve-horizon/orchestrator:local
           imagePullPolicy: IfNotPresent
-          envFrom:
-            # Mount all secrets from eve-app
-            - secretRef:
-                name: eve-app
           env:
+            # Platform secrets: only the eve-app keys this service reads (no envFrom,
+            # so a key added to eve-app reaches no service that does not name it).
+            # Each is optional, as with envFrom: a missing key leaves the variable
+            # unset; the legacy EVE_INTERNAL_API_KEY is the fallback until it is removed.
+            - name: EVE_INTERNAL_CORE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CORE_KEY
+                  optional: true
+            - name: EVE_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_API_KEY
+                  optional: true
             # Shared cluster values come from the eve-cluster-config ConfigMap.
             # (No envFrom: the orchestrator must not inherit the storage/SSO vars.)
             - name: DATABASE_URL

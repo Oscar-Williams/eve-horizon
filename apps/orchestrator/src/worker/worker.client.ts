@@ -61,7 +61,7 @@ async function pollForCompletion(
     try {
       const response = await fetch(url, {
         headers: {
-          'x-eve-internal-token': config.EVE_INTERNAL_API_KEY!,
+          ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
           ...getCorrelationHeaders(),
         },
       });
@@ -116,7 +116,7 @@ async function pollForCompletion(
         const jobUrl = `${config.EVE_API_URL}${apiPath`/jobs/${jobId}`}`;
         const jobResponse = await fetch(jobUrl, {
           headers: {
-            'x-eve-internal-token': config.EVE_INTERNAL_API_KEY!,
+            ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
             ...getCorrelationHeaders(),
           },
         });
@@ -182,7 +182,7 @@ export async function invokeWorker(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...internalAuthHeaders(config.EVE_INTERNAL_API_KEY),
+          ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
           ...getCorrelationHeaders(),
         },
         body: JSON.stringify(invocation),
@@ -255,7 +255,7 @@ export async function invokeAgentRuntime(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...internalAuthHeaders(config.EVE_INTERNAL_API_KEY),
+          ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
           ...getCorrelationHeaders(),
         },
         body: JSON.stringify(invocation),
@@ -288,7 +288,7 @@ export async function invokeAgentRuntime(
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              ...internalAuthHeaders(config.EVE_INTERNAL_API_KEY),
+              ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
               ...getCorrelationHeaders(),
             },
             body: JSON.stringify(invocation),
@@ -363,7 +363,7 @@ export async function invokePipelineRun(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...internalAuthHeaders(config.EVE_INTERNAL_API_KEY),
+          ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
           ...getCorrelationHeaders(),
         },
         body: JSON.stringify({}),
@@ -442,7 +442,7 @@ async function invokeSubmitAndPollWorkerJob(
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...internalAuthHeaders(config.EVE_INTERNAL_API_KEY),
+            ...internalAuthHeaders({ legacyKey: config.EVE_INTERNAL_API_KEY }),
             ...getCorrelationHeaders(),
           },
           body: JSON.stringify({ jobId, attemptId, projectId }),

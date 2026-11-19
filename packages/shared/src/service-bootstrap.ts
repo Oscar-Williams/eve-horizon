@@ -1,4 +1,4 @@
-import { INTERNAL_TOKEN_HEADER, internalTokenMatches } from './api-client/internal-fetch.js';
+import { hasInternalCredential, judgeInternalCall } from './api-client/internal-keys.js';
 import { createJsonLogger, type JsonLogger } from './logger.js';
 import { CORRELATION_HEADER, ensureCorrelationId, runWithCorrelationContext } from './observability.js';
 import { initOtel } from './otel.js';
@@ -52,8 +52,8 @@ export function logStartupConfigWarnings(
   serviceLabel: string,
 ): void {
   const warnings: string[] = [];
-  if (!process.env.EVE_INTERNAL_API_KEY) {
-    warnings.push('EVE_INTERNAL_API_KEY is not set — secret resolution will be unavailable');
+  if (!hasInternalCredential()) {
+    warnings.push('Neither EVE_INTERNAL_CORE_KEY nor EVE_INTERNAL_API_KEY is set — secret resolution will be unavailable');
   }
   if (!process.env.EVE_API_URL) {
     warnings.push('EVE_API_URL is not set — API callbacks will be unavailable');
@@ -87,16 +87,25 @@ export function registerCorrelationIdHook(fastify: BootstrapFastifyInstance): vo
 export const INTERNAL_AUTH_OPEN_PATHS: readonly string[] = ['/health'];
 
 export interface InternalAuthHookOptions {
-  /** Expected token. Defaults to `EVE_INTERNAL_API_KEY`. */
+  /** The legacy key. Defaults to `EVE_INTERNAL_API_KEY`. */
   key?: string;
+  /** Where the core key and the caller hashes are read. Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
   /** Exact request paths served without the token. Defaults to `INTERNAL_AUTH_OPEN_PATHS`. */
   openPaths?: readonly string[];
+  /**
+   * Asked about a call that only the legacy key proves: true lets it
+   * through. Without it, such a call is let through (today's behaviour).
+   */
+  onLegacyKey?: (path: string) => boolean | Promise<boolean>;
 }
 
 /**
- * Require the internal token (`x-eve-internal-token` carrying
- * `EVE_INTERNAL_API_KEY`) on every request to an internal-only service except
- * the open probe paths.
+ * Require an internal key on every request to an internal-only service
+ * (worker, agent runtime) except the open probe paths: the core service key
+ * (`x-eve-service-key: core.<key>`), or the legacy `x-eve-internal-token`
+ * while the service still holds `EVE_INTERNAL_API_KEY` and `onLegacyKey`
+ * allows it. The gateway and SSO keys are refused: they call the API only.
  *
  * Registered as an `onRequest` hook rather than per-controller guards, so it
  * covers every route, including routes added later and unknown paths, and
@@ -107,39 +116,87 @@ export function registerInternalAuthHook(
   fastify: Pick<BootstrapFastifyInstance, 'addHook'>,
   options: InternalAuthHookOptions = {},
 ): void {
-  const key = options.key ?? process.env.EVE_INTERNAL_API_KEY;
+  const env = options.env ?? process.env;
+  const key = options.key ?? env.EVE_INTERNAL_API_KEY;
   const openPaths = new Set(options.openPaths ?? INTERNAL_AUTH_OPEN_PATHS);
+  const configured = Boolean(key || env.EVE_INTERNAL_CORE_KEY || env.EVE_INTERNAL_CALLER_HASHES);
   fastify.addHook('onRequest', (request: any, reply: any, done: () => void) => {
     const url: string = typeof request.url === 'string' ? request.url : '';
     const queryStart = url.indexOf('?');
     const path = queryStart === -1 ? url : url.slice(0, queryStart);
-    if (openPaths.has(path) || internalTokenMatches(request.headers?.[INTERNAL_TOKEN_HEADER], key)) {
+    const refuse = () => {
+      // Replying from onRequest without calling done() skips the route handler.
+      reply.code(401).send({
+        statusCode: 401,
+        error: 'Unauthorized',
+        message: configured ? 'Missing or invalid internal token' : 'Internal API key not configured',
+      });
+    };
+    if (openPaths.has(path)) {
       done();
       return;
     }
-    // Replying from onRequest without calling done() skips the route handler.
-    reply.code(401).send({
-      statusCode: 401,
-      error: 'Unauthorized',
-      message: key ? 'Missing or invalid internal token' : 'Internal API key not configured',
-    });
+    const call = judgeInternalCall(request.headers, { env, legacyKey: key ?? '' });
+    if (call?.kind === 'service') {
+      if (call.service === 'core') done();
+      else refuse();
+      return;
+    }
+    if (!call) {
+      refuse();
+      return;
+    }
+    if (!options.onLegacyKey) {
+      done();
+      return;
+    }
+    Promise.resolve()
+      .then(() => options.onLegacyKey!(path))
+      .then((allowed) => (allowed ? done() : refuse()), () => refuse());
   });
 }
 
 /**
- * Startup check for a service whose HTTP endpoints require the internal key.
+ * The `onLegacyKey` of an internal-only service: `decide` resolves the
+ * instance's `internal.service_key` profile and records the finding
+ * (`decideSecurityRule` in `@eve/db`). A call is refused under `strict`.
+ * The decision is reused for `cacheMs`, which also bounds how often
+ * findings are written. When the profile cannot be read, the call is let
+ * through as before this rule.
+ */
+export function legacyInternalKeyJudge(
+  decide: (path: string) => Promise<'legacy' | 'audit' | 'strict'>,
+  options: { cacheMs?: number; now?: () => number } = {},
+): (path: string) => Promise<boolean> {
+  const cacheMs = options.cacheMs ?? 30_000;
+  const now = options.now ?? Date.now;
+  let cached: { allowed: boolean; at: number } | null = null;
+  return async (path: string) => {
+    if (cached && now() - cached.at < cacheMs) return cached.allowed;
+    try {
+      const allowed = (await decide(path)) !== 'strict';
+      cached = { allowed, at: now() };
+      return allowed;
+    } catch {
+      return true;
+    }
+  };
+}
+
+/**
+ * Startup check for a service whose HTTP endpoints require an internal key.
  *
- * With `NODE_ENV=production` a missing `EVE_INTERNAL_API_KEY` stops the
- * service from starting, so a misconfigured deployment fails loudly instead
- * of refusing every call. Elsewhere it logs a warning; the endpoints still
- * fail closed.
+ * With `NODE_ENV=production` a service holding neither the core key nor the
+ * legacy `EVE_INTERNAL_API_KEY` stops at start, so a misconfigured
+ * deployment fails loudly instead of refusing every call. Elsewhere it logs
+ * a warning; the endpoints still fail closed.
  */
 export function assertInternalApiKeyConfigured(
   logger: { warn: (message: string) => void },
   serviceLabel: string,
   env: Record<string, string | undefined> = process.env,
 ): void {
-  if (env.EVE_INTERNAL_API_KEY) return;
+  if (hasInternalCredential({ env })) return;
   const message =
     `${serviceLabel}: EVE_INTERNAL_API_KEY is not set, so every request except ` +
     `${INTERNAL_AUTH_OPEN_PATHS.join(', ')} will be refused`;

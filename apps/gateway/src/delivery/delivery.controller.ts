@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { formatAgentReply } from '../providers/slack/slack-format.js';
-import { createJsonLogger, INTERNAL_TOKEN_HEADER, internalTokenMatches } from '@eve/shared';
+import { createJsonLogger, judgeInternalCall } from '@eve/shared';
 
 const logger = createJsonLogger('gateway');
 
@@ -28,10 +28,13 @@ export class DeliveryController {
   @Post('deliver')
   @HttpCode(HttpStatus.OK)
   async handleDelivery(
-    @Headers(INTERNAL_TOKEN_HEADER) token: string | undefined,
+    @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() body: DeliveryRequest,
   ) {
-    if (!internalTokenMatches(token, process.env.EVE_INTERNAL_API_KEY)) {
+    // Only core services deliver: the core key (the gateway holds its hash),
+    // or the legacy key while the gateway still holds it.
+    const call = judgeInternalCall(headers);
+    if (!call || (call.kind === 'service' && call.service !== 'core')) {
       throw new UnauthorizedException('Missing or invalid internal token');
     }
 

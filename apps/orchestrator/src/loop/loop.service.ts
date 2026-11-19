@@ -48,6 +48,8 @@ import {
   isSameActor,
   agentSecretsAllowlist,
   narrowSecretsAllowlist,
+  hasInternalCredential,
+  internalAuthHeaders,
 } from '@eve/shared';
 import {
   accessRoleQueries,
@@ -2797,7 +2799,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-eve-internal-token': this.config.EVE_INTERNAL_API_KEY ?? '',
+          ...internalAuthHeaders({ legacyKey: this.config.EVE_INTERNAL_API_KEY }),
         },
         body: JSON.stringify({
           job_id: job.id,
@@ -3313,9 +3315,9 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     projectId: string,
     userId?: string
   ): Promise<Record<string, string>> {
-    if (!this.config.EVE_INTERNAL_API_KEY || !this.config.EVE_API_URL) {
+    if ((!this.config.EVE_INTERNAL_API_KEY && !hasInternalCredential()) || !this.config.EVE_API_URL) {
       this.logger.warn(
-        `[resolveSecrets] Missing EVE_INTERNAL_API_KEY or EVE_API_URL — cannot resolve secrets for harness selection (project: ${projectId})`
+        `[resolveSecrets] Missing an internal key or EVE_API_URL — cannot resolve secrets for harness selection (project: ${projectId})`
       );
       return {};
     }
@@ -3326,7 +3328,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-eve-internal-token': this.config.EVE_INTERNAL_API_KEY,
+          ...internalAuthHeaders({ legacyKey: this.config.EVE_INTERNAL_API_KEY }),
         },
         body: JSON.stringify({ project_id: projectId, user_id: userId }),
       });

@@ -9,6 +9,7 @@
 import { randomUUID } from 'crypto';
 import { loadConfig } from '../config/schema.js';
 import { apiPath } from '../api-client/internal-fetch.js';
+import { internalAuthHeaders } from '../api-client/internal-keys.js';
 import type { ChatDeliveryContext, RelayDb } from './types.js';
 import { projectThreadId } from './thread-ownership.js';
 
@@ -229,7 +230,7 @@ export class EveMessageRelay {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-eve-internal-token': config.EVE_INTERNAL_API_KEY ?? process.env.EVE_INTERNAL_API_KEY ?? '',
+          ...internalAuthHeaders(),
         },
         body: JSON.stringify({
           job_id: this.jobId,

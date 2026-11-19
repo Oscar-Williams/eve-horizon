@@ -307,6 +307,21 @@ generate_auth_secrets() {
   existing_secrets_master_key=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_SECRETS_MASTER_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
   existing_bootstrap_token=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_BOOTSTRAP_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
+  # Internal service keys (core, gateway, SSO) and the registry credential
+  # key: kept when present, generated when missing. The caller hashes are
+  # always derived from the three keys.
+  local core_key gateway_key sso_key registry_credential_key caller_hashes
+  core_key=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_INTERNAL_CORE_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  gateway_key=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_INTERNAL_GATEWAY_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  sso_key=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_INTERNAL_SSO_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  registry_credential_key=$(eh_kubectl_local -n eve get secret eve-app -o jsonpath='{.data.EVE_REGISTRY_CREDENTIAL_KEY}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  [[ -n "$core_key" ]] || core_key=$(openssl rand -hex 32)
+  [[ -n "$gateway_key" ]] || gateway_key=$(openssl rand -hex 32)
+  [[ -n "$sso_key" ]] || sso_key=$(openssl rand -hex 32)
+  [[ -n "$registry_credential_key" ]] || registry_credential_key=$(openssl rand -hex 32)
+  caller_hashes="core:$(printf %s "$core_key" | openssl dgst -sha256 -r | cut -d' ' -f1),gateway:$(printf %s "$gateway_key" | openssl dgst -sha256 -r | cut -d' ' -f1),sso:$(printf %s "$sso_key" | openssl dgst -sha256 -r | cut -d' ' -f1)"
+  echo -e "  Internal service keys:     ${GREEN}ready${NC} (core, gateway, sso, caller hashes, registry credential key)"
+
   # Generate missing values
   local jwt_secret="${existing_jwt_secret}"
   local admin_pw="${existing_admin_pw}"
@@ -402,6 +417,11 @@ EOF
     EVE_AUTH_PRIVATE_KEY="$auth_private_key" \
     EVE_AUTH_PUBLIC_KEY="$auth_public_key" \
     EVE_INTERNAL_API_KEY="$internal_api_key" \
+    EVE_INTERNAL_CORE_KEY="$core_key" \
+    EVE_INTERNAL_GATEWAY_KEY="$gateway_key" \
+    EVE_INTERNAL_SSO_KEY="$sso_key" \
+    EVE_INTERNAL_CALLER_HASHES="$caller_hashes" \
+    EVE_REGISTRY_CREDENTIAL_KEY="$registry_credential_key" \
     EVE_SECRETS_MASTER_KEY="$secrets_master_key" \
     EVE_BOOTSTRAP_TOKEN="$bootstrap_token" \
     EVE_GITHUB_WEBHOOK_SECRET="${EVE_GITHUB_WEBHOOK_SECRET:-}" \
@@ -416,6 +436,11 @@ const keys = [
   'SUPABASE_AUTH_SERVICE_KEY',
   'SUPABASE_ANON_KEY',
   'EVE_INTERNAL_API_KEY',
+  'EVE_INTERNAL_CORE_KEY',
+  'EVE_INTERNAL_GATEWAY_KEY',
+  'EVE_INTERNAL_SSO_KEY',
+  'EVE_INTERNAL_CALLER_HASHES',
+  'EVE_REGISTRY_CREDENTIAL_KEY',
   'EVE_SECRETS_MASTER_KEY',
   'EVE_BOOTSTRAP_TOKEN',
   'EVE_GITHUB_WEBHOOK_SECRET',

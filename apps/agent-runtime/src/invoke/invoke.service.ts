@@ -151,7 +151,7 @@ import {
 } from './toolchains';
 import type { SecretResolveItem, EveAgentCliOptions } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
-import { serviceHelperEnv } from '@eve/shared';
+import { internalAuthHeaders, serviceHelperEnv } from '@eve/shared';
 
 const DEFAULT_K8S_NAMESPACE = 'eve';
 
@@ -593,7 +593,6 @@ export class InvokeService implements OnModuleInit {
     const usedNames = new Set<string>();
 
     const apiUrl = process.env.EVE_API_URL;
-    const internalToken = process.env.EVE_INTERNAL_API_KEY ?? '';
 
     if (!apiUrl) {
       console.warn('[attachments] EVE_API_URL not set, skipping attachment staging');
@@ -621,7 +620,7 @@ export class InvokeService implements OnModuleInit {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-eve-internal-token': internalToken,
+            ...internalAuthHeaders(),
           },
           // The API presigns only keys under this job's org.
           body: JSON.stringify({ key, operation: 'download', job_id: jobId }),

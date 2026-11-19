@@ -14,6 +14,8 @@ import {
   generateEventId,
   isPlainApiPath,
   loadConfig,
+  hasInternalCredential,
+  internalAuthHeaders,
 } from '@eve/shared';
 import { TriggerMatcherService, type TriggerMatch } from './trigger-matcher.service';
 
@@ -352,8 +354,8 @@ export class EventRouterService implements OnModuleInit {
     match: TriggerMatch,
     event: Event,
   ): Promise<void> {
-    if (!this.config.EVE_INTERNAL_API_KEY) {
-      throw new Error('EVE_INTERNAL_API_KEY is required for trigger execution');
+    if (!this.config.EVE_INTERNAL_API_KEY && !hasInternalCredential()) {
+      throw new Error('EVE_INTERNAL_CORE_KEY or EVE_INTERNAL_API_KEY is required for trigger execution');
     }
 
     if (!this.config.EVE_API_URL) {
@@ -533,10 +535,9 @@ export class EventRouterService implements OnModuleInit {
       throw new Error(`Internal API request refused: not a plain API path (${JSON.stringify(path)})`);
     }
 
-    const token = this.config.EVE_INTERNAL_API_KEY;
-    if (!token) {
+    if (!this.config.EVE_INTERNAL_API_KEY && !hasInternalCredential()) {
       throw new Error(
-        'EVE_INTERNAL_API_KEY is required for trigger execution',
+        'EVE_INTERNAL_CORE_KEY or EVE_INTERNAL_API_KEY is required for trigger execution',
       );
     }
 
@@ -545,7 +546,7 @@ export class EventRouterService implements OnModuleInit {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-eve-internal-token': token,
+        ...internalAuthHeaders({ legacyKey: this.config.EVE_INTERNAL_API_KEY }),
       },
       body: JSON.stringify(body),
     });

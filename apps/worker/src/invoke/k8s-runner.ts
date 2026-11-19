@@ -1,4 +1,4 @@
-import { apiPath, internalAuthHeaders } from '@eve/shared';
+import { apiPath, hasInternalCredential, internalAuthHeaders, internalKeyHash } from '@eve/shared';
 import { setTimeout as delay } from 'node:timers/promises';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
@@ -66,7 +66,7 @@ async function pollForCompletion(
     `&limit=50`;
   console.log(`[k8s-poll] Starting poll for attemptId=${attemptId} projectId=${projectId}`);
   console.log(`[k8s-poll] URL: ${url}`);
-  console.log(`[k8s-poll] Has internal API key: ${!!config.EVE_INTERNAL_API_KEY}`);
+  console.log(`[k8s-poll] Has internal key: ${hasInternalCredential()}`);
 
   while (Date.now() - startTime < timeoutMs) {
     signal?.throwIfAborted();
@@ -75,7 +75,7 @@ async function pollForCompletion(
       const response = await fetch(url, {
         signal,
         headers: {
-          'x-eve-internal-token': config.EVE_INTERNAL_API_KEY!,
+          ...internalAuthHeaders(),
           ...getCorrelationHeaders(),
         },
       });
@@ -247,6 +247,11 @@ export function buildRunnerManifests(
 
   pushOptionalEnv(envEntries, 'EVE_API_URL');
   pushOptionalEnv(envEntries, 'EVE_INTERNAL_API_KEY');
+  // The runner serves the worker app: it verifies the core key the platform
+  // submits with by its hash, and never holds the key itself.
+  if (process.env.EVE_INTERNAL_CORE_KEY) {
+    envEntries.push({ name: 'EVE_INTERNAL_CALLER_HASHES', value: `core:${internalKeyHash(process.env.EVE_INTERNAL_CORE_KEY)}` });
+  }
   pushOptionalEnv(envEntries, 'EVE_K8S_SERVICE_READY_TIMEOUT');
 
   // Build init containers for toolchain injection

@@ -4,6 +4,7 @@ import {
   type HarnessResult,
 } from '../index.js';
 import { apiPath } from './internal-fetch.js';
+import { hasInternalCredential, internalAuthHeaders } from './internal-keys.js';
 
 export type RunnerEmitterEventType =
   | 'runner.started'
@@ -47,9 +48,9 @@ export async function emitRunnerEvent(
     const config = loadConfig();
 
     // Check if API connection is configured
-    if (!config.EVE_INTERNAL_API_KEY || !config.EVE_API_URL) {
+    if (!hasInternalCredential() || !config.EVE_API_URL) {
       console.warn(
-        `[emitRunnerEvent] API connection not configured (missing EVE_API_URL or EVE_INTERNAL_API_KEY), skipping event emission for ${eventType}`
+        `[emitRunnerEvent] API connection not configured (missing EVE_API_URL or an internal key), skipping event emission for ${eventType}`
       );
       return { success: false, error: 'API connection not configured' };
     }
@@ -67,7 +68,7 @@ export async function emitRunnerEvent(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
+        ...internalAuthHeaders(),
         ...getCorrelationHeaders(),
       },
       body: JSON.stringify(eventBody),

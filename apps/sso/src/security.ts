@@ -1,6 +1,6 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { EVE_DEFAULT_DOMAIN, EVE_INTERNAL_API_KEY, SIGNUP_ALLOWED_DOMAINS } from './config.js';
+import { EVE_DEFAULT_DOMAIN, EVE_INTERNAL_API_KEY, EVE_INTERNAL_SSO_KEY, SIGNUP_ALLOWED_DOMAINS } from './config.js';
 import { checkSessionOrigin, fetchAppContext } from './gotrue-client.js';
 
 // Wrap tokens have the typeid('mlw') shape: lowercase prefix + 26-char base32.
@@ -92,26 +92,36 @@ export function isSignupEmailAllowed(email: string): boolean {
 }
 
 /**
- * The CSRF value for a sign-in link form: HMAC-SHA256, keyed with the
- * internal API key, of the wrap token and this browser's flow nonce (from its
- * host-only state cookie). A value read in one browser does not work in
- * another; the wrap token itself remains the bearer credential.
+ * The CSRF value for a sign-in link form: HMAC-SHA256, keyed with the SSO's
+ * own key (the legacy internal key until that is set), of the wrap token and
+ * this browser's flow nonce (from its host-only state cookie). A value read
+ * in one browser does not work in another; the wrap token itself remains the
+ * bearer credential.
  */
 export function signWrapCsrf(wrapToken: string, flowNonce: string): string {
-  if (!EVE_INTERNAL_API_KEY) {
-    throw new Error('EVE_INTERNAL_API_KEY is required to sign sign-in link forms');
+  const key = EVE_INTERNAL_SSO_KEY || EVE_INTERNAL_API_KEY;
+  if (!key) {
+    throw new Error('EVE_INTERNAL_SSO_KEY or EVE_INTERNAL_API_KEY is required to sign sign-in link forms');
   }
-  return createHmac('sha256', EVE_INTERNAL_API_KEY).update(`${wrapToken}\n${flowNonce}`).digest('hex');
+  return wrapCsrf(key, wrapToken, flowNonce);
 }
 
+function wrapCsrf(key: string, wrapToken: string, flowNonce: string): string {
+  return createHmac('sha256', key).update(`${wrapToken}\n${flowNonce}`).digest('hex');
+}
+
+/**
+ * Check a sign-in link form's CSRF value. A form rendered under the legacy
+ * key still submits while that key is set, so switching to the SSO key does
+ * not break a sign-in in progress.
+ */
 export function verifyWrapCsrf(wrapToken: string, flowNonce: string | undefined, nonce: string): boolean {
-  if (!flowNonce || !nonce || nonce.length !== 64 || !EVE_INTERNAL_API_KEY) return false;
-  const expected = signWrapCsrf(wrapToken, flowNonce);
-  try {
-    return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(nonce, 'hex'));
-  } catch {
-    return false;
-  }
+  if (!flowNonce || !nonce || nonce.length !== 64) return false;
+  const presented = Buffer.from(nonce, 'hex');
+  if (presented.length !== 32) return false;
+  return [EVE_INTERNAL_SSO_KEY, EVE_INTERNAL_API_KEY]
+    .filter(Boolean)
+    .some((key) => timingSafeEqual(Buffer.from(wrapCsrf(key, wrapToken, flowNonce), 'hex'), presented));
 }
 
 export function isValidWrapToken(token: string): boolean {

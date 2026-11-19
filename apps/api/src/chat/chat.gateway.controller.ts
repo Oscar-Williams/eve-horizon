@@ -34,7 +34,7 @@ import {
 import { zodSchemaToOpenApi } from '../openapi.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { Public } from '../auth/auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { ChatService } from './chat.service.js';
 import { Inject } from '@nestjs/common';
 import type { Db } from '@eve/db';
@@ -43,6 +43,7 @@ import { agentQueries, orgQueries, teamQueries } from '@eve/db';
 @ApiTags('internal')
 @Controller('internal/orgs/:org_id/chat')
 @UseGuards(InternalTokenGuard)
+@InternalCallers('gateway')
 export class ChatGatewayController {
   private agents: ReturnType<typeof agentQueries>;
   private orgs: ReturnType<typeof orgQueries>;

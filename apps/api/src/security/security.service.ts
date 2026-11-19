@@ -35,6 +35,11 @@ export interface SecurityGateContext extends SecurityScope {
   /** Whose profile decides: the side the rule protects. */
   governing: SecurityGoverningScope;
   actor?: AuthUser | null;
+  /**
+   * Who acted, when it is not a user or token (a platform service, a key):
+   * recorded in place of the actor.
+   */
+  principal?: { type: string; id: string };
   /** Names and ids only; never a secret, token, value or request body. */
   detail?: Record<string, string | number | boolean | null>;
   /**
@@ -340,7 +345,7 @@ export class SecurityService {
     orgId: string | null,
     ctx: SecurityGateContext,
   ): Promise<void> {
-    const [actorType, actorId] = describeActor(ctx.actor);
+    const [actorType, actorId] = ctx.principal ? [ctx.principal.type, ctx.principal.id] : describeActor(ctx.actor);
     const day = new Date().toISOString().slice(0, 10);
     const key = [rule, profile, orgId ?? '', ctx.projectId ?? '', actorType, actorId, day].join('|');
     const now = Date.now();

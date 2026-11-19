@@ -1,27 +1,32 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { internalTokenMatches } from '@eve/shared';
+import { identifyInternalCaller, internalTokenMatches, SERVICE_KEY_HEADER } from '@eve/shared';
 
 /**
- * Guard to protect internal admin endpoints with EVE_INTERNAL_API_KEY.
+ * Guard to protect internal admin endpoints.
  *
- * Accepts the key via:
+ * Accepts the core service key (`x-eve-service-key: core.<key>`), or the
+ * legacy EVE_INTERNAL_API_KEY via:
  * - `x-internal-api-key` header, OR
  * - `Authorization: Bearer <key>` header
  *
- * If EVE_INTERNAL_API_KEY is not configured, all requests are REJECTED (fail closed).
+ * If no key is configured, all requests are REJECTED (fail closed).
  */
 @Injectable()
 export class InternalApiKeyGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+    const headers = request?.headers;
+
+    if (headers && identifyInternalCaller(headers[SERVICE_KEY_HEADER]) === 'core') {
+      return true;
+    }
+
     const configuredKey = process.env.EVE_INTERNAL_API_KEY;
 
     // Fail closed: if no key is configured, reject all requests
     if (!configuredKey) {
       throw new UnauthorizedException('Internal API key not configured');
     }
-
-    const request = context.switchToHttp().getRequest();
-    const headers = request?.headers;
 
     if (!headers) {
       throw new UnauthorizedException('Missing headers');

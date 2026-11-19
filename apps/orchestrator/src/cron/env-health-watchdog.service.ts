@@ -13,6 +13,7 @@ import {
   type HealthAction,
   type HealthStatus,
 } from '@eve/db';
+import { hasInternalCredential, internalAuthHeaders } from '@eve/shared';
 
 // ---------------------------------------------------------------------------
 // Config from env vars (with sensible defaults)
@@ -453,8 +454,7 @@ export class EnvHealthWatchdogService implements OnModuleInit, OnModuleDestroy {
 
     // Fire notification (fire-and-forget)
     const apiUrl = process.env.EVE_API_URL;
-    const token = process.env.EVE_INTERNAL_API_KEY;
-    if (!apiUrl || !token) return;
+    if (!apiUrl || !hasInternalCredential()) return;
 
     const severity = newStatus === 'critical' ? 'critical' : newStatus === 'degraded' ? 'warning' : 'info';
 
@@ -462,7 +462,7 @@ export class EnvHealthWatchdogService implements OnModuleInit, OnModuleDestroy {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-eve-internal-token': token,
+        ...internalAuthHeaders(),
       },
       body: JSON.stringify({
         severity,
@@ -629,11 +629,10 @@ export class EnvHealthWatchdogService implements OnModuleInit, OnModuleDestroy {
     await this.appendCostSummary(lines, new Date());
 
     const apiUrl = process.env.EVE_API_URL;
-    const token = process.env.EVE_INTERNAL_API_KEY;
-    if (apiUrl && token) {
+    if (apiUrl && hasInternalCredential()) {
       await fetch(`${apiUrl}/internal/platform-notify`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-eve-internal-token': token },
+        headers: { 'content-type': 'application/json', ...internalAuthHeaders() },
         body: JSON.stringify({
           severity: 'info',
           type: 'sentinel.report',

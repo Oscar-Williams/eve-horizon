@@ -21,11 +21,95 @@ spec:
         - name: api
           image: eve-horizon/api:local
           imagePullPolicy: IfNotPresent
-          envFrom:
-            # Mount all secrets from eve-app (auth tokens, API keys, etc.)
-            - secretRef:
-                name: eve-app
           env:
+            # Platform secrets: only the eve-app keys this service reads (no envFrom,
+            # so a key added to eve-app reaches no service that does not name it).
+            # Each is optional, as with envFrom: a missing key leaves the variable
+            # unset; the legacy EVE_INTERNAL_API_KEY is the fallback until it is removed.
+            - name: EVE_INTERNAL_CORE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CORE_KEY
+                  optional: true
+            - name: EVE_INTERNAL_CALLER_HASHES
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CALLER_HASHES
+                  optional: true
+            - name: EVE_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_API_KEY
+                  optional: true
+            - name: EVE_REGISTRY_CREDENTIAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_REGISTRY_CREDENTIAL_KEY
+                  optional: true
+            - name: EVE_REGISTRY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_REGISTRY_SIGNING_KEY
+                  optional: true
+            - name: EVE_SECRETS_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_SECRETS_MASTER_KEY
+                  optional: true
+            - name: EVE_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_BOOTSTRAP_TOKEN
+                  optional: true
+            - name: EVE_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_GITHUB_WEBHOOK_SECRET
+                  optional: true
+            - name: EVE_AUTH_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_AUTH_PRIVATE_KEY
+                  optional: true
+            - name: EVE_AUTH_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_AUTH_PUBLIC_KEY
+                  optional: true
+            - name: EVE_ORG_FS_LINK_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_ORG_FS_LINK_TOKEN_SECRET
+                  optional: true
+            - name: SUPABASE_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: SUPABASE_JWT_SECRET
+                  optional: true
+            - name: SUPABASE_AUTH_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: SUPABASE_AUTH_SERVICE_KEY
+                  optional: true
+            - name: SUPABASE_ANON_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: SUPABASE_ANON_KEY
+                  optional: true
             # Shared cluster values come from the eve-cluster-config ConfigMap.
             # (No envFrom here: the api must not inherit EVE_API_URL from it.)
             - name: DATABASE_URL

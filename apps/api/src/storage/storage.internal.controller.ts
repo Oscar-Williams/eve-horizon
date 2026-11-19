@@ -13,7 +13,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { z } from 'zod';
 import type { Db } from '@eve/db';
 import { Public } from '../auth/auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { StorageService } from './storage.service.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 
@@ -30,6 +30,7 @@ type PresignRequest = z.infer<typeof PresignRequestSchema>;
 @ApiTags('internal')
 @Controller('internal/storage/chat-attachments')
 @UseGuards(InternalTokenGuard)
+@InternalCallers('gateway')
 export class StorageInternalController {
   constructor(
     private readonly storage: StorageService,

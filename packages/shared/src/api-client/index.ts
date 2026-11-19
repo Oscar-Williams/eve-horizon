@@ -20,3 +20,15 @@ export {
   INTERNAL_TOKEN_HEADER,
 } from './internal-fetch.js';
 export type { InternalApiFetchOptions } from './internal-fetch.js';
+
+export {
+  hasInternalCredential,
+  identifyInternalCaller,
+  internalKeyHash,
+  judgeInternalCall,
+  INTERNAL_CALLER_HASHES_ENV,
+  INTERNAL_KEY_ENV,
+  INTERNAL_KEY_SERVICES,
+  SERVICE_KEY_HEADER,
+} from './internal-keys.js';
+export type { InternalCall, InternalKeyService } from './internal-keys.js';

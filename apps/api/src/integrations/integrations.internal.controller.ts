@@ -26,7 +26,7 @@ import { z } from 'zod';
 import { zodSchemaToOpenApi } from '../openapi.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { Public } from '../auth/auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { IntegrationsService } from './integrations.service.js';
 
 const IntegrationTokensRequestSchema = z.object({
@@ -39,6 +39,7 @@ const IntegrationTokensResponseSchema = z.object({
 @ApiTags('internal')
 @Controller('internal')
 @UseGuards(InternalTokenGuard)
+@InternalCallers('gateway')
 export class IntegrationsInternalController {
   constructor(private readonly integrationsService: IntegrationsService) {}
 

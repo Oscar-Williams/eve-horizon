@@ -92,14 +92,16 @@ describe('k8s/base platform secrets', () => {
     }
   });
 
-  it('every eve-app key a workload takes is declared in the Secret, and the internal keys are optional', () => {
+  it('every eve-app key a platform service takes is optional, as with envFrom, and the internal keys are declared', () => {
     const declared = new Set(Object.keys(manifests.find((m) => m.kind === 'Secret' && m.metadata.name === 'eve-app')?.stringData ?? {}));
-    const refs = workloads.flatMap((w) => containersOf(w).flatMap((c) => c.env ?? []))
+    const services = ['eve-api', 'eve-worker', 'eve-orchestrator', 'eve-agent-runtime', 'eve-gateway', 'eve-sso'];
+    const refs = workloads.filter((w) => services.includes(w.metadata.name))
+      .flatMap((w) => containersOf(w).flatMap((c) => c.env ?? []))
       .map((e) => e.valueFrom?.secretKeyRef)
       .filter((ref): ref is SecretKeyRef => ref?.name === 'eve-app');
     expect(refs.length).toBeGreaterThan(0);
-    expect(refs.filter((ref) => !declared.has(ref.key)).map((ref) => ref.key)).toEqual([]);
-    const internal = refs.filter((ref) => [...NEW_KEYS, 'EVE_INTERNAL_API_KEY'].includes(ref.key));
-    expect(internal.filter((ref) => ref.optional !== true).map((ref) => ref.key)).toEqual([]);
+    // A required ref to a key the Secret lacks would stop the pod from starting.
+    expect(refs.filter((ref) => ref.optional !== true).map((ref) => ref.key)).toEqual([]);
+    expect([...NEW_KEYS, 'EVE_INTERNAL_API_KEY'].filter((key) => !declared.has(key))).toEqual([]);
   });
 });

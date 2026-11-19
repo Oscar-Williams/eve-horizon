@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Public } from '../auth/auth.decorator.js';
-import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { PlatformNotifyService } from './platform-notify.service.js';
 import type { PlatformAlert } from './platform-notify.service.js';
 import { PlatformResponderService } from './platform-responder.service.js';
@@ -32,6 +32,7 @@ export class PlatformNotifyController {
   }
 
   @Post('platform-respond')
+  @InternalCallers('gateway')
   @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Handle inbound message from sentinel channel (internal only)' })
@@ -41,6 +42,7 @@ export class PlatformNotifyController {
   }
 
   @Get('sentinel-config')
+  @InternalCallers('gateway')
   @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Return sentinel Slack channel config (internal only)' })

@@ -7,7 +7,7 @@ async function requestJson<TResponse>(
   opts: { method: 'GET' | 'POST'; body?: JsonValue },
 ): Promise<TResponse> {
   // Every gateway call names a fixed internal route: refuse a path that
-  // would reach a different one before it is sent with the internal key.
+  // would reach a different one before it is sent with the gateway's key.
   if (!isPlainApiPath(path)) {
     throw new Error('Gateway API request refused: not a plain API path');
   }
@@ -17,7 +17,9 @@ async function requestJson<TResponse>(
     throw new Error('EVE_API_URL is required for gateway API calls');
   }
 
-  const response = await internalApiFetch(path, { ...opts, baseUrl });
+  // The gateway's own key: the API accepts it only on the routes that
+  // declare the gateway (@InternalCallers).
+  const response = await internalApiFetch(path, { ...opts, baseUrl, service: 'gateway' });
 
   if (!response.ok) {
     const text = await response.text();

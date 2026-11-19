@@ -16,6 +16,7 @@ import {
 import {
   generateThreadId,
   generateEventId,
+  internalAuthHeaders,
   loadConfig,
   resolveHarnessProfile as sharedResolveHarnessProfile,
   ChatHintsSchema,
@@ -216,7 +217,7 @@ export class ChatService {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-eve-internal-token': config.EVE_INTERNAL_API_KEY ?? '',
+          ...internalAuthHeaders(),
         },
         body: JSON.stringify({
           provider,

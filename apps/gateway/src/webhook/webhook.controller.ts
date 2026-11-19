@@ -10,7 +10,7 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createJsonLogger, INTERNAL_TOKEN_HEADER, internalTokenMatches } from '@eve/shared';
+import { createJsonLogger, judgeInternalCall } from '@eve/shared';
 import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { GatewayChatService } from '../chat/gateway-chat.service.js';
 import { postJson, getJson } from '../api-client.js';
@@ -253,7 +253,8 @@ export class WebhookController {
     if (!isSimulateEnabled()) {
       throw new NotFoundException('Simulate endpoint disabled');
     }
-    if (!internalTokenMatches(req.headers?.[INTERNAL_TOKEN_HEADER], process.env.EVE_INTERNAL_API_KEY)) {
+    const call = judgeInternalCall(req.headers);
+    if (!call || (call.kind === 'service' && call.service !== 'core')) {
       throw new UnauthorizedException('Missing or invalid internal token');
     }
 

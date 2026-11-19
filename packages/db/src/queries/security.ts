@@ -270,3 +270,22 @@ export async function decideSecurityRule(
   }
   return profile;
 }
+
+/**
+ * `internal.service_key` for an internal-only service (worker, agent
+ * runtime): decide a call that only the legacy internal key proves, and
+ * record the finding. For `legacyInternalKeyJudge` in `@eve/shared`, which
+ * caches the decision.
+ */
+export function internalLegacyKeyDecider(
+  db: Db,
+  callee: string,
+): (path: string) => Promise<SecurityProfile> {
+  return (path: string) =>
+    decideSecurityRule(db, 'internal.service_key', {
+      governing: 'instance',
+      actorType: 'service',
+      actorId: 'legacy-key',
+      detail: { callee, route: path.slice(0, 120) },
+    });
+}

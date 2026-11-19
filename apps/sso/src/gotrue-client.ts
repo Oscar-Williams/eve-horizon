@@ -1,10 +1,10 @@
 import { internalApiFetch } from '@eve/shared';
-import { EVE_API_URL, EVE_INTERNAL_API_KEY, SUPABASE_ANON_KEY, SUPABASE_AUTH_URL } from './config.js';
+import { EVE_API_URL, EVE_INTERNAL_API_KEY, EVE_INTERNAL_SSO_KEY, SUPABASE_ANON_KEY, SUPABASE_AUTH_URL } from './config.js';
 import type { SsoLoginContext } from './types.js';
 
 export async function internalApiPost<T>(path: string, body: Record<string, unknown>): Promise<T | null> {
-  if (!EVE_INTERNAL_API_KEY) {
-    console.error('[wrap] EVE_INTERNAL_API_KEY not configured — refusing to call internal API');
+  if (!EVE_INTERNAL_SSO_KEY && !EVE_INTERNAL_API_KEY) {
+    console.error('[wrap] Neither EVE_INTERNAL_SSO_KEY nor EVE_INTERNAL_API_KEY is configured — refusing to call internal API');
     return null;
   }
   try {
@@ -12,6 +12,7 @@ export async function internalApiPost<T>(path: string, body: Record<string, unkn
       method: 'POST',
       body,
       baseUrl: EVE_API_URL,
+      service: 'sso',
       internalToken: EVE_INTERNAL_API_KEY,
     });
     if (!res.ok) {

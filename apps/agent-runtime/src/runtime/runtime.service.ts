@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { apiPath, loadConfig } from '@eve/shared';
+import { apiPath, hasInternalCredential, internalAuthHeaders, loadConfig } from '@eve/shared';
 import type { Db } from '@eve/db';
 import { agentPlacementQueries, agentRuntimePodQueries } from '@eve/db';
 
@@ -154,8 +154,8 @@ export class RuntimeService implements OnModuleInit, OnModuleDestroy {
     const podName = this.resolvePodName();
     const capacity = parseInt(process.env.AGENT_RUNTIME_CAPACITY ?? '0', 10);
     const status = process.env.AGENT_RUNTIME_STATUS ?? 'healthy';
-    if (!config.EVE_API_URL || !config.EVE_INTERNAL_API_KEY) {
-      this.logger.warn('EVE_API_URL or EVE_INTERNAL_API_KEY not set; heartbeat disabled');
+    if (!config.EVE_API_URL || !hasInternalCredential()) {
+      this.logger.warn('EVE_API_URL or an internal key (EVE_INTERNAL_CORE_KEY, EVE_INTERNAL_API_KEY) not set; heartbeat disabled');
       return;
     }
 
@@ -189,7 +189,7 @@ export class RuntimeService implements OnModuleInit, OnModuleDestroy {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'x-eve-internal-token': config.EVE_INTERNAL_API_KEY!,
+                ...internalAuthHeaders(),
               },
               body: JSON.stringify({
                 pod_name: podName,
@@ -259,12 +259,10 @@ export class RuntimeService implements OnModuleInit, OnModuleDestroy {
     const config = loadConfig();
 
     // Try the API first (preferred — keeps the runtime as a pure API client)
-    if (config.EVE_API_URL && config.EVE_INTERNAL_API_KEY) {
+    if (config.EVE_API_URL && hasInternalCredential()) {
       try {
         const response = await fetch(`${config.EVE_API_URL}/internal/agent-runtime/orgs`, {
-          headers: {
-            'x-eve-internal-token': config.EVE_INTERNAL_API_KEY,
-          },
+          headers: internalAuthHeaders(),
         });
         if (response.ok) {
           const data = (await response.json()) as { org_ids: string[] };

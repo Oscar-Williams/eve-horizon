@@ -5,7 +5,8 @@ import { PlatformNotifyService, type PlatformAlert } from './platform-notify.ser
 // Mock loadConfig — must be hoisted before the import resolves
 // ---------------------------------------------------------------------------
 const mockConfig: Record<string, string | undefined> = {};
-vi.mock('@eve/shared', () => ({
+vi.mock('@eve/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/shared')>()),
   loadConfig: () => mockConfig,
 }));
 
@@ -67,6 +68,8 @@ beforeEach(() => {
   Object.keys(mockConfig).forEach((k) => delete mockConfig[k]);
   mockConfig.EVE_GATEWAY_URL = 'http://gateway.test:4820';
   mockConfig.EVE_INTERNAL_API_KEY = 'test-internal-key';
+  // The delivery headers come from the process environment.
+  vi.stubEnv('EVE_INTERNAL_API_KEY', 'test-internal-key');
 });
 
 // Restore after all tests
