@@ -30,12 +30,15 @@ export const DEFAULT_HARNESS_PREFERENCE: HarnessCanonicalName[] = [
  * @param options.projectPreference - Project-level harness preference order
  * @param options.systemPreference - System-level harness preference order
  * @param options.env - Resolved secrets to use for auth checks (merged with process.env)
+ * @param options.hostCredentials - False to count only `env`
  */
 export function selectAvailableHarness(options: {
   explicit?: string;
   projectPreference?: string[];
   systemPreference?: string[];
   env?: Record<string, string | undefined>;
+  /** False: only `env` counts, not this host's environment or credential files. */
+  hostCredentials?: boolean;
 }): HarnessSelectionResult {
   // 1. If explicit harness specified, use it (no fallback - honor user intent)
   if (options.explicit) {
@@ -71,7 +74,7 @@ export function selectAvailableHarness(options: {
     if (!canonical) continue;
 
     checked.push(canonical);
-    const authStatus = getHarnessAuthStatus(canonical, options.env);
+    const authStatus = getHarnessAuthStatus(canonical, options.env, { hostCredentials: options.hostCredentials });
 
     if (authStatus.available) {
       return { harness: canonical, source, checked, unavailable };

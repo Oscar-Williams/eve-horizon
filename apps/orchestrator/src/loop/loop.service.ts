@@ -52,6 +52,7 @@ import {
   agentConfigQueries,
   agentQueries,
   decideSecurityRule,
+  governingSecurityProfile,
   findJobAgent,
   eventQueries,
   gateQueries,
@@ -447,6 +448,15 @@ export function mayFeedStep(
  * to resolve none, whoever owns that account later. The 'system' actor of
  * internal runs is no user.
  */
+/** The harness chosen for an attempt, and where its credential may come from. */
+interface HarnessRouting {
+  harnessSpec: string;
+  profileHash: string | null;
+  profileSource: string | null;
+  /** Under the project's strict profile: credentials only from the job's secrets. */
+  credentialsFromSecretsOnly?: boolean;
+}
+
 export function secretsUserIdForJob(job: Pick<Job, 'actor_user_id' | 'user_secrets_excluded'>): string | undefined {
   if (!hasUserActor(job.actor_user_id) || job.user_secrets_excluded) {
     return undefined;
@@ -2061,7 +2071,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     job: Job,
     attempt: JobAttempt,
     executionType: string,
-  ): Promise<{ harnessSpec: string; profileHash: string | null; profileSource: string | null }> {
+  ): Promise<HarnessRouting> {
     const manifestDefaults = await this.getManifestDefaults(job.project_id);
     const systemPreference = await this.getSystemHarnessPreference();
     const explicit = attempt.harness ?? job.harness ?? undefined;
@@ -2077,18 +2087,42 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    // Resolve secrets from all scopes (system -> org -> project -> user) for harness selection
-    const resolvedSecrets = await this.resolveSecretsForHarnessSelection(job.project_id);
+    // Under the project's strict profile a harness credential counts only from
+    // the project, org, system or job-actor secrets, never from this host or
+    // the worker's (rule harness.missing_credential).
+    const secretsOnly = (await governingSecurityProfile(this.db, { projectId: job.project_id, governing: 'project' })) === 'strict';
+    const actorUserId = secretsUserIdForJob(job);
 
-    const selection = selectAvailableHarness({
-      explicit,
-      projectPreference,
-      systemPreference,
-      env: resolvedSecrets,
-    });
-    if (selection.source === 'explicit') {
-      await this.checkExplicitHarnessCredential(job, selection.harness, resolvedSecrets);
+    // Resolve secrets from all scopes (system -> org -> project, and the job
+    // actor's under strict) for harness selection
+    const resolvedSecrets = secretsOnly && actorUserId
+      ? await this.resolveSecretsForHarnessSelection(job.project_id, actorUserId)
+      : await this.resolveSecretsForHarnessSelection(job.project_id);
+
+    let selection: ReturnType<typeof selectAvailableHarness>;
+    try {
+      selection = selectAvailableHarness({
+        explicit,
+        projectPreference,
+        systemPreference,
+        env: resolvedSecrets,
+        hostCredentials: !secretsOnly,
+      });
+    } catch (error) {
+      if (secretsOnly && !explicit) {
+        await this.enforceHarnessRule(
+          job,
+          'harness.missing_credential',
+          { harness: 'preference' },
+          `no harness in the preference has a credential in the project, org, system or job-actor secrets: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw error;
     }
+    await this.checkHarnessCredential(job, selection.harness, resolvedSecrets, {
+      explicit: selection.source === 'explicit',
+      secretsOnly,
+    });
 
     const harnessSpec = selection.harness;
     this.logger.log(
@@ -2121,7 +2155,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       },
     }).catch(err => this.logger.warn(`Failed to log routing decision: ${err}`));
 
-    return { harnessSpec, profileHash, profileSource };
+    return { harnessSpec, profileHash, profileSource, credentialsFromSecretsOnly: secretsOnly };
   }
 
   /**
@@ -2170,24 +2204,32 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * An explicit harness (named on the job or chosen by its profile) needs a
-   * credential. The job actor's own secrets count, as they reach the job.
+   * The selected harness needs a credential from the project, org, system or
+   * job-actor secrets (rule harness.missing_credential). An explicit harness
+   * (named on the job or chosen by its profile) with none is refused under
+   * `strict` and recorded under `audit`. Outside `strict`, a harness whose
+   * only credential is this host's environment or credential files still
+   * runs, and `audit` records it.
    */
-  private async checkExplicitHarnessCredential(
+  private async checkHarnessCredential(
     job: Job,
     harness: HarnessName,
-    projectSecrets: Record<string, string>,
+    secrets: Record<string, string>,
+    options: { explicit: boolean; secretsOnly: boolean },
   ): Promise<void> {
-    if (getHarnessAuthStatus(harness, projectSecrets).available) return;
+    const covers = (env: Record<string, string>) => getHarnessAuthStatus(harness, env, { hostCredentials: false }).available;
+    if (covers(secrets)) return;
     const userId = secretsUserIdForJob(job);
-    if (userId) {
-      const withUser = await this.resolveSecretsForHarnessSelection(job.project_id, userId);
-      if (getHarnessAuthStatus(harness, withUser).available) return;
+    if (userId && !options.secretsOnly) {
+      // The job actor's own secrets reach the job, so their key counts.
+      if (covers(await this.resolveSecretsForHarnessSelection(job.project_id, userId))) return;
     }
+    const fromHost = !options.secretsOnly && getHarnessAuthStatus(harness, secrets).available;
+    if (!options.explicit && !fromHost) return;
     await this.enforceHarnessRule(
       job,
       'harness.missing_credential',
-      { harness },
+      fromHost ? { harness, source: 'host' } : { harness },
       `harness ${harness} has no credential: set its provider key as a project or org secret`,
     );
   }
@@ -2205,7 +2247,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     projectId: string,
     workspacePath: string,
     enrichedDescription: string,
-    routing: { harnessSpec: string; profileHash: string | null; profileSource: string | null },
+    routing: HarnessRouting,
   ) {
     const { harnessSpec, profileHash, profileSource } = routing;
 
@@ -2280,6 +2322,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       ...(toolchains.length > 0 ? { toolchains } : {}),
       ...(envOverrides && Object.keys(envOverrides).length > 0 ? { env_overrides: envOverrides } : {}),
       ...(secretsAllowlist ? { secrets_allowlist: secretsAllowlist } : {}),
+      ...(routing.credentialsFromSecretsOnly ? { credentials_from_secrets_only: true } : {}),
       ...(profileSource ? { harness_profile_source: profileSource as HarnessProfileSource } : {}),
       ...(profileHash ? { harness_profile_hash: profileHash } : {}),
       ...(job.harness_profile ? { harness_profile_name: job.harness_profile } : {}),

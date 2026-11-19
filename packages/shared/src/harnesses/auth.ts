@@ -16,7 +16,17 @@ export type HarnessAuthStatusWithName = HarnessAuthStatus & {
 };
 
 type EnvLike = Record<string, string | undefined>;
-type AuthCheck = (env: EnvLike) => HarnessAuthStatus;
+/** `host`: whether credential files and the keychain of this machine count. */
+type AuthCheck = (env: EnvLike, host: boolean) => HarnessAuthStatus;
+
+export interface HarnessAuthOptions {
+  /**
+   * Whether this process's environment, its home directory's credential
+   * files and the keychain count as a credential (default true). False counts
+   * only the env passed in.
+   */
+  hostCredentials?: boolean;
+}
 
 /**
  * Build auth checks that use a merged environment (resolved secrets + process.env).
@@ -24,22 +34,22 @@ type AuthCheck = (env: EnvLike) => HarnessAuthStatus;
  */
 function createAuthChecks(): Record<HarnessCanonicalName, AuthCheck> {
   const checks: Record<HarnessCanonicalName, AuthCheck> = {
-    mclaude: (env) => {
+    mclaude: (env, host) => {
       if (env.ANTHROPIC_API_KEY) {
         return ready('using ANTHROPIC_API_KEY', instructionsClaude());
       }
       if (env.CLAUDE_CODE_OAUTH_TOKEN) {
         return ready('using CLAUDE_CODE_OAUTH_TOKEN', instructionsClaude());
       }
-      if (checkHostCredentials('.claude/.credentials.json', ['claudeAiOauth', 'accessToken'])) {
+      if (host && checkHostCredentials('.claude/.credentials.json', ['claudeAiOauth', 'accessToken'])) {
         return ready('using ~/.claude/.credentials.json', instructionsClaude());
       }
-      if (checkMacOSKeychain('Claude Code-credentials')) {
+      if (host && checkMacOSKeychain('Claude Code-credentials')) {
         return ready('using macOS Keychain', instructionsClaude());
       }
       return missing('missing ANTHROPIC_API_KEY or Claude OAuth', instructionsClaude());
     },
-    claude: (env) => checks.mclaude(env),
+    claude: (env, host) => checks.mclaude(env, host),
     zai: (env) => {
       if (env.Z_AI_API_KEY || env.ZAI_API_KEY) {
         return ready('using Z_AI_API_KEY', instructionsZai());
@@ -55,7 +65,7 @@ function createAuthChecks(): Record<HarnessCanonicalName, AuthCheck> {
       }
       return missing('missing GOOGLE_API_KEY or GEMINI_API_KEY', instructionsGemini());
     },
-    code: (env) => {
+    code: (env, host) => {
       if (env.OPENAI_API_KEY) {
         return ready('using OPENAI_API_KEY', instructionsOpenAi());
       }
@@ -70,7 +80,7 @@ function createAuthChecks(): Record<HarnessCanonicalName, AuthCheck> {
       }
       // In k8s the runtime's own HOME is shared with job code and never used for
       // job auth; only a developer machine's codex login counts.
-      if ((env.EVE_RUNTIME ?? process.env.EVE_RUNTIME) === 'k8s') {
+      if (!host || (env.EVE_RUNTIME ?? process.env.EVE_RUNTIME) === 'k8s') {
         return missing('missing OPENAI_API_KEY or Codex OAuth', instructionsOpenAi());
       }
       if (checkHostCredentials('.code/auth.json', ['OPENAI_API_KEY'])) {
@@ -87,7 +97,7 @@ function createAuthChecks(): Record<HarnessCanonicalName, AuthCheck> {
       }
       return missing('missing OPENAI_API_KEY or Codex OAuth', instructionsOpenAi());
     },
-    codex: (env) => checks.code(env),
+    codex: (env, host) => checks.code(env, host),
     pi: (env) => {
       const hasAnyKey = [
         'ANTHROPIC_API_KEY',
@@ -124,11 +134,13 @@ const HARNESS_AUTH_CHECKS = createAuthChecks();
 export function getHarnessAuthStatus(
   name: HarnessName,
   env?: Record<string, string | undefined>,
+  options: HarnessAuthOptions = {},
 ): HarnessAuthStatus {
   const canonical = resolveHarnessName(name) ?? 'code';
+  const host = options.hostCredentials ?? true;
   // Merge: resolved secrets take precedence over process.env
-  const mergedEnv = { ...process.env, ...env };
-  return HARNESS_AUTH_CHECKS[canonical](mergedEnv);
+  const mergedEnv = host ? { ...process.env, ...env } : { ...env };
+  return HARNESS_AUTH_CHECKS[canonical](mergedEnv, host);
 }
 
 /**
@@ -142,7 +154,7 @@ export function listHarnessAuthStatuses(
   return Object.keys(HARNESS_AUTH_CHECKS).map((name) =>
     ({
       name: name as HarnessCanonicalName,
-      ...HARNESS_AUTH_CHECKS[name as HarnessCanonicalName](mergedEnv),
+      ...HARNESS_AUTH_CHECKS[name as HarnessCanonicalName](mergedEnv, true),
     }),
   );
 }

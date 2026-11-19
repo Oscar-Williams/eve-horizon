@@ -85,6 +85,12 @@ export interface HarnessInvocation {
    * only these secrets; absent means every secret in scope.
    */
   secrets_allowlist?: string[];
+  /**
+   * Set under the project's `strict` profile: the harness credential comes
+   * only from the resolved secrets, never from the runtime's own environment
+   * or credential files.
+   */
+  credentials_from_secrets_only?: boolean;
 
   /** Profile provenance — recorded on routing log and job_attempts for audit/analytics. */
   harness_profile_source?: HarnessProfileSource;

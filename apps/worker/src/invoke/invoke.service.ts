@@ -286,10 +286,12 @@ export class InvokeService implements OnModuleInit {
   private async resolveClaudeAuthDecision(
     resolvedSecrets: SecretResolveItem[],
     env: Record<string, string | undefined>,
-    invocation?: Pick<HarnessInvocation, 'secrets_allowlist'>,
+    invocation?: Pick<HarnessInvocation, 'secrets_allowlist' | 'credentials_from_secrets_only'>,
   ): Promise<ClaudeAuthDecision | null> {
     const selected = selectClaudeAuth(resolvedSecrets);
     if (selected) return selected;
+    // Under the project's strict profile only the job's own secrets count.
+    if (invocation?.credentials_from_secrets_only) return null;
 
     const fallbackSecrets: SecretResolveItem[] = [];
     const apiKey = env.ANTHROPIC_API_KEY?.trim();
