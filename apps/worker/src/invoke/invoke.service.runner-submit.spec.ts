@@ -8,7 +8,15 @@ import { InvokeService } from './invoke.service.js';
  * flagged clone_only), its attempt-bound job token and its prepared context.
  * The worker's own credentials never travel.
  */
-const dispatch = vi.hoisted(() => ({ submits: [] as unknown[] }));
+const dispatch = vi.hoisted(() => ({
+  submits: [] as unknown[],
+  mode: { profile: 'legacy', podsOnly: false, required: false } as { profile: string; podsOnly: boolean; required: boolean },
+}));
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => dispatch.mode),
+  recordRunnerModeFinding: vi.fn(async () => undefined),
+}));
 vi.mock('./runner-dispatch.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./runner-dispatch.js')>()),
   dispatchToRunnerPod: vi.fn(async (submit: unknown) => {
@@ -100,5 +108,21 @@ describe('agent job submit to a runner pod', () => {
     expect(resolve?.body).not.toHaveProperty('user_id');
     const mint = requests.find((r) => r.url.endsWith('/mint-job-token'));
     expect(mint?.body).toMatchObject({ job_id: 'shop-1', attempt_id: 'att-a' });
+  });
+
+  it('asks the runner to enforce its egress self-check under strict', async () => {
+    dispatch.mode = { profile: 'strict', podsOnly: false, required: true };
+    await service().execute(invocation);
+    expect(dispatch.submits[0]).toMatchObject({ self_check: 'enforce' });
+    dispatch.mode = { profile: 'legacy', podsOnly: false, required: false };
+  });
+
+  it('refuses an agent job outside Kubernetes under strict', async () => {
+    delete process.env.EVE_RUNTIME;
+    dispatch.mode = { profile: 'strict', podsOnly: false, required: true };
+    const result = await service().execute(invocation);
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/strict needs runner pods/) });
+    expect(dispatch.submits).toEqual([]);
+    dispatch.mode = { profile: 'legacy', podsOnly: false, required: false };
   });
 });

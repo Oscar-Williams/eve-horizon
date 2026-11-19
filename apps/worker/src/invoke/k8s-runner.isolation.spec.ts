@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HarnessInvocation } from '@eve/shared';
 import { buildRunnerManifests } from './k8s-runner.js';
+import { orgFsPodMount } from './org-fs-plan.js';
 
 const KEYS = [
   'EVE_RUNNER_IMAGE', 'DATABASE_URL', 'EVE_RUNNER_SERVICE_ACCOUNT', 'EVE_RUNNER_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN',
@@ -89,6 +90,14 @@ describe('worker runner pod isolation', () => {
     expect(manifest).not.toContain('core-key');
     expect(JSON.parse(manifest).items.find((item: { kind: string }) => item.kind === 'Pod').spec.containers[0].env)
       .toContainEqual({ name: 'EVE_RUNNER_INBOUND_KEY_SHA256', value: 'f'.repeat(64) });
+  });
+
+  it('mounts no org volume for mode none or under strict, and read-only unless the spec writes', () => {
+    expect(orgFsPodMount(undefined)).toBeNull();
+    expect(orgFsPodMount({ mode: 'none' })).toBeNull();
+    expect(orgFsPodMount({ mode: 'read', allow_prefixes: ['/docs'] })).toEqual({ readOnly: true });
+    expect(orgFsPodMount({ mode: 'write', allow_prefixes: ['/docs'] })).toEqual({ readOnly: false });
+    expect(orgFsPodMount({ mode: 'write', allow_prefixes: ['/docs'] }, { strict: true })).toBeNull();
   });
 
   it('refuses to build a pod from half-configured placement', () => {

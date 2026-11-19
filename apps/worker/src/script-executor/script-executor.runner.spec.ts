@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ScriptExecutorService } from './script-executor.service.js';
 
-const runner = vi.hoisted(() => ({ dispatch: vi.fn() }));
+const runner = vi.hoisted(() => ({
+  dispatch: vi.fn(),
+  mode: { profile: 'legacy', podsOnly: false, required: false } as { profile: string; podsOnly: boolean; required: boolean },
+  findings: [] as Array<Record<string, unknown>>,
+}));
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => runner.mode),
+  recordRunnerModeFinding: vi.fn(async (_db: unknown, finding: Record<string, unknown>) => { runner.findings.push(finding); }),
+}));
 vi.mock('../invoke/runner-dispatch.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../invoke/runner-dispatch.js')>()),
   dispatchToRunnerPod: runner.dispatch,
@@ -25,6 +34,8 @@ afterEach(() => {
     else process.env[key] = value;
   }
   runner.dispatch.mockReset();
+  runner.mode = { profile: 'legacy', podsOnly: false, required: false };
+  runner.findings = [];
   vi.unstubAllGlobals();
 });
 
@@ -98,5 +109,59 @@ describe('script runner dispatch', () => {
       error_code: 'toolchain_unavailable', source: 'unavailable' });
     expect(meta.toolchains).toMatchObject({ image_ids: { browser: 'docker-pullable://browser@sha256:abc' },
       error_code: 'toolchain_unavailable' });
+  });
+
+  describe('isolation.runner_mode', () => {
+    function gatedService(repoUrl: string | null = 'https://git.example.com/acme/shop.git') {
+      process.env.EVE_API_URL = 'http://eve-api.test';
+      process.env.EVE_INTERNAL_CORE_KEY = 'core-key-for-test';
+      process.env.DATABASE_URL = 'postgres://eve@db/eve';
+      delete process.env.EVE_SCRIPT_K8S_RUNNER;
+      delete process.env.EVE_RUNNER_SELF_TERMINATE;
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.endsWith('/mint-job-token')
+        ? Response.json({ access_token: 'job-token-1', token_type: 'bearer', expires_at: 0 })
+        : Response.json({ data: [] }))));
+      const db = Object.assign(vi.fn(async (strings: TemplateStringsArray) => (strings.join('?').includes('FROM projects p')
+        ? [{ repo_url: repoUrl, slug: 'shop', org_slug: 'acme', branch: 'main' }] : [])), { json: (v: unknown) => v });
+      const service = new ScriptExecutorService(db as never);
+      (service as unknown as { jobs: unknown }).jobs = { findById: vi.fn().mockResolvedValue({
+        id: 'job_1', project_id: 'proj_1', execution_type: 'script', script_command: 'echo test', phase: 'active', hints: {},
+      }), updateRuntimeMeta: vi.fn(), markExecutionStarted: vi.fn() };
+      runner.dispatch.mockResolvedValue({ success: true, exitCode: 0, resultReport: { success: true, exit_code: 0, stdout: 'done' } });
+      return service;
+    }
+
+    it('dispatches to a runner under strict with the instance switch unset', async () => {
+      process.env.EVE_RUNTIME = 'k8s';
+      runner.mode = { profile: 'strict', podsOnly: false, required: true };
+      const result = await gatedService().execute('job_1', 'att_1');
+      expect(result.success).toBe(true);
+      expect(runner.dispatch).toHaveBeenCalledTimes(1);
+      expect(runner.dispatch.mock.calls[0][0]).toMatchObject({ self_check: 'enforce' });
+    });
+
+    it('dispatches to a runner under audit when the instance switch is set', async () => {
+      process.env.EVE_RUNTIME = 'k8s';
+      runner.mode = { profile: 'audit', podsOnly: true, required: true };
+      await gatedService().execute('job_1', 'att_1');
+      expect(runner.dispatch).toHaveBeenCalledTimes(1);
+      expect(runner.dispatch.mock.calls[0][0]).toMatchObject({ self_check: 'audit' });
+    });
+
+    it('runs inline under audit without the switch, and records the inline run', async () => {
+      process.env.EVE_RUNTIME = 'k8s';
+      runner.mode = { profile: 'audit', podsOnly: false, required: false };
+      await gatedService(null).execute('job_1', 'att_1');
+      expect(runner.dispatch).not.toHaveBeenCalled();
+      expect(runner.findings).toEqual([expect.objectContaining({ projectId: 'proj_1', detail: expect.objectContaining({ kind: 'script', job_id: 'job_1' }) })]);
+    });
+
+    it('fails outside Kubernetes under strict', async () => {
+      delete process.env.EVE_RUNTIME;
+      runner.mode = { profile: 'strict', podsOnly: false, required: true };
+      const result = await gatedService().execute('job_1', 'att_1');
+      expect(result).toMatchObject({ success: false, error: expect.stringMatching(/strict needs runner pods/) });
+      expect(runner.dispatch).not.toHaveBeenCalled();
+    });
   });
 });
