@@ -9,6 +9,7 @@ import { ScriptExecutorModule } from './script-executor/script-executor.module';
 import { BuilderModule } from './builder/builder.module.js';
 import { ReaperModule } from './reaper/reaper.module';
 import { RegistryModule } from './registry/registry.module.js';
+import { NetworkModule } from './network/network.module.js';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { RegistryModule } from './registry/registry.module.js';
     BuilderModule,
     ReaperModule,
     RegistryModule,
+    NetworkModule,
   ],
 })
 export class AppModule {}

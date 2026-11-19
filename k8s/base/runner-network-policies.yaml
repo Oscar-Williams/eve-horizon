@@ -1,0 +1,131 @@
+# Runner pods (job code), fail closed (egress.default_deny). Every runner pod,
+# warm or claimed, sandbox or plain, carries eve.horizon/runner=true from the
+# moment it exists, so these select it before it has a project:
+#
+# - eve-runner-deny: egress only to DNS and eve-api on its public port (4701;
+#   never the internal port, so /internal/* stays out of reach). Each
+#   project's eve-runner-<project> policy (written by the worker, selecting
+#   eve.horizon/project-id) adds the rest once a claim labels the pod; under
+#   audit and legacy that includes an allow-all companion.
+# - eve-runner-ingress: only the worker, only on the submit port (4749). A
+#   warm pod accepts the first submit that brings a key, so nothing else may
+#   reach it.
+#
+# Both live in the runner namespace and, for plain-pod runners (org
+# filesystem jobs under legacy and audit), in eve. Pods from releases before
+# runner labels carry no eve.horizon/runner, so neither selects them. Eve's
+# controllers never write these (on managed installs, an admission policy
+# holds them to eve-runner-<project> policies). The generator in
+# packages/shared/src/k8s/egress-policies.ts (runnerDenyPolicies,
+# runnerIngressPolicies) is the reference; a worker spec checks they match.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eve-runner-deny
+  namespace: eve-runners
+  labels:
+    app.kubernetes.io/managed-by: eve-horizon
+spec:
+  podSelector:
+    matchLabels:
+      eve.horizon/runner: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: eve
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: eve-api
+      ports:
+        - { protocol: TCP, port: 4701 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eve-runner-deny
+  namespace: eve
+  labels:
+    app.kubernetes.io/managed-by: eve-horizon
+spec:
+  podSelector:
+    matchLabels:
+      eve.horizon/runner: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: eve
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: eve-api
+      ports:
+        - { protocol: TCP, port: 4701 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eve-runner-ingress
+  namespace: eve-runners
+  labels:
+    app.kubernetes.io/managed-by: eve-horizon
+spec:
+  podSelector:
+    matchLabels:
+      eve.horizon/runner: "true"
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: eve
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: eve-worker
+      ports:
+        - { protocol: TCP, port: 4749 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eve-runner-ingress
+  namespace: eve
+  labels:
+    app.kubernetes.io/managed-by: eve-horizon
+spec:
+  podSelector:
+    matchLabels:
+      eve.horizon/runner: "true"
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: eve
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: eve-worker
+      ports:
+        - { protocol: TCP, port: 4749 }

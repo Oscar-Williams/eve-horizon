@@ -5,6 +5,8 @@ import { requestJson } from '../lib/client';
 import { outputJson } from '../lib/output';
 import { buildQuery } from '../lib/format';
 
+type StrictChecklist = { clean: boolean; blockers: string[] };
+
 type ScopeProfile = {
   id: string;
   slug: string;
@@ -13,7 +15,10 @@ type ScopeProfile = {
   ruleset?: number | null;
   effective: string;
   effective_ruleset?: number | null;
+  strict_checklist?: StrictChecklist;
 };
+
+type NetworkStatus = { policy_enforced: boolean | null; egress_effective: boolean };
 
 interface SecurityReport {
   days: number;
@@ -22,6 +27,7 @@ interface SecurityReport {
   instance_ruleset?: number | null;
   new_project_profile: string | null;
   registry?: { key_version: string | null; stale_environments: number };
+  network?: NetworkStatus;
   orgs: ScopeProfile[];
   projects: ScopeProfile[];
   summary: Array<{ rule: string; count: number; projects: number; actors: number }>;
@@ -69,6 +75,8 @@ export async function handleDoctor(
     console.log(`Registry key:     ${report.registry.key_version ?? 'EVE_REGISTRY_CREDENTIAL_KEY not set'}` +
       (stale > 0 ? `; ${stale} environment(s) on an older key (eve system security reconcile)` : '; every environment current'));
   }
+  const network = describePolicyEnforcement(report.network);
+  if (network) console.log(`Network policy:   ${network}`);
   console.log('');
   console.log('Orgs:');
   for (const org of report.orgs) {
@@ -77,6 +85,8 @@ export async function handleDoctor(
   console.log('Projects:');
   for (const project of report.projects) {
     console.log(`  ${project.slug.padEnd(24)} ${project.effective.padEnd(7)} (${own(project.profile)})  ${project.id}${stampNote(project, current)}`);
+    const checklist = project.effective === 'strict' ? '' : describeStrictChecklist(project.strict_checklist);
+    if (checklist) console.log(`  ${''.padEnd(24)} ${checklist}`);
   }
   console.log('');
   if (report.summary.length === 0) {
@@ -93,7 +103,7 @@ export async function handleDoctor(
     }
   }
   console.log('');
-  console.log('A project with no findings can move to strict: eve system security profile strict --project <id>');
+  console.log('A project marked ready for strict can move: eve system security profile strict --project <id>');
   console.log('Setting strict again takes the newest rules.');
 }
 
@@ -107,12 +117,59 @@ export function describeStampedProfile(profile: string, ruleset: number | null |
   return `strict (${ruleset === 1 ? 'P1' : `P1-P${ruleset}`} rules); ${newer} rules on audit`;
 }
 
+/** The report's network line: whether the cluster enforces NetworkPolicy. */
+export function describePolicyEnforcement(network: NetworkStatus | undefined): string | null {
+  if (!network) return null;
+  if (network.policy_enforced === true) return 'enforced';
+  if (network.policy_enforced === false) {
+    return 'not enforced: egress rules are not effective (the CNI does not enforce NetworkPolicy)';
+  }
+  return 'unknown: set network.policy_enforced (true where the CNI enforces NetworkPolicy); until then egress rules count as not effective';
+}
+
+/** A project's strict checklist: ready, or what holds it back. */
+export function describeStrictChecklist(checklist: StrictChecklist | undefined): string {
+  if (!checklist) return '';
+  return checklist.clean ? 'ready for strict' : `not ready: ${checklist.blockers.join('; ')}`;
+}
+
+interface NetworkReconcileReport {
+  environments: {
+    reconciled: number;
+    without_namespace: number;
+    applied: number;
+    removed: number;
+    failed: Array<{ environment_id: string; error: string }>;
+  };
+  runners: {
+    projects: number;
+    applied: number;
+    removed: number;
+    orphans_removed: number;
+    failed: Array<{ project_id: string; error: string }>;
+  };
+}
+
+/** What network reconcile wrote, removed and could not do. */
+export function describeNetworkReconcile(report: NetworkReconcileReport): string[] {
+  const e = report.environments;
+  const r = report.runners;
+  return [
+    'Egress policies:',
+    `  environments: ${e.reconciled} reconciled, ${e.without_namespace} without a namespace, ${e.applied} written, ${e.removed} removed, ${e.failed.length} failed`,
+    ...e.failed.map((f) => `    ${f.environment_id}: ${f.error}`),
+    `  runner policies: ${r.projects} project(s), ${r.applied} written, ${r.removed} removed, ${r.orphans_removed} of deleted projects removed, ${r.failed.length} failed`,
+    ...r.failed.map((f) => `    ${f.project_id}: ${f.error}`),
+  ];
+}
+
 function stampNote(scope: ScopeProfile, current: number): string {
   const described = describeStampedProfile(scope.effective, scope.effective_ruleset, current);
   return described === scope.effective ? '' : `  ${described}`;
 }
 
 interface ReconcileReport {
+  network: NetworkReconcileReport;
   registry: {
     key_version: string;
     resigned: number;
@@ -128,7 +185,8 @@ interface ReconcileReport {
  * With no scope flag it sets the instance profile.
  *
  * `eve system security reconcile`: bring environments in line with the
- * profiles (registry pull secrets re-signed with the current key).
+ * profiles (egress policies written, registry pull secrets re-signed with
+ * the current key).
  */
 export async function handleSystemSecurity(
   positionals: string[],
@@ -146,6 +204,7 @@ export async function handleSystemSecurity(
       outputJson(result, json);
       return;
     }
+    for (const line of describeNetworkReconcile(result.network)) console.log(line);
     const r = result.registry;
     console.log(`Registry pull secrets, key version ${r.key_version}:`);
     console.log(`  re-signed ${r.resigned}, already current ${r.already_current}, without a pull secret ${r.without_pull_secret}, failed ${r.failed.length}`);
@@ -175,7 +234,13 @@ export async function handleSystemSecurity(
     ...(force ? { force: true } : {}),
   };
 
-  const result = await requestJson<{ scope: string; id: string | null; profile: string | null; ruleset?: number | null }>(
+  const result = await requestJson<{
+    scope: string;
+    id: string | null;
+    profile: string | null;
+    ruleset?: number | null;
+    network?: NetworkReconcileReport | { error: string };
+  }>(
     context,
     '/system/security/profile',
     { method: 'PUT', body },
@@ -194,6 +259,11 @@ export async function handleSystemSecurity(
     ? ` (rule set ${result.ruleset}: ${result.ruleset === 1 ? 'P1' : `P1-P${result.ruleset}`} rules)`
     : '';
   console.log(`Security profile for ${target}: ${result.profile ?? cleared}${covers}`);
+  if (result.network && 'error' in result.network) {
+    console.log(`Network policies not reconciled: ${result.network.error}`);
+  } else if (result.network) {
+    for (const line of describeNetworkReconcile(result.network)) console.log(line);
+  }
 }
 
 interface StorageCounts {

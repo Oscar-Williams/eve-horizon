@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import {
+  NETWORK_POLICY_ENFORCED_SETTING,
+  NETWORK_PRIVATE_CIDRS_SETTING,
   SECURITY_CURRENT_RULESET,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
   SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
   isSecurityProfile,
+  parseCidrList,
+  parsePolicyEnforced,
 } from '@eve/shared';
 import * as k8s from '@kubernetes/client-node';
 import { Inject } from '@nestjs/common';
@@ -612,6 +616,15 @@ export class SystemService {
       && !(/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= SECURITY_CURRENT_RULESET)
     ) {
       throw new BadRequestException(`${key} must be a rule set from 1 to ${SECURITY_CURRENT_RULESET}`);
+    }
+    if (key === NETWORK_POLICY_ENFORCED_SETTING && parsePolicyEnforced(value) === null) {
+      throw new BadRequestException(`${key} must be true or false`);
+    }
+    if (key === NETWORK_PRIVATE_CIDRS_SETTING) {
+      const { invalid } = parseCidrList(value);
+      if (invalid.length > 0) {
+        throw new BadRequestException(`${key} takes IPv4 CIDRs (not /0); these are not: ${invalid.join(', ')}`);
+      }
     }
     const settings = systemSettingsQueries(this.db);
     return settings.set(key, value, updatedBy, description);

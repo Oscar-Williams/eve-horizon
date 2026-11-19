@@ -60,6 +60,8 @@ import {
   type ServiceSecurity,
   type ObjectStoreIsolation,
   type TcpIngressConfig,
+  EGRESS_RULE,
+  WORKLOAD_IDENTITY_LABEL,
 } from '@eve/shared';
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
@@ -75,6 +77,7 @@ import {
 import { BucketProvisioner } from './bucket-provisioner';
 import { ObjectStoreProvisioner, type EnvObjectStorePlan } from './object-store-provisioner';
 import { applyAppPlacement, resolveAppPlacement, type AppPlacement } from './app-placement';
+import { EgressPolicies, type EgressEnvRef } from '../network/egress-policies.js';
 import {
   POD_SECURITY_RULE,
   applyPodSecurity,
@@ -299,6 +302,7 @@ export class DeployerService {
   private readonly imageResolver: ImageResolver;
   private readonly managedDbProvisioner: ManagedDbProvisioner;
   private readonly objectStoreProvisioner: ObjectStoreProvisioner;
+  private readonly egress: EgressPolicies;
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -307,6 +311,7 @@ export class DeployerService {
     this.deploymentReadiness = new DeploymentReadiness(k8sService, this.logger);
     this.imageResolver = new ImageResolver(k8sService, this.logger);
     this.managedDbProvisioner = new ManagedDbProvisioner(managedDbQueries(db), k8sService, this.logger);
+    this.egress = new EgressPolicies(db, k8sService, { logger: this.logger });
     this.objectStoreProvisioner = new ObjectStoreProvisioner(
       db,
       this.bucketProvisioner,
@@ -427,6 +432,8 @@ export class DeployerService {
         ...podSecurityNamespaceLabels(renderResult.podSecurityLevel ?? 'restricted'),
       }, { ownerLabel: 'eve.env_id' });
     }
+
+    await this.applyEgressPolicies({ id: envId, projectId: project.id, name: environment.name, namespace });
 
     const aliasDocuments: string[] = [];
     const desiredBoundAliases = new Set<string>();
@@ -959,7 +966,7 @@ export class DeployerService {
         ttlSecondsAfterFinished: 3600,
         template: {
           metadata: {
-            labels,
+            labels: { ...labels, ...this.workloadIdentityLabels(objectStorePlan, params.serviceName) },
             annotations: this.buildPodAnnotations({
               managedDbTrustHash: managedTrust.checksum,
               objectStorePlan,
@@ -991,6 +998,9 @@ export class DeployerService {
     if (podSecurity === 'strict' && podSecurityPlan) {
       applyPodSecurity(jobSpec.spec!.template.spec! as Record<string, any>, podSecurityPlan);
     }
+
+    // A service job can run before the env's first deploy: its egress policies first.
+    await this.applyEgressPolicies({ id: environment.id, projectId: project.id, name: environment.name, namespace });
 
     // The run's own Secret, removed when the run ends.
     const hasJobSecret = Object.keys(sealed.data).length > 0;
@@ -1372,6 +1382,7 @@ export class DeployerService {
                 'eve.project_id': params.projectId,
                 'eve.env_id': params.envId,
                 'eve.release': params.releaseId,
+                ...this.workloadIdentityLabels(objectStorePlan, name),
               },
               annotations: {
                 ...this.buildPodAnnotations({
@@ -2610,7 +2621,8 @@ export class DeployerService {
 
     // Platform-injected env vars (can be overridden by user-defined vars)
     const platformEnvVars: k8s.V1EnvVar[] = [
-      { name: 'EVE_API_URL', value: this.resolveServiceEveApiUrl(config.EVE_API_URL) },
+      // The public port: apps never get the internal one (egress.default_deny allows only this).
+      { name: 'EVE_API_URL', value: this.resolveServiceEveApiUrl(config.EVE_API_APP_URL) },
       ...(config.EVE_PUBLIC_API_URL ? [{ name: 'EVE_PUBLIC_API_URL', value: config.EVE_PUBLIC_API_URL }] : []),
       ...(config.EVE_SSO_URL ? [{ name: 'EVE_SSO_URL', value: config.EVE_SSO_URL }] : []),
       { name: 'EVE_PROJECT_ID', value: context.projectId },
@@ -2764,6 +2776,51 @@ export class DeployerService {
 
   private appLinkEnvPrefix(alias: string): string {
     return `EVE_APP_LINK_${alias.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+  }
+
+  /**
+   * `eve.workload_identity=true` for the pods of a service whose account has
+   * GKE Workload Identity: only they may reach the metadata server
+   * (`eve-egress-metadata`).
+   */
+  private workloadIdentityLabels(objectStorePlan: EnvObjectStorePlan, serviceName: string): Record<string, string> {
+    return objectStorePlan.binding?.mode === 'gcp-workload-identity'
+      && this.objectStoreProvisioner.resolveObjectStoreServiceAccountName(objectStorePlan, serviceName)
+      ? { [WORKLOAD_IDENTITY_LABEL]: 'true' }
+      : {};
+  }
+
+  /**
+   * egress.default_deny: bring the env namespace's egress policies in line
+   * with the project's profile before any of its pods start, and the
+   * project's runner policies with its env namespaces. Under `strict` a
+   * failure stops the deploy (the namespace would be open); otherwise
+   * nothing is enforced yet, so it is logged and the deploy goes on.
+   */
+  private async applyEgressPolicies(env: EgressEnvRef): Promise<void> {
+    const profile = await governingSecurityProfile(this.db, {
+      projectId: env.projectId,
+      governing: 'project',
+      rule: EGRESS_RULE,
+    });
+    try {
+      await this.egress.applyEnv(env, profile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (profile === 'strict') {
+        throw new Error(
+          `The strict egress profile needs this environment's egress policies, which could not be written: ${message} (rule ${EGRESS_RULE})`,
+        );
+      }
+      this.logger.warn(`Could not write the egress policies of ${env.namespace} (${profile}): ${message}`);
+    }
+    try {
+      await this.egress.applyRunners(env.projectId, profile);
+    } catch (error) {
+      this.logger.warn(
+        `Could not write the runner egress policies of project ${env.projectId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private buildPodAnnotations(params: {

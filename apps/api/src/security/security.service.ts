@@ -11,6 +11,7 @@ import {
 import type { Db, SecurityProfileRow } from '@eve/db';
 import { auditQueries, environmentQueries, securityQueries, systemSettingsQueries } from '@eve/db';
 import {
+  NETWORK_POLICY_ENFORCED_SETTING,
   SECURITY_CURRENT_RULESET,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
   SECURITY_PROFILE_RULESET_SETTING,
@@ -19,6 +20,7 @@ import {
   generateSecurityFindingId,
   governingSecurityLevel,
   isSecurityProfile,
+  parsePolicyEnforced,
   parseSecurityRuleset,
   resolveSecurityProfile,
   type SecurityGoverningScope,
@@ -55,6 +57,9 @@ export interface SecurityGateContext extends SecurityScope {
 export type SecurityProfileTarget =
   | { scope: 'instance' | 'new_projects'; id?: undefined }
   | { scope: 'org' | 'project'; id?: string };
+
+/** How long a profile change waits for the worker to reconcile the scope's network policies. */
+const NETWORK_RECONCILE_TIMEOUT_MS = 60_000;
 
 /** Profiles are cached briefly per process; a change made here is seen at once. */
 const PROFILE_CACHE_MS = 30_000;
@@ -128,7 +133,14 @@ export class SecurityService {
     profile: SecurityProfile | null,
     actorUserId: string,
     options: { force?: boolean } = {},
-  ): Promise<{ scope: string; id: string | null; profile: SecurityProfile | null; ruleset: number | null }> {
+  ): Promise<{
+    scope: string;
+    id: string | null;
+    profile: SecurityProfile | null;
+    ruleset: number | null;
+    /** What the worker's network reconcile of the scope did, or why it could not run. */
+    network?: unknown;
+  }> {
     if (profile !== null && !isSecurityProfile(profile)) {
       throw new BadRequestException(`Security profile must be legacy, audit or strict, not "${String(profile)}"`);
     }
@@ -211,7 +223,21 @@ export class SecurityService {
     } else {
       this.scopeCache.clear();
     }
-    return result;
+    if (result.scope === 'new_projects') return result;
+    // egress.default_deny: the scope's companions go (or come back) now, not
+    // at the next deploy. The change stands if this fails.
+    const scope = result.scope === 'project' ? { project_id: result.id } : result.scope === 'org' ? { org_id: result.id } : {};
+    let network: unknown;
+    try {
+      network = await this.reconcileNetwork(scope, AbortSignal.timeout(NETWORK_RECONCILE_TIMEOUT_MS));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Profile set, but the network policies were not reconciled: ${message}`);
+      network = {
+        error: `${message}. The profile is set; run eve system security reconcile to bring the network policies in line.`,
+      };
+    }
+    return { ...result, network };
   }
 
   /**
@@ -226,15 +252,29 @@ export class SecurityService {
   }
 
   /**
-   * Bring environments in line with the security profiles: the worker
+   * Bring environments in line with the security profiles, with no restart:
+   * the worker writes every env namespace's and project's egress policies
+   * (egress.default_deny) and removes those of deleted projects, then
    * re-signs each stale environment's registry pull secret with the current
    * registry credential key and records the version.
    */
-  async reconcile(): Promise<{ registry: unknown }> {
-    const response = await fetch(`${resolveWorkerUrl('reconcile environments')}/registry/pull-secrets/resign`, {
+  async reconcile(): Promise<{ network: unknown; registry: unknown }> {
+    const network = await this.reconcileNetwork({});
+    const registry = await this.callWorker('/registry/pull-secrets/resign', {}, 're-sign registry pull secrets');
+    return { network, registry };
+  }
+
+  /** The worker's network reconcile: one project, an org's projects, or every project. */
+  private reconcileNetwork(scope: { project_id?: string; org_id?: string }, signal?: AbortSignal): Promise<unknown> {
+    return this.callWorker('/network/reconcile', scope, 'reconcile network policies', signal);
+  }
+
+  private async callWorker(path: string, body: Record<string, unknown>, purpose: string, signal?: AbortSignal): Promise<unknown> {
+    const response = await fetch(`${resolveWorkerUrl(purpose)}${path}`, {
       method: 'POST',
       headers: workerRequestHeaders(),
-      body: '{}',
+      body: JSON.stringify(body),
+      signal,
     });
     const text = await response.text();
     if (!response.ok) {
@@ -244,9 +284,9 @@ export class SecurityService {
       } catch {
         // Not JSON: keep the text.
       }
-      throw new HttpException(`The worker could not re-sign registry pull secrets: ${message}`, response.status);
+      throw new HttpException(`The worker could not ${purpose}: ${message}`, response.status);
     }
-    return { registry: JSON.parse(text) as unknown };
+    return JSON.parse(text) as unknown;
   }
 
   /** Profiles and findings for the instance, an org or a project. */
@@ -287,6 +327,22 @@ export class SecurityService {
       const level = governingSecurityLevel(levels);
       return { effective: level.profile, effective_ruleset: level.ruleset };
     };
+    const policyEnforced = parsePolicyEnforced(await this.setting(NETWORK_POLICY_ENFORCED_SETTING));
+    const findingsByProject = new Map<string, number>();
+    for (const f of findings) {
+      if (f.project_id) findingsByProject.set(f.project_id, (findingsByProject.get(f.project_id) ?? 0) + f.count);
+    }
+    // What a project needs before strict: no findings in the window, and a
+    // CNI that enforces NetworkPolicy (else egress.default_deny blocks nothing).
+    const strictChecklist = (projectId: string) => {
+      const blockers: string[] = [];
+      const count = findingsByProject.get(projectId) ?? 0;
+      if (count > 0) blockers.push(`${count} finding(s) in the last ${days} days`);
+      if (policyEnforced !== true) {
+        blockers.push(`${NETWORK_POLICY_ENFORCED_SETTING} is not true: egress rules would not be effective`);
+      }
+      return { clean: blockers.length === 0, blockers };
+    };
     const instanceLevel = governingSecurityLevel({ instance, instanceRuleset });
     const registryKeyVersion = currentRegistryKeyVersion();
     const staleRegistry = await environmentQueries(this.db).countStaleRegistryKeys(registryKeyVersion);
@@ -301,6 +357,9 @@ export class SecurityService {
       // version: the instance's strict, and removing the legacy internal
       // key, wait for none (eve system security reconcile re-signs them).
       registry: { key_version: registryKeyVersion, stale_environments: staleRegistry },
+      // network.policy_enforced (from the infrastructure template): without
+      // it, egress policies apply and block nothing.
+      network: { policy_enforced: policyEnforced, egress_effective: policyEnforced === true },
       orgs: orgRows.map((o) => ({
         id: o.id,
         slug: o.slug,
@@ -322,6 +381,7 @@ export class SecurityService {
             instance,
             instanceRuleset,
           }),
+          strict_checklist: strictChecklist(p.id),
         };
       }),
       summary: [...byRule.values()]

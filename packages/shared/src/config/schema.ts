@@ -89,6 +89,10 @@ export const configSchema = z.object({
   EVE_WORKSPACE_ROOT: z.string().default('/opt/eve/workspaces'),
   WORKSPACE_ROOT: workspaceRootFromEnv,
   EVE_API_URL: z.string().url().default('http://localhost:4701'),
+  // The API URL apps and runner pods get as EVE_API_URL: the public port,
+  // never the internal one (EVE_API_INTERNAL_PORT), so the egress policies
+  // that allow only the public port also keep /internal/* out of reach.
+  EVE_API_APP_URL: z.string().url().default('http://eve-api.eve.svc.cluster.local:4701'),
   EVE_PUBLIC_API_URL: z.string().url().optional(), // Public ingress URL for browser-facing apps (e.g., https://api.eve.example.com)
   EVE_CLEANUP_WORKSPACE_ON_SUCCESS: booleanFromEnv.default(true),
   EVE_CLEANUP_WORKSPACE_ON_FAILURE: booleanFromEnv.default(true),

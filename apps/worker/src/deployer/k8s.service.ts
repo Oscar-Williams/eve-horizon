@@ -400,6 +400,82 @@ export class K8sService {
     }
   }
 
+  /**
+   * Create or replace a NetworkPolicy. Returns false, writing nothing, when
+   * the one in the cluster already has these labels and this spec. A missing
+   * namespace fails with a 404 K8sOperationError.
+   */
+  async applyNetworkPolicy(policy: k8s.V1NetworkPolicy & { metadata: { name: string; namespace: string } }): Promise<boolean> {
+    this.ensureAvailable();
+    const { name, namespace } = policy.metadata;
+    const ref = { kind: 'NetworkPolicy', name, namespace };
+    let existing: k8s.V1NetworkPolicy | null = null;
+    try {
+      existing = (await this.networkingApi!.readNamespacedNetworkPolicy(name, namespace)).body;
+    } catch (err) {
+      if (!isK8sNotFound(err)) throw wrapK8sError(err, 'read', ref);
+    }
+    if (!existing) {
+      try {
+        await this.networkingApi!.createNamespacedNetworkPolicy(namespace, policy);
+        return true;
+      } catch (err) {
+        throw wrapK8sError(err, 'create', ref);
+      }
+    }
+    if (
+      canonicalJson(existing.spec) === canonicalJson(policy.spec)
+      && canonicalJson(existing.metadata?.labels ?? {}) === canonicalJson(policy.metadata.labels ?? {})
+    ) {
+      return false;
+    }
+    try {
+      await this.networkingApi!.replaceNamespacedNetworkPolicy(name, namespace, {
+        ...policy,
+        metadata: { ...policy.metadata, resourceVersion: existing.metadata?.resourceVersion },
+      });
+      return true;
+    } catch (err) {
+      throw wrapK8sError(err, 'replace', ref);
+    }
+  }
+
+  async deleteNetworkPolicy(namespace: string, name: string): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.networkingApi!.deleteNamespacedNetworkPolicy(name, namespace);
+      this.logger.log(`Deleted NetworkPolicy ${name} from namespace ${namespace}`);
+    } catch (err) {
+      if (isK8sNotFound(err)) return;
+      throw wrapK8sError(err, 'delete', { kind: 'NetworkPolicy', name, namespace });
+    }
+  }
+
+  /** NetworkPolicies in a namespace matching a label selector (none for a namespace that does not exist). */
+  async listNetworkPolicies(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: { items?: k8s.V1NetworkPolicy[] } };
+    try {
+      response = await this.networkingApi!.listNamespacedNetworkPolicy(
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector,
+      );
+    } catch (err) {
+      if (isK8sNotFound(err)) return [];
+      throw wrapK8sError(err, 'list', { kind: 'NetworkPolicy', namespace });
+    }
+    return (response.body.items ?? [])
+      .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
+      .filter((item) => item.name.length > 0);
+  }
+
   async deleteIngress(namespace: string, name: string): Promise<void> {
     this.ensureAvailable();
     try {
@@ -959,6 +1035,16 @@ export class K8sService {
       throw new Error('Kubernetes client not available (no active cluster)');
     }
   }
+}
+
+/** JSON with sorted keys and no undefined values: equal for equal objects, whatever their key order. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>)
+        .filter(([, inner]) => inner !== undefined)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v);
 }
 
 export class NamespaceOwnershipError extends Error {

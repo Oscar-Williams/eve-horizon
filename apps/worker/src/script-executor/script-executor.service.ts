@@ -43,6 +43,7 @@ import { runStreamingCommand } from '../execution/streaming-command.js';
 import { buildJobCommandEnv } from '../execution/job-command-env.js';
 import { tokenScopeForJob } from '../execution/job-token-scope.js';
 import { runInvocationInK8s } from '../invoke/k8s-runner.js';
+import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -243,6 +244,8 @@ export class ScriptExecutorService {
       if (this.shouldDispatchToRunner()) {
         const invocation = { jobId, attemptId, projectId: job.project_id,
           text: '', toolchains: getJobToolchains(job) } as HarnessInvocation;
+        // egress.default_deny: the project's runner policies before its pod.
+        await ensureRunnerEgress(job.project_id);
         const result = await runInvocationInK8s(invocation,
           (runtimeMeta) => this.jobs.updateRuntimeMeta(attemptId, runtimeMeta).then(() => undefined),
           undefined, { submitPath: 'scripts/execute', signal: cancellation.signal });

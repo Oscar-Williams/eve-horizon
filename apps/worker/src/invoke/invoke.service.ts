@@ -122,6 +122,7 @@ import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type Ha
 import { CHECKOUT_SETTINGS_RULE, holdCheckoutSettings } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
 import { runInvocationInK8s } from './k8s-runner';
+import { ensureRunnerEgress } from '../network/runner-egress.js';
 import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintJobAppLinkTokens } from '@eve/shared';
 import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { resolveProjectSecrets, mintJobToken, updateSecret } from '@eve/shared';
@@ -1272,6 +1273,8 @@ export class InvokeService implements OnModuleInit {
           await this.getInvocationWithJobToken(effectiveInvocation),
         );
 
+        // egress.default_deny: the project's runner policies before its pod.
+        await ensureRunnerEgress(runnerInvocation.projectId);
         return await runInvocationInK8s(
           runnerInvocation,
           async (runtimeMeta) => {
