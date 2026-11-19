@@ -256,6 +256,27 @@ them); and pods and claims for the plain fallback. Nothing on `sandboxes`:
 only the controller creates them. The reaper scans both namespaces and leaves
 pods and claims owned by a `Sandbox` to the controller.
 
+## Differences from the agent runtime's inline path
+
+The worker path matches the inline path for secrets, the job token (with the
+agent's `access.permissions`), the job's environment (its `env_name`, then the
+manifest default), coordination and thread context, carryover context, chat
+attachments, resources, app APIs and links, budgets, usage logs (`llm.call`
+lines feed receipts), `eve-message` relay to coordination threads and chat
+progress, checkout settings and the final chat reply (delivered by the
+orchestrator from the result text). What remains different:
+
+- A runner's workspace lives as long as its pod: a retry clones afresh.
+- A job with toolchains or app CLIs gets a cold plain pod with init
+  containers, not a warm pod.
+- Org files: none under `strict`; under `legacy` and `audit` a plain pod in
+  `eve` mounting the shared claim (a `ReadWriteOnce` claim needs pod affinity
+  to the node holding it).
+- Large inline resources and context files travel in the submit body (32 MB
+  limit at the runner).
+- Cancellation stops the pod (5 s grace) rather than signalling the harness
+  process group in place.
+
 ## The agent runtime
 
 The agent runtime builds no runner pod. In runner mode

@@ -82,6 +82,7 @@ import {
   type Project,
   runnerModeFor,
   recordRunnerModeFinding,
+  type RunnerModeDecision,
 } from '@eve/db';
 import { WorkerService } from '../worker/worker.service';
 import * as yaml from 'yaml';
@@ -473,6 +474,11 @@ export function secretsUserIdForJob(job: Pick<Job, 'actor_user_id' | 'user_secre
   return job.actor_user_id;
 }
 
+/** Where an agent job runs, given the project's runner mode (records nothing). */
+export function agentTargetFor(mode: RunnerModeDecision, agentRuntimeConfigured: boolean): 'worker' | 'agent-runtime' {
+  return !agentRuntimeConfigured || mode.required ? 'worker' : 'agent-runtime';
+}
+
 /**
  * Where an agent job runs (rule isolation.runner_mode). The worker runs it in
  * a credential-free runner pod; the agent runtime runs it inline. Under the
@@ -487,7 +493,7 @@ export async function agentJobTarget(
 ): Promise<'worker' | 'agent-runtime'> {
   if (!opts.agentRuntimeConfigured) return 'worker';
   const mode = await runnerModeFor(db, invocation.projectId);
-  if (mode.required) return 'worker';
+  if (agentTargetFor(mode, opts.agentRuntimeConfigured) === 'worker') return 'worker';
   if (mode.profile === 'audit') {
     const orgfs = (invocation.data?.orgfs_mount as { mode?: unknown } | undefined)?.mode;
     const orgfsMode = orgfs === 'read' || orgfs === 'write' ? orgfs : 'none';
@@ -2194,7 +2200,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     const profileSource = (job as { harness_profile_source?: string | null }).harness_profile_source ?? null;
     executionLogQueries(this.db).appendLog(attempt.id, 'routing', {
       execution_type: executionType,
-      target: this.agentRuntimeConfigured ? 'agent-runtime' : 'worker',
+      target: agentTargetFor(await runnerModeFor(this.db, job.project_id), this.agentRuntimeConfigured),
       harness: selection.harness,
       harness_source: selection.source,
       harness_checked: selection.checked,

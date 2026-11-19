@@ -2049,7 +2049,13 @@ export class InvokeService implements OnModuleInit {
       return invocation;
     }
 
-    // Look up the latest manifest for this project
+    // The job's own environment first, as the agent runtime decides it.
+    const job = await this.jobs.findById(invocation.jobId).catch(() => null) as { env_name?: string | null } | null;
+    if (job?.env_name) {
+      return { ...invocation, data: { ...(invocation.data ?? {}), env_name: job.env_name } };
+    }
+
+    // Then the latest manifest's default env
     try {
       const manifest = await this.db<{ parsed_defaults: Record<string, unknown> | null }[]>`
         SELECT parsed_defaults FROM project_manifests
