@@ -320,7 +320,9 @@ admin; and neither a project role nor the org `member` role implies a scope over
 org data. Pipeline steps' `scope` is judged the same way (not under `legacy`).
 The orchestrator gives a job org data only from a scope the API judged for the
 user who started it. Within its scope, a job token's org doc and memory searches,
-org search, agent KV, distillation and cloud-fs listing are held to the scope.
+org search, agent KV, distillation, org-fs listings, events, shares and public
+paths, and cloud-fs listing are held to the scope; script and `run` action steps
+mint their token under the same rule as agent steps.
 `audit` records each case.
 
 Step `permissions:` for the job token may only list permissions the invoking
