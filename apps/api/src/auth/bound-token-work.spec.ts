@@ -219,10 +219,10 @@ describe('work started with an org-bound token', () => {
       const jobsService = { create: vi.fn(async () => ({})) };
       const jobs = new JobsController(jobsService as never, {} as never);
 
-      await jobs.create('proj_a', { description: 'go' } as never, BOT_JOB_TOKEN, 'c1');
+      await jobs.create('proj_a', { description: 'go' } as never, BOT_JOB_TOKEN, 'corr-1');
       await jobs.create('proj_a', { description: 'go' } as never, PERSON, 'c2');
 
-      expect(jobsService.create).toHaveBeenNthCalledWith(1, 'proj_a', { description: 'go' }, 'user_bot', 'c1', { userSecretsExcluded: true, startedBy: BOT_JOB_TOKEN });
+      expect(jobsService.create).toHaveBeenNthCalledWith(1, 'proj_a', { description: 'go' }, 'user_bot', 'corr-1', { userSecretsExcluded: true, startedBy: BOT_JOB_TOKEN });
       expect(jobsService.create).toHaveBeenNthCalledWith(2, 'proj_a', { description: 'go' }, 'user_owner', 'c2', { userSecretsExcluded: false, startedBy: PERSON });
     });
 
