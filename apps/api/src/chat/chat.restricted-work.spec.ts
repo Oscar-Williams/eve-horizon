@@ -13,7 +13,7 @@ const RESTRICTED: AuthUser = {
 } as AuthUser;
 
 type Priv = {
-  createChatJob(ctx: { user?: AuthUser } | undefined, projectId: string, data: Record<string, unknown>): Promise<{ id: string }>;
+  createChatJob(ctx: { user?: AuthUser } | undefined, projectId: string, data: Record<string, unknown>, request?: Record<string, unknown>): Promise<{ id: string }>;
 };
 
 function serviceWith(create: ReturnType<typeof vi.fn>): Priv {
@@ -30,17 +30,19 @@ describe('jobs chat starts', () => {
 
     await serviceWith(create).createChatJob({ user: RESTRICTED }, 'proj_shop', { description: 'hi' });
 
-    expect(create).toHaveBeenCalledWith('proj_shop', { description: 'hi' }, undefined, undefined, { secretsAllowlist: ['ANTHROPIC_API_KEY'] });
+    expect(create).toHaveBeenCalledWith('proj_shop', { description: 'hi' }, undefined, undefined, { secretsAllowlist: ['ANTHROPIC_API_KEY'], startedBy: RESTRICTED });
   });
 
-  it('carry nothing for an unrestricted caller or a gateway dispatch', async () => {
+  it('carry no allowlist for an unrestricted caller or a gateway dispatch, only who sent the message', async () => {
     const create = vi.fn(async () => ({ id: 'shop-3' }));
 
     await serviceWith(create).createChatJob({ user: { user_id: 'user_owner' } }, 'proj_shop', { description: 'hi' });
     await serviceWith(create).createChatJob(undefined, 'proj_shop', { description: 'hi' });
 
-    expect(create).toHaveBeenNthCalledWith(1, 'proj_shop', { description: 'hi' }, undefined, undefined, {});
-    expect(create).toHaveBeenNthCalledWith(2, 'proj_shop', { description: 'hi' }, undefined, undefined, {});
+    // Who started the work is judged for secrets:use (rule secrets.use); a
+    // gateway sender with no Eve user is no one.
+    expect(create).toHaveBeenNthCalledWith(1, 'proj_shop', { description: 'hi' }, undefined, undefined, { startedBy: { user_id: 'user_owner' } });
+    expect(create).toHaveBeenNthCalledWith(2, 'proj_shop', { description: 'hi' }, undefined, undefined, { startedBy: null });
   });
 
   it('are all created through createChatJob', () => {
