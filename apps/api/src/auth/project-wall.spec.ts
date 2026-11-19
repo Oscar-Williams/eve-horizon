@@ -166,6 +166,42 @@ describe('the project wall (P1-5)', () => {
       await expect(rbac.requirePermissions(member, 'proj_missing', ['jobs:read'])).resolves.toBeUndefined();
       expect(store.findings()).toEqual([]);
     });
+
+    it('is an error, not the member set, when the profile lookup fails', async () => {
+      seed('strict');
+      store.setInstanceProfile('audit');
+      const { rbac, security } = services();
+      const queries = (security as unknown as { security: { getProfiles: (...args: unknown[]) => Promise<unknown> } }).security;
+      const getProfiles = queries.getProfiles;
+      queries.getProfiles = async () => {
+        throw new Error('connection reset');
+      };
+      try {
+        await expect(rbac.requirePermissions(member, PROJECT, ['secrets:read'])).rejects.toThrow('connection reset');
+        await expect(rbac.resolveEffectivePermissions(member, PROJECT)).rejects.toThrow('connection reset');
+      } finally {
+        queries.getProfiles = getProfiles;
+      }
+    });
+
+    it('judges a deleted project named by id under that project\'s own profile', async () => {
+      seed('strict');
+      store.setInstanceProfile('audit');
+      store.state.projects[0].deleted_at = new Date('2026-11-18T00:00:00Z');
+      const { rbac } = services();
+
+      await expect(rbac.requirePermissions(member, PROJECT, ['jobs:read'])).rejects.toBeInstanceOf(ForbiddenException);
+      expect(store.findings('access.unresolved_project')[0]).toMatchObject({ profile: 'strict', project_id: PROJECT });
+    });
+
+    it('grants the member set for a project that cannot be found, under an audit instance', async () => {
+      seed('strict');
+      store.setInstanceProfile('audit');
+      const { rbac } = services();
+
+      await expect(rbac.requirePermissions(member, 'proj_missing', ['jobs:read'])).resolves.toBeUndefined();
+      expect(store.findings('access.unresolved_project')[0]).toMatchObject({ profile: 'audit' });
+    });
   });
 
   describe('project-scoped bindings (always on)', () => {
