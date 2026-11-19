@@ -210,6 +210,23 @@ describe('the decider of a job review', () => {
   });
 });
 
+describe('the decider of a PATCH that approves a review', () => {
+  it('is the caller, recorded as approve records it, on every profile', async () => {
+    await route(controller(), 'update', 'solo-r', { phase: 'done' }, TEAMMATE);
+
+    expect(m.jobQ.approveReview).toHaveBeenCalledWith('solo-r', 'user_mate', undefined, 'user');
+    expect(m.jobQ.updatePhase).not.toHaveBeenCalled();
+  });
+
+  it('is recorded as the job for a job token under audit', async () => {
+    m.state.projectProfile = 'audit';
+
+    await route(controller(), 'update', 'solo-r', { phase: 'done' }, OWNER_AGENT);
+
+    expect(m.jobQ.approveReview).toHaveBeenCalledWith('solo-r', 'job:solo-1', undefined, 'agent');
+  });
+});
+
 describe('job approvals under the strict profile', () => {
   beforeEach(() => {
     m.state.projectProfile = 'strict';
@@ -264,7 +281,7 @@ describe('job approvals under the strict profile', () => {
   it("leave a member's own PATCH from review to done on a job outside a run", async () => {
     await route(controller(), 'update', 'solo-r', { phase: 'done' }, TEAMMATE);
 
-    expect(m.jobQ.updatePhase).toHaveBeenCalledWith('solo-r', 'done');
+    expect(m.jobQ.approveReview).toHaveBeenCalledWith('solo-r', 'user_mate', undefined, 'user');
   });
 });
 
