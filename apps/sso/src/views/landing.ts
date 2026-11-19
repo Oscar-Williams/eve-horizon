@@ -1,10 +1,12 @@
-import { POST_TO_CALLBACK_SCRIPT, escapeHtml, jsString, pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, escapeHtml, jsString, pageChrome, scriptOpen } from './chrome.js';
 
 export function landingPageHtml(opts: {
   redirectTo: string;
   projectId: string;
   signedIn: boolean;
   continueHref: string | null;
+  /** This response's CSP script nonce. */
+  scriptNonce?: string;
 }): string {
   const { redirectTo, projectId, signedIn, continueHref } = opts;
   const continueLabel = signedIn ? 'Continue' : 'Continue to Sign In';
@@ -61,9 +63,9 @@ export function landingPageHtml(opts: {
     <h2>${headline}</h2>
     <p>${body}</p>
     ${continueHref ? `<a id="continue" class="btn" href="${escapeHtml(continueHref)}">${continueLabel}</a>` : ''}
-    ${signedIn ? `<button id="signout" class="btn btn-secondary" onclick="signOut()">Sign out</button>` : ''}
+    ${signedIn ? `<button id="signout" class="btn btn-secondary" type="button">Sign out</button>` : ''}
   </div>
-  <script>
+  ${scriptOpen(opts.scriptNonce)}
     const REDIRECT_TO = ${jsString(redirectTo)};
     const PROJECT_ID = ${jsString(projectId)};
 
@@ -97,6 +99,7 @@ ${POST_TO_CALLBACK_SCRIPT}
       }
       window.location.href = '/login';
     }
+    document.getElementById('signout')?.addEventListener('click', signOut);
   </script>
   <noscript>
     <p style="margin-top: 1rem; color: #a3a3a3">

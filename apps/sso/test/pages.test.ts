@@ -19,7 +19,7 @@ interface Recorded {
 
 function runPage(html: string, location: { hash?: string; search?: string; pathname?: string }) {
   const recorded: Recorded = { navigations: [], submissions: [] };
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 
   const makeElement = () => {
     const children: Array<{ name: string; value: string }> = [];
@@ -33,6 +33,7 @@ function runPage(html: string, location: { hash?: string; search?: string; pathn
       classList: { add() {}, remove() {}, toggle() {} },
       appendChild(child: { name: string; value: string }) { children.push(child); return child; },
       setAttribute(key: string, value: string) { element[key] = value; },
+      addEventListener() {},
       submit() {
         recorded.submissions.push({
           method: String(element.method).toUpperCase(),

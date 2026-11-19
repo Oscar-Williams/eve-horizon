@@ -1,12 +1,16 @@
 import { SIGNUP_ALLOWED_DOMAINS } from '../config.js';
 import type { SsoLoginContext } from '../types.js';
-import { POST_TO_CALLBACK_SCRIPT, escapeHtml, isHttpsUrl, jsString, pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, escapeHtml, isHttpsUrl, jsString, pageChrome, safeColor, scriptOpen } from './chrome.js';
 
 export function loginPageHtml(
   redirectTo: string,
   mode: string,
   error?: string,
   context?: SsoLoginContext | null,
+  page: {
+    /** This response's CSP script nonce. */
+    scriptNonce?: string;
+  } = {},
 ): string {
   const escapedError = error ? escapeHtml(error) : '';
   const auth = context?.auth ?? {
@@ -20,7 +24,7 @@ export function loginPageHtml(
   const logoHtml = isHttpsUrl(branding?.app_logo_url)
     ? `<img src="${escapeHtml(branding.app_logo_url)}" alt="${escapedAppName}" style="display:block;max-width:180px;max-height:64px;margin:0 auto 0.75rem;">`
     : '';
-  const primaryColor = branding?.primary_color ?? '#ffffff';
+  const primaryColor = safeColor(branding?.primary_color);
   const primaryTextColor = primaryColor.toLowerCase() === '#ffffff' ? '#0a0a0a' : '#ffffff';
   const showPassword = auth.login_method !== 'magic_link';
   const showMagicLink = auth.login_method !== 'password';
@@ -208,13 +212,13 @@ export function loginPageHtml(
     <div class="card">
       ${allowSignup ? `
       <div class="tabs">
-        <button class="tab${!isSignup ? ' active' : ''}" id="tab-signin" onclick="switchTab('signin')">Sign In</button>
-        <button class="tab${isSignup ? ' active' : ''}" id="tab-signup" onclick="switchTab('signup')">Sign Up</button>
+        <button class="tab${!isSignup ? ' active' : ''}" id="tab-signin" type="button">Sign In</button>
+        <button class="tab${isSignup ? ' active' : ''}" id="tab-signup" type="button">Sign Up</button>
       </div>` : ''}
       <div id="error" class="error${escapedError ? ' visible' : ''}">${escapedError}</div>
       <div id="success" class="success"></div>${domainHint ? `
       <div id="domain-hint" class="domain-hint" style="display:${isSignup ? 'block' : 'none'}">Signup is limited to <strong>${escapeHtml(domainHint)}</strong> email addresses.</div>` : ''}
-      <form id="auth-form" onsubmit="return handleSubmit(event)">
+      <form id="auth-form">
         <div class="field">
           <label for="email">Email</label>
           <input type="email" id="email" name="email" placeholder="you@example.com" required autocomplete="email">
@@ -228,7 +232,7 @@ export function loginPageHtml(
         </button>
       </form>${showPassword && showMagicLink ? `
       <div class="divider">or</div>
-      <button class="btn btn-secondary" id="magic-btn" onclick="handleMagicLink()">
+      <button class="btn btn-secondary" id="magic-btn" type="button">
         Send Magic Link
       </button>` : ''}
     </div>
@@ -236,7 +240,7 @@ export function loginPageHtml(
       Powered by Eve Horizon
     </div>
   </div>
-  <script>
+  ${scriptOpen(page.scriptNonce)}
     const REDIRECT_TO = ${jsString(redirectTo)};
     const PROJECT_ID = ${jsString(context?.project_id ?? '')};
     const MAGIC_ONLY = ${magicOnly ? 'true' : 'false'};
@@ -403,6 +407,11 @@ ${POST_TO_CALLBACK_SCRIPT}
         });
       }
     })();
+
+    document.getElementById('tab-signin')?.addEventListener('click', () => switchTab('signin'));
+    document.getElementById('tab-signup')?.addEventListener('click', () => switchTab('signup'));
+    document.getElementById('auth-form')?.addEventListener('submit', handleSubmit);
+    document.getElementById('magic-btn')?.addEventListener('click', handleMagicLink);
   </script>`;
 
   return pageChrome(body, { head, css });

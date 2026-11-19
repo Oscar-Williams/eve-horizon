@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import { readRefreshToken } from '../cookies.js';
+import { cspNonce } from '../csp.js';
 import { fetchAppContext } from '../gotrue-client.js';
 import { isAllowedRedirect } from '../security.js';
 import { landingPageHtml } from '../views/landing.js';
@@ -29,8 +30,9 @@ export function registerLandingRoutes(app: Express): void {
     // or fall back to no Continue button rather than dead-ending at /login.
     let continueHref: string | null = null;
     if (hasSession) {
-      if (allowedOrigins.length === 1) {
-        continueHref = allowedOrigins[0];
+      const only = allowedOrigins.length === 1 ? allowedOrigins[0] : undefined;
+      if (only && isAllowedRedirect(only, { allowedOrigins })) {
+        continueHref = only;
       }
     } else {
       // Not signed in — render a Continue link that goes to /login, preserving
@@ -48,6 +50,7 @@ export function registerLandingRoutes(app: Express): void {
         projectId,
         signedIn: hasSession,
         continueHref,
+        scriptNonce: cspNonce(res),
       }),
     );
   });

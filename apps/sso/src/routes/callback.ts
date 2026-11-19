@@ -10,6 +10,7 @@ import {
 } from '../cookies.js';
 import { decodeJwtPayload, exchangeForEveToken, fetchAppContext } from '../gotrue-client.js';
 import { isAllowedRedirect } from '../security.js';
+import { cspNonce } from '../csp.js';
 import { appendQueryParam, buildQuery, ssoOrigin } from '../urls.js';
 import { callbackExtractorHtml } from '../views/callback-extractor.js';
 import { continueAsHtml } from '../views/continue-as.js';
@@ -52,7 +53,7 @@ export function registerCallbackRoutes(app: Express): void {
 
     // GoTrue puts the tokens in the URL fragment; this page posts them back.
     res.setHeader('Cache-Control', 'no-store');
-    res.type('html').send(callbackExtractorHtml());
+    res.type('html').send(callbackExtractorHtml(cspNonce(res)));
   });
 
   app.post('/callback', express.urlencoded({ extended: false }), async (req, res) => {
@@ -149,7 +150,7 @@ export function registerCallbackRoutes(app: Express): void {
           res.redirect(302, redirectTo);
           return;
         }
-        const setPasswordUrl = `/set-password?redirect_to=${encodeURIComponent(redirectTo)}`;
+        const setPasswordUrl = `/set-password${buildQuery({ redirect_to: redirectTo, project_id: projectId })}`;
         res.redirect(302, setPasswordUrl);
         return;
       }

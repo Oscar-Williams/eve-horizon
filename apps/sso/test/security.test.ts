@@ -92,13 +92,13 @@ describe('normalizeOrigin', () => {
 });
 
 describe('isAllowedRedirect', () => {
-  it('always allows cluster-domain hosts regardless of protocol', async () => {
+  it('allows cluster-domain hosts over http and https only', async () => {
     const sec = await loadSecurity();
     expect(sec.isAllowedRedirect('http://app.mto-dtest-test.lvh.me/cb')).toBe(true);
     expect(sec.isAllowedRedirect('https://api.lvh.me/x?y=1')).toBe(true);
-    // Hostname check precedes the protocol check, so even non-web schemes
-    // pass for cluster hosts (current behavior).
-    expect(sec.isAllowedRedirect('ftp://x.lvh.me/file')).toBe(true);
+    // Other schemes are refused even on a cluster host.
+    expect(sec.isAllowedRedirect('ftp://x.lvh.me/file')).toBe(false);
+    expect(sec.isAllowedRedirect('javascript://x.lvh.me/%0aalert(1)')).toBe(false);
   });
 
   it('rejects external origins that are not allowlisted', async () => {

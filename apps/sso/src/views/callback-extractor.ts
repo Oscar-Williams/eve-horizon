@@ -1,6 +1,6 @@
-import { POST_TO_CALLBACK_SCRIPT, pageChrome } from './chrome.js';
+import { POST_TO_CALLBACK_SCRIPT, pageChrome, scriptOpen } from './chrome.js';
 
-export function callbackExtractorHtml(): string {
+export function callbackExtractorHtml(scriptNonce?: string): string {
   const head = `  <title>Eve - Authenticating...</title>`;
 
   const css = `    body {
@@ -19,7 +19,7 @@ export function callbackExtractorHtml(): string {
     <h2>Authenticating...</h2>
     <p>Please wait while we complete your sign-in.</p>
   </div>
-  <script>
+  ${scriptOpen(scriptNonce)}
 ${POST_TO_CALLBACK_SCRIPT}
 
     // GoTrue redirects here with the tokens (or an error) in the URL fragment.

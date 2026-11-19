@@ -19,8 +19,31 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+const SCRIPT_STRING_ESCAPES: Record<string, string> = {
+  '<': '\\u003c',
+  '>': '\\u003e',
+  '&': '\\u0026',
+  "'": '\\u0027',
+  '\u2028': '\\u2028',
+  '\u2029': '\\u2029',
+};
+
+/**
+ * A string as a JavaScript literal for an inline <script>: JSON, with the
+ * characters that could end the script element or the string escaped.
+ */
 export function jsString(value: string): string {
-  return JSON.stringify(value);
+  return JSON.stringify(value).replace(/[<>&'\u2028\u2029]/g, (c) => SCRIPT_STRING_ESCAPES[c] ?? c);
+}
+
+/** The opening tag of an inline script, carrying the response's CSP nonce. */
+export function scriptOpen(nonce: string | undefined): string {
+  return nonce ? `<script nonce="${escapeHtml(nonce)}">` : '<script>';
+}
+
+/** A branding colour, only in #rrggbb form; anything else gives the fallback. */
+export function safeColor(value: string | undefined, fallback = '#ffffff'): string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }
 
 export function isHttpsUrl(value: string | undefined): value is string {

@@ -1,5 +1,5 @@
 import type { ProjectBranding } from '../types.js';
-import { escapeHtml, isHttpsUrl, pageChrome } from './chrome.js';
+import { escapeHtml, isHttpsUrl, pageChrome, safeColor } from './chrome.js';
 
 export function renderInterstitialHtml(opts: {
   kind: 'magic_link' | 'invite';
@@ -21,7 +21,7 @@ export function renderInterstitialHtml(opts: {
   const helpText = isInvite
     ? 'This invite link can only be used once. If you didn\'t request it, you can close this tab.'
     : 'This sign-in link can only be used once. If you didn\'t request it, you can close this tab.';
-  const primaryColor = opts.branding?.primary_color ?? '#ffffff';
+  const primaryColor = safeColor(opts.branding?.primary_color);
   const primaryTextColor = primaryColor.toLowerCase() === '#ffffff' ? '#0a0a0a' : '#ffffff';
   const logoHtml = isHttpsUrl(opts.branding?.app_logo_url)
     ? `<img src="${escapeHtml(opts.branding.app_logo_url)}" alt="${escapedAppName}" referrerpolicy="no-referrer" style="display:block;max-width:160px;max-height:64px;margin:0 auto 0.75rem;">`

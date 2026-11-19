@@ -1,8 +1,12 @@
-import { pageChrome } from './chrome.js';
+import { escapeHtml, jsString, pageChrome, scriptOpen } from './chrome.js';
 
-export function setPasswordPageHtml(redirectTo: string, error?: string): string {
-  const escapedRedirect = redirectTo.replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  const escapedError = error ? error.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+/**
+ * The password-set page for invited users. `redirectTo` must already be an
+ * address the SSO may send people to (the route checks it); it reaches the
+ * page script as an escaped JSON string.
+ */
+export function setPasswordPageHtml(redirectTo: string, error?: string, scriptNonce?: string): string {
+  const escapedError = error ? escapeHtml(error) : '';
 
   const head = `  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Eve - Set Password</title>`;
@@ -45,7 +49,7 @@ export function setPasswordPageHtml(redirectTo: string, error?: string): string 
     </div>
     <div class="card">
       <div id="error" class="error${escapedError ? ' visible' : ''}">${escapedError}</div>
-      <form id="pw-form" onsubmit="return handleSetPassword(event)">
+      <form id="pw-form">
         <div class="field">
           <label for="password">Password</label>
           <input type="password" id="password" name="password" placeholder="Choose a password" minlength="6" autocomplete="new-password" required>
@@ -56,12 +60,12 @@ export function setPasswordPageHtml(redirectTo: string, error?: string): string 
         </div>
         <button type="submit" class="btn btn-primary" id="submit-btn">Set Password</button>
       </form>
-      <button class="skip" onclick="skipPassword()">Skip for now</button>
+      <button class="skip" id="skip-btn" type="button">Skip for now</button>
     </div>
     <div class="footer">Powered by Eve Horizon</div>
   </div>
-  <script>
-    const REDIRECT_TO = '${escapedRedirect}';
+  ${scriptOpen(scriptNonce)}
+    const REDIRECT_TO = ${jsString(redirectTo)};
 
     function showError(msg) {
       const el = document.getElementById('error');
@@ -108,6 +112,9 @@ export function setPasswordPageHtml(redirectTo: string, error?: string): string 
     function skipPassword() {
       window.location.href = REDIRECT_TO || '/';
     }
+
+    document.getElementById('pw-form')?.addEventListener('submit', handleSetPassword);
+    document.getElementById('skip-btn')?.addEventListener('click', skipPassword);
   </script>`;
 
   return pageChrome(body, { head, css });

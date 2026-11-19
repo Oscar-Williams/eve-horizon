@@ -1,7 +1,9 @@
 import type { Express } from 'express';
 import { SUPABASE_ANON_KEY, SUPABASE_AUTH_URL } from '../config.js';
 import { readRefreshToken, setSessionCookies } from '../cookies.js';
-import { refreshSupabaseSession } from '../gotrue-client.js';
+import { cspNonce } from '../csp.js';
+import { fetchAppContext, refreshSupabaseSession } from '../gotrue-client.js';
+import { isAllowedRedirect } from '../security.js';
 import { setPasswordPageHtml } from '../views/set-password.js';
 
 export function registerSetPasswordRoutes(app: Express): void {
@@ -9,10 +11,16 @@ export function registerSetPasswordRoutes(app: Express): void {
   // GET /set-password — password-set page for invited users
   // -------------------------------------------------------------------------
 
-  app.get('/set-password', (req, res) => {
-    const redirectTo = (req.query.redirect_to as string) || '';
-    const error = (req.query.error as string) || undefined;
-    res.type('html').send(setPasswordPageHtml(redirectTo, error));
+  app.get('/set-password', async (req, res) => {
+    const requested = typeof req.query.redirect_to === 'string' ? req.query.redirect_to : '';
+    const projectId = typeof req.query.project_id === 'string' ? req.query.project_id : '';
+    const error = typeof req.query.error === 'string' && req.query.error ? req.query.error : undefined;
+    // Only an address the SSO may send people to (the project's allowed
+    // origins when a project is named); anything else falls back to '/'.
+    const context = requested && projectId ? await fetchAppContext(projectId) : null;
+    const allowedOrigins = context?.auth?.allowed_redirect_origins ?? [];
+    const redirectTo = requested && isAllowedRedirect(requested, { allowedOrigins }) ? requested : '';
+    res.type('html').send(setPasswordPageHtml(redirectTo, error, cspNonce(res)));
   });
 
   // -------------------------------------------------------------------------

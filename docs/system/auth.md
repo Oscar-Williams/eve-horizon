@@ -475,6 +475,18 @@ Operators can confirm the SSO broker's running mode from container logs:
 [eve-sso] Secure cookies: true (SameSite=none)
 ```
 
+#### SSO pages
+
+Every SSO response carries `Content-Security-Policy: script-src 'nonce-<n>';
+object-src 'none'; base-uri 'none'` with a new nonce per response. Each page's
+inline script carries that nonce and the pages use no inline event-handler
+attributes. Server values reach page scripts as JSON strings with `<`, `>`,
+`&`, `'`, U+2028 and U+2029 escaped, and markup through HTML escaping.
+`redirect_to` targets are `http`/`https` only: a cluster host, or an origin
+the project allows. The set-password page checks its `redirect_to` the same
+way (with the invite's `project_id`) and falls back to `/` otherwise.
+Branding colours are used only in `#rrggbb` form.
+
 #### The sign-in callback
 
 `/callback` sets a session only from a `POST` whose `Origin` is the SSO's own.

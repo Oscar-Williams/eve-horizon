@@ -31,7 +31,7 @@ export function normalizeOrigin(value: string): string | null {
 }
 
 /**
- * Validate a post-auth `redirect_to` URL. Accepts:
+ * Validate a post-auth `redirect_to` URL (http or https only). Accepts:
  *   - Any URL whose hostname is the cluster domain or a subdomain of it.
  *   - Any URL whose origin matches a project-declared allowed origin.
  * Project-declared origins must be HTTPS (or local-only HTTP for dev).
@@ -42,6 +42,11 @@ export function isAllowedRedirect(
 ): boolean {
   try {
     const parsed = new URL(url);
+    // Only web addresses: never javascript:, data: or other schemes, even on
+    // a cluster host.
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return false;
+    }
     if (isClusterDomainHost(parsed.hostname)) {
       return true;
     }
