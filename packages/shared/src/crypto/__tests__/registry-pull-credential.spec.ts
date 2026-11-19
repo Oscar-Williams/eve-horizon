@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   mintRegistryPullCredential,
   mintRegistryPushCredential,
+  REGISTRY_INTERNAL_KEY_VERSION,
   REGISTRY_PUSH_CREDENTIAL_TTL_SECONDS,
+  registryCredentialKey,
+  registryKeyVersion,
   verifyRegistryPullCredential,
   verifyRegistryPushCredential,
 } from '../registry-pull-credential.ts';
@@ -90,5 +93,27 @@ describe('registry push credential', () => {
     // Same payload, other prefix: the MACs are under different keys.
     const [, payload, mac] = pull.split('.');
     expect(verifyRegistryPushCredential(`evepush1.${payload}.${mac}`, KEY)).toBeNull();
+  });
+});
+
+describe('the registry credential key', () => {
+  it('signs with EVE_REGISTRY_CREDENTIAL_KEY when set, under a version that names the key without revealing it', () => {
+    const signer = registryCredentialKey({ EVE_REGISTRY_CREDENTIAL_KEY: 'credential-key', EVE_INTERNAL_API_KEY: KEY });
+    expect(signer).toEqual({ key: 'credential-key', version: registryKeyVersion('credential-key') });
+    expect(signer!.version).not.toContain('credential-key');
+    expect(signer!.version).not.toBe(registryKeyVersion('other-key'));
+    expect(signer!.version).not.toBe(REGISTRY_INTERNAL_KEY_VERSION);
+    expect(registryKeyVersion('credential-key')).toBe(registryKeyVersion('credential-key'));
+  });
+
+  it('falls back to the internal key, under the internal version, until the credential key is set', () => {
+    expect(registryCredentialKey({ EVE_INTERNAL_API_KEY: KEY })).toEqual({ key: KEY, version: REGISTRY_INTERNAL_KEY_VERSION });
+    expect(registryCredentialKey({})).toBeNull();
+  });
+
+  it('a credential signed with one key does not verify under the other', () => {
+    const pull = mintRegistryPullCredential(CLAIMS, 'credential-key');
+    expect(verifyRegistryPullCredential(pull, 'credential-key')).toEqual(CLAIMS);
+    expect(verifyRegistryPullCredential(pull, KEY)).toBeNull();
   });
 });

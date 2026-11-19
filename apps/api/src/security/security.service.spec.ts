@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
-import { SetSecurityProfileRequestSchema } from '@eve/shared';
+import { SetSecurityProfileRequestSchema, registryKeyVersion } from '@eve/shared';
 import { SecurityService } from './security.service';
 import type { AuthUser } from '../auth/auth.types';
 
@@ -16,6 +16,8 @@ const db = vi.hoisted(() => {
     findings: [] as Array<Record<string, unknown>>,
     /** Stored credentials by format, as `eve system secrets reencrypt --dry-run` counts them. */
     storage: { v1: 0, v2: 0, plainTokens: 0, plainClientSecrets: 0 },
+    /** Environments whose pull secret is not on the current registry key version. */
+    staleRegistryKeys: 0,
   };
 
   const settings = {
@@ -82,7 +84,11 @@ const db = vi.hoisted(() => {
     countClientSecretFormats: vi.fn(async () => ({ plain: state.storage.plainClientSecrets, sealed: 0 })),
   };
 
-  return { state, settings, security, audit, secrets, integrations, oauthAppConfigs };
+  const environments = {
+    countStaleRegistryKeys: vi.fn(async (_current: string | null) => state.staleRegistryKeys),
+  };
+
+  return { state, settings, security, audit, secrets, integrations, oauthAppConfigs, environments };
 });
 
 vi.mock('@eve/db', async (importOriginal) => {
@@ -95,6 +101,7 @@ vi.mock('@eve/db', async (importOriginal) => {
     secretQueries: vi.fn(() => db.secrets),
     integrationQueries: vi.fn(() => db.integrations),
     oauthAppConfigQueries: vi.fn(() => db.oauthAppConfigs),
+    environmentQueries: vi.fn(() => db.environments),
   };
 });
 
@@ -117,6 +124,8 @@ describe('SecurityService', () => {
     db.state.projectOrgs = new Map([[PROJECT, ORG]]);
     db.state.findings = [];
     db.state.storage = { v1: 0, v2: 0, plainTokens: 0, plainClientSecrets: 0 };
+    db.state.staleRegistryKeys = 0;
+    vi.unstubAllEnvs();
   });
 
   describe('effectiveProfile', () => {
@@ -395,6 +404,49 @@ describe('SecurityService', () => {
     it('accepts force in the request body', () => {
       expect(SetSecurityProfileRequestSchema.safeParse({ scope: 'instance', profile: 'strict', force: true }).success)
         .toBe(true);
+    });
+  });
+
+  describe('the instance strict guard on registry key versions', () => {
+    it('refuses the instance strict with 409 while environments are not on the current registry key version', async () => {
+      vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
+      db.state.staleRegistryKeys = 3;
+      const svc = build();
+      await expect(svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toBeInstanceOf(ConflictException);
+      await expect(svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toThrow(/eve system security reconcile/);
+      await expect(svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toThrow(/\b3\b/);
+      expect(db.environments.countStaleRegistryKeys).toHaveBeenCalledWith(registryKeyVersion('registry-credential-key'));
+      expect(db.state.settings.has('security.profile')).toBe(false);
+    });
+
+    it('counts every Eve pull secret as stale while no registry credential key is set', async () => {
+      db.state.staleRegistryKeys = 1;
+      await expect(build().setProfile({ scope: 'instance' }, 'strict', 'user_admin')).rejects.toBeInstanceOf(ConflictException);
+      expect(db.environments.countStaleRegistryKeys).toHaveBeenCalledWith(null);
+    });
+
+    it('sets the instance strict with force, and records that it was forced', async () => {
+      db.state.staleRegistryKeys = 2;
+      await build().setProfile({ scope: 'instance' }, 'strict', 'user_admin', { force: true });
+      expect(db.state.settings.get('security.profile')).toBe('strict');
+      expect(db.audit.log).toHaveBeenCalledWith(expect.objectContaining({
+        context: expect.objectContaining({ forced_with_stale_registry_keys: 2 }),
+      }));
+    });
+
+    it('reports how many environments are not on the current registry key version', async () => {
+      vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
+      db.state.staleRegistryKeys = 4;
+      const report = await build().report({});
+      expect(report.registry).toEqual({ key_version: registryKeyVersion('registry-credential-key'), stale_environments: 4 });
+    });
+  });
+
+  describe('findings with a named principal', () => {
+    it('records the principal a caller names instead of the actor', async () => {
+      db.state.settings.set('security.profile', 'audit');
+      await build().decide('internal.service_key', { governing: 'instance', principal: { type: 'service', id: 'gateway' } });
+      expect(db.state.findings).toEqual([expect.objectContaining({ actor_type: 'service', actor_id: 'gateway' })]);
     });
   });
 });

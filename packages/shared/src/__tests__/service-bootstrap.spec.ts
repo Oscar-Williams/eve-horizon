@@ -149,11 +149,13 @@ describe('service-bootstrap', () => {
 
   describe('internalAuthHeaders', () => {
     it('sends the internal token header when a key is configured', () => {
-      expect(internalAuthHeaders('secret-key')).toEqual({ [INTERNAL_TOKEN_HEADER]: 'secret-key' });
+      expect(internalAuthHeaders({ env: { EVE_INTERNAL_API_KEY: 'secret-key' } })).toEqual({
+        [INTERNAL_TOKEN_HEADER]: 'secret-key',
+      });
     });
 
     it('sends nothing when no key is configured', () => {
-      expect(internalAuthHeaders('')).toEqual({});
+      expect(internalAuthHeaders({ env: { EVE_INTERNAL_API_KEY: '' } })).toEqual({});
     });
   });
 

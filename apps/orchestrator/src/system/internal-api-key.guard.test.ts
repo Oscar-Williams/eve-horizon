@@ -301,4 +301,19 @@ describe('InternalApiKeyGuard', () => {
       await expect(guard.canActivate(context)).rejects.toThrow('Missing internal API key');
     });
   });
+
+  describe('the core service key', () => {
+    it('accepts the core key, with no legacy key configured', async () => {
+      vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+      vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
+      await expect(guard.canActivate(mockContext({ 'x-eve-service-key': 'core.core-key' }))).resolves.toBe(true);
+    });
+
+    it('refuses a wrong core key, and the gateway or SSO keys', async () => {
+      vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+      vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
+      await expect(guard.canActivate(mockContext({ 'x-eve-service-key': 'core.core-kez' }))).rejects.toThrow(UnauthorizedException);
+      await expect(guard.canActivate(mockContext({ 'x-eve-service-key': 'gateway.core-key' }))).rejects.toThrow(UnauthorizedException);
+    });
+  });
 });

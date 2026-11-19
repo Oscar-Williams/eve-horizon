@@ -51,4 +51,14 @@ describe('gateway API client paths', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(`${API_URL}${path}`);
   });
+
+  it('sends the gateway key, never the core key, beside the legacy key', async () => {
+    vi.stubEnv('EVE_INTERNAL_GATEWAY_KEY', 'gateway-key');
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
+    await getJson('/internal/integrations/active');
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['x-eve-service-key']).toBe('gateway.gateway-key');
+    expect(headers['x-eve-internal-token']).toBe('internal-key');
+    expect(JSON.stringify(headers)).not.toContain('core-key');
+  });
 });

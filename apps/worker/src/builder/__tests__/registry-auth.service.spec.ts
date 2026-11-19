@@ -25,4 +25,11 @@ describe('RegistryAuthService - Eve registry', () => {
       .not.toContain('internal-key');
     expect(verifyRegistryPushCredential(auth.token, 'internal-key')).toMatchObject({ projectId: 'proj_01hshop' });
   });
+
+  it('signs build credentials with the registry credential key when it is set', async () => {
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
+    const { auth } = await new RegistryAuthService().resolve('proj_01hshop', 'registry: eve\n');
+    expect(verifyRegistryPushCredential(auth.token, 'registry-credential-key')).toMatchObject({ projectId: 'proj_01hshop' });
+    expect(verifyRegistryPushCredential(auth.token, 'internal-key')).toBeNull();
+  });
 });

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'crypto';
 import { UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mintRegistryPullCredential, mintRegistryPushCredential } from '@eve/shared';
+import { mintRegistryPullCredential, mintRegistryPushCredential, type SecurityProfile } from '@eve/shared';
 import {
   grantRegistryAccess,
   identifyRegistryCaller,
@@ -10,34 +10,60 @@ import {
 import { RegistryTokenController } from './registry-token.controller.js';
 
 const KEY = 'internal-key';
+const CREDENTIAL_KEY = 'registry-credential-key';
 const PROJECT = 'proj_01hshop';
 const PULL_CLAIMS = { projectId: PROJECT, environmentId: 'env_test', namespace: 'eve-acme-shop-test', epoch: 4 };
 const projectCaller = { kind: 'project-pull' as const, ...PULL_CLAIMS };
 const pushCaller = { kind: 'project-push' as const, projectId: PROJECT, expiresAt: 9_999_999_999 };
 
+/** SecurityService.decide under one instance profile, recording each finding. */
+function fakeSecurity(profile: SecurityProfile) {
+  const findings: Array<{ rule: string; ctx: Record<string, unknown> }> = [];
+  return {
+    findings,
+    profile,
+    decide: vi.fn(async function (this: { profile: SecurityProfile }, rule: string, ctx: Record<string, unknown>) {
+      if (this.profile !== 'legacy') findings.push({ rule, ctx });
+      return this.profile;
+    }),
+  };
+}
+
 describe('identifyRegistryCaller', () => {
-  it('recognises the internal key', () => {
-    expect(identifyRegistryCaller(KEY, KEY)).toEqual({ kind: 'internal' });
+  const internalOnly = { internalKey: KEY };
+  const both = { credentialKey: CREDENTIAL_KEY, internalKey: KEY };
+
+  it('recognises the internal key, as a credential signed with the internal key', () => {
+    expect(identifyRegistryCaller(KEY, internalOnly)).toEqual({ caller: { kind: 'internal' }, key: 'internal' });
+    expect(identifyRegistryCaller(KEY, both)).toEqual({ caller: { kind: 'internal' }, key: 'internal' });
   });
 
-  it('recognises a pull credential', () => {
-    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, KEY), KEY)).toEqual(projectCaller);
+  it('recognises a pull credential, and which key signed it', () => {
+    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, KEY), internalOnly))
+      .toEqual({ caller: projectCaller, key: 'internal' });
+    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, KEY), both))
+      .toEqual({ caller: projectCaller, key: 'internal' });
+    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, CREDENTIAL_KEY), both))
+      .toEqual({ caller: projectCaller, key: 'credential' });
   });
 
   it('recognises an unexpired push credential', () => {
-    expect(identifyRegistryCaller(mintRegistryPushCredential(PROJECT, KEY), KEY)).toMatchObject({
-      kind: 'project-push',
-      projectId: PROJECT,
+    expect(identifyRegistryCaller(mintRegistryPushCredential(PROJECT, CREDENTIAL_KEY), both)).toMatchObject({
+      caller: { kind: 'project-push', projectId: PROJECT },
+      key: 'credential',
     });
-    const expired = mintRegistryPushCredential(PROJECT, KEY, 1_000);
-    expect(identifyRegistryCaller(expired, KEY)).toBeNull();
+    const expired = mintRegistryPushCredential(PROJECT, CREDENTIAL_KEY, 1_000);
+    expect(identifyRegistryCaller(expired, both)).toBeNull();
   });
 
   it('rejects anything else, and everything when no key is configured', () => {
-    expect(identifyRegistryCaller('wrong', KEY)).toBeNull();
-    expect(identifyRegistryCaller(undefined, KEY)).toBeNull();
-    expect(identifyRegistryCaller(KEY, undefined)).toBeNull();
-    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, 'other-key'), KEY)).toBeNull();
+    expect(identifyRegistryCaller('wrong', both)).toBeNull();
+    expect(identifyRegistryCaller(undefined, both)).toBeNull();
+    expect(identifyRegistryCaller(KEY, {})).toBeNull();
+    expect(identifyRegistryCaller(CREDENTIAL_KEY, both)).toBeNull();
+    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, 'other-key'), both)).toBeNull();
+    // Once the internal key is removed, credentials it signed no longer verify.
+    expect(identifyRegistryCaller(mintRegistryPullCredential(PULL_CLAIMS, KEY), { credentialKey: CREDENTIAL_KEY })).toBeNull();
   });
 });
 
@@ -112,6 +138,7 @@ describe('RegistryTokenController GET /internal/registry/token', () => {
   }
 
   let controller: RegistryTokenController;
+  let security: ReturnType<typeof fakeSecurity>;
   let environment: { project_id: string; status: string; registry_pull_epoch: number } | null;
   let project: { id: string } | null;
   const pullCredential = () => mintRegistryPullCredential(PULL_CLAIMS, KEY);
@@ -122,7 +149,8 @@ describe('RegistryTokenController GET /internal/registry/token', () => {
     vi.stubEnv('EVE_REGISTRY_SIGNING_KEY', signingKey);
     environment = { project_id: PROJECT, status: 'active', registry_pull_epoch: 4 };
     project = { id: PROJECT };
-    controller = new RegistryTokenController(null as any);
+    security = fakeSecurity('legacy');
+    controller = new RegistryTokenController(null as any, security as any);
     (controller as any).environments = { findById: vi.fn(async (id: string) => (id === 'env_test' ? environment : null)) };
     (controller as any).projects = { findById: vi.fn(async (id: string) => (id === PROJECT ? project : null)) };
   });
@@ -197,5 +225,78 @@ describe('RegistryTokenController GET /internal/registry/token', () => {
     expect(payloadOf(response.token).access).toEqual([
       { type: 'repository', name: 'shop-api', actions: ['push', 'pull'] },
     ]);
+  });
+});
+
+describe('registry.internal_key: the internal key and credentials it signed', () => {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const signingKey = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+  const basic = (username: string, password: string) =>
+    `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+  let security: ReturnType<typeof fakeSecurity>;
+  let controller: RegistryTokenController;
+
+  function under(profile: SecurityProfile) {
+    security = fakeSecurity(profile);
+    controller = new RegistryTokenController(null as any, security as any);
+    (controller as any).environments = {
+      findById: vi.fn(async () => ({ project_id: PROJECT, status: 'active', registry_pull_epoch: 4 })),
+    };
+    (controller as any).projects = { findById: vi.fn(async () => ({ id: PROJECT })) };
+  }
+
+  const pullWith = (key: string) => basic('eve-pull', mintRegistryPullCredential(PULL_CLAIMS, key));
+  const pushWith = (key: string) => basic('eve-push', mintRegistryPushCredential(PROJECT, key));
+  const scope = `repository:${PROJECT}/api:pull`;
+
+  beforeEach(() => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:pass@localhost:5432/eve_test');
+    vi.stubEnv('EVE_INTERNAL_API_KEY', KEY);
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', CREDENTIAL_KEY);
+    vi.stubEnv('EVE_REGISTRY_SIGNING_KEY', signingKey);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('under strict, a Basic internal key gets 401', async () => {
+    under('strict');
+    await expect(controller.issueTokenGet(basic('eve', KEY), scope, 'eve-registry')).rejects.toThrow(UnauthorizedException);
+    expect(security.findings).toEqual([
+      expect.objectContaining({ rule: 'registry.internal_key', ctx: expect.objectContaining({ governing: 'instance' }) }),
+    ]);
+  });
+
+  it('under strict, pull and push credentials signed with the internal key get 401', async () => {
+    under('strict');
+    await expect(controller.issueTokenGet(pullWith(KEY), scope, 'eve-registry')).rejects.toThrow(UnauthorizedException);
+    await expect(controller.issueTokenGet(pushWith(KEY), scope, 'eve-registry')).rejects.toThrow(UnauthorizedException);
+    expect(security.findings.map((f) => f.rule)).toEqual(['registry.internal_key', 'registry.internal_key']);
+    expect(security.findings[0].ctx).toMatchObject({ projectId: PROJECT, detail: { caller: 'project-pull' } });
+  });
+
+  it('under strict, credentials signed with the registry credential key work, with no finding', async () => {
+    under('strict');
+    await expect(controller.issueTokenGet(pullWith(CREDENTIAL_KEY), scope, 'eve-registry')).resolves.toHaveProperty('token');
+    await expect(controller.issueTokenGet(pushWith(CREDENTIAL_KEY), scope, 'eve-registry')).resolves.toHaveProperty('token');
+    expect(security.findings).toEqual([]);
+  });
+
+  it('under audit, both signatures and the internal key work, and the old ones are recorded', async () => {
+    under('audit');
+    await expect(controller.issueTokenGet(pullWith(KEY), scope, 'eve-registry')).resolves.toHaveProperty('token');
+    await expect(controller.issueTokenGet(basic('eve', KEY), scope, 'eve-registry')).resolves.toHaveProperty('token');
+    await expect(controller.issueTokenGet(pullWith(CREDENTIAL_KEY), scope, 'eve-registry')).resolves.toHaveProperty('token');
+    expect(security.findings.map((f) => f.rule)).toEqual(['registry.internal_key', 'registry.internal_key']);
+  });
+
+  it('records nothing for a stale credential it refuses anyway', async () => {
+    under('audit');
+    (controller as any).environments = {
+      findById: vi.fn(async () => ({ project_id: PROJECT, status: 'terminated', registry_pull_epoch: 4 })),
+    };
+    await expect(controller.issueTokenGet(pullWith(KEY), scope, 'eve-registry')).rejects.toThrow(UnauthorizedException);
+    expect(security.findings).toEqual([]);
   });
 });

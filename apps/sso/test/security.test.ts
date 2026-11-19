@@ -11,6 +11,7 @@ const ENV_KEYS = [
   'EVE_DEFAULT_DOMAIN',
   'EVE_SIGNUP_ALLOWED_EMAIL_DOMAINS',
   'EVE_INTERNAL_API_KEY',
+  'EVE_INTERNAL_SSO_KEY',
 ] as const;
 
 async function loadSecurity(env: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}): Promise<SecurityModule> {
@@ -349,5 +350,57 @@ describe('applyCorsHeaders', () => {
     expect(state.statusCode).toBe(403);
     expect(state.jsonBody).toEqual({ error: 'Origin not allowed' });
     expect(headers['Access-Control-Allow-Origin']).toBeUndefined();
+  });
+});
+
+describe('sign-in link CSRF values and the SSO key', () => {
+  const NONCE = 'a'.repeat(32);
+
+  it('are keyed with the SSO key when it is set, not the legacy key', async () => {
+    const legacyOnly = await loadSecurity({ EVE_INTERNAL_API_KEY: 'internal-key' });
+    const legacyValue = legacyOnly.signWrapCsrf('mlw_token', NONCE);
+    const withSsoKey = await loadSecurity({ EVE_INTERNAL_API_KEY: 'internal-key', EVE_INTERNAL_SSO_KEY: 'sso-key' });
+    const ssoValue = withSsoKey.signWrapCsrf('mlw_token', NONCE);
+    expect(ssoValue).not.toBe(legacyValue);
+    expect(withSsoKey.verifyWrapCsrf('mlw_token', NONCE, ssoValue)).toBe(true);
+    // A form rendered before the switch still submits while the legacy key is set.
+    expect(withSsoKey.verifyWrapCsrf('mlw_token', NONCE, legacyValue)).toBe(true);
+  });
+
+  it('work with the SSO key alone', async () => {
+    const ssoOnly = await loadSecurity({ EVE_INTERNAL_SSO_KEY: 'sso-key' });
+    const value = ssoOnly.signWrapCsrf('mlw_token', NONCE);
+    expect(ssoOnly.verifyWrapCsrf('mlw_token', NONCE, value)).toBe(true);
+    expect(ssoOnly.verifyWrapCsrf('mlw_token', NONCE, 'b'.repeat(64))).toBe(false);
+  });
+});
+
+describe('internal calls from the SSO', () => {
+  it('send the SSO key, and the legacy key while it is set', async () => {
+    vi.resetModules();
+    vi.stubEnv('EVE_API_URL', 'http://api.internal');
+    vi.stubEnv('EVE_INTERNAL_API_KEY', 'internal-key');
+    vi.stubEnv('EVE_INTERNAL_SSO_KEY', 'sso-key');
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ found: false })));
+    vi.stubGlobal('fetch', fetchMock);
+    const { internalApiPost } = await import('../src/gotrue-client.js');
+    await internalApiPost('/internal/auth/magic-link-wrap/inspect', { wrap_token: 'mlw_x' });
+    const headers = (fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string> }])[1].headers;
+    expect(headers['x-eve-service-key']).toBe('sso.sso-key');
+    expect(headers['x-eve-internal-token']).toBe('internal-key');
+    expect(JSON.stringify(headers)).not.toContain('core-key');
+  });
+
+  it('go out with the SSO key alone', async () => {
+    vi.resetModules();
+    vi.stubEnv('EVE_API_URL', 'http://api.internal');
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+    vi.stubEnv('EVE_INTERNAL_SSO_KEY', 'sso-key');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ found: false })));
+    vi.stubGlobal('fetch', fetchMock);
+    const { internalApiPost } = await import('../src/gotrue-client.js');
+    await expect(internalApiPost('/internal/auth/magic-link-wrap/inspect', { wrap_token: 'mlw_x' }))
+      .resolves.toEqual({ found: false });
   });
 });

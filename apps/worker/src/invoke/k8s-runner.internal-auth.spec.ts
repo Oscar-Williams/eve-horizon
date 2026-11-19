@@ -97,4 +97,34 @@ describe('worker runner pods and the internal-key guard', () => {
     expect(guard('/invoke', { [INTERNAL_TOKEN_HEADER]: 'platform-internal-key' })).toBe(200);
     expect(guard('/health')).toBe(200);
   });
+
+  it('the runner pod gets the core key\'s hash, never the key, and verifies the worker\'s core key with it', async () => {
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'platform-core-key');
+    const statuses: number[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { headers?: Record<string, string> }) => {
+      if (url.endsWith('/health')) return { ok: true };
+      if (url === 'http://10.0.0.1:4749/invoke') {
+        const podEnv = Object.fromEntries(appliedRunnerPod().spec.containers[0].env
+          .map((entry: { name: string; value?: string }) => [entry.name, entry.value]));
+        expect(JSON.stringify(podEnv)).not.toContain('platform-core-key');
+        let hook: (request: unknown, reply: unknown, done: () => void) => void = () => undefined;
+        // The runner's legacy key is set to something else, so only the core key can pass.
+        registerInternalAuthHook({ addHook: (_n: string, fn: typeof hook) => { hook = fn; } } as never, { key: 'not-the-worker-key', env: podEnv });
+        let status = 0;
+        const reply = { code(code: number) { status = code; return reply; }, send() { return reply; } };
+        hook({ url: '/invoke', headers: options?.headers ?? {} }, reply, () => { status = 200; });
+        statuses.push(status);
+        return status === 200 ? { ok: true, json: async () => ({ accepted: true }) } : { ok: false, status, text: async () => 'Unauthorized' };
+      }
+      if (url.includes('/events')) {
+        return { ok: true, json: async () => ({ data: [{ id: 'evt_1', type: 'runner.completed',
+          payload_json: { attemptId: 'attempt_test', jobId: 'job_test', result: { attemptId: 'attempt_test', success: true, exitCode: 0 } } }] }) };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    const result = await runInvocationInK8s(invocation);
+    expect(result.success).toBe(true);
+    expect(statuses).toEqual([200]);
+  });
 });
