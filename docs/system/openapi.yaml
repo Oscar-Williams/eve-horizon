@@ -20362,30 +20362,6 @@ components:
       required:
         - reason
       additionalProperties: false
-    SetSecurityProfileRequest:
-      type: object
-      properties:
-        scope:
-          type: string
-          enum:
-            - instance
-            - new_projects
-            - org
-            - project
-        id:
-          type: string
-          minLength: 1
-        profile:
-          type: string
-          enum:
-            - legacy
-            - audit
-            - strict
-          nullable: true
-      required:
-        - scope
-        - profile
-      additionalProperties: false
     AttemptResponse:
       type: object
       properties:
