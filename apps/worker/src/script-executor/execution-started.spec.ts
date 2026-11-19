@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { ScriptExecutorService } from './script-executor.service.js';
 import { ActionExecutorService } from '../action-executor/action-executor.service.js';
 
+// The runner-mode decision reads the project's profile from the database;
+// these tests build the executor without one, so the decision is legacy.
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => ({ profile: 'legacy', podsOnly: false, required: false })),
+  recordRunnerModeFinding: vi.fn(async () => undefined),
+}));
+
 describe('worker execution start markers', () => {
   it('marks script attempts as execution-started before workspace setup', async () => {
     const markExecutionStarted = vi.fn().mockResolvedValue(undefined);

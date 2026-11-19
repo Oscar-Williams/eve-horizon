@@ -19,6 +19,14 @@ const sharedMocks = vi.hoisted(() => ({
   resolveProjectSecrets: vi.fn(),
 }));
 
+// The runner-mode decision reads the project's profile from the database;
+// these tests build the executor without one, so the decision is legacy.
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => ({ profile: 'legacy', podsOnly: false, required: false })),
+  recordRunnerModeFinding: vi.fn(async () => undefined),
+}));
+
 vi.mock('@eve/shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@eve/shared')>();
   return {
