@@ -15630,6 +15630,10 @@ components:
           type: string
         user_id:
           type: string
+        job_id:
+          type: string
+        harness:
+          type: string
       required:
         - project_id
       additionalProperties: false

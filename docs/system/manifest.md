@@ -286,6 +286,13 @@ These allow your services to interact with the Eve platform without manual confi
 Job runners also receive `EVE_ENV_NAMESPACE`, but service containers do not.
 Services can override these values by defining them explicitly in their `environment` section.
 
+Credentials never sit in the Deployment or Job spec. `EVE_SERVICE_TOKEN`,
+app-link tokens, and every `environment` value that references
+`${secret.KEY}` or `${managed.*}` are written to the service's own Secret
+(`<env>-<service>-eve-secrets`) and read through `secretKeyRef`; the
+container sees the same env var names and values as before. See
+[deployment](deployment.md#service-secrets).
+
 **Which API URL to use:**
 - `EVE_API_URL` — for backend/server-side calls from your container to the Eve API (internal cluster networking)
 - `EVE_PUBLIC_API_URL` — for browser/client-side calls or any code running outside the cluster
@@ -550,6 +557,7 @@ services:
 | `storage` | Persistent volume configuration |
 | `rollout` | `recreate` or `rolling`; overrides the default rollout strategy (see Persistent Storage) |
 | `managed` | Managed DB config (requires `role: managed_db`) |
+| `security` | How the service runs under the `strict` pod security profile: `{ run_as_user?: number, run_as_group?: number, run_as_root?: boolean, capabilities?: string[] }` (see [x-eve.security](#x-evesecurity)) |
 | `audit_log_table` | Optional table used by `eve env diagnose --request` |
 | `request_id_column` | Optional request ID column for `audit_log_table` (default `request_id`) |
 
@@ -584,6 +592,60 @@ Notes:
 - `audit_log_table` is only queried when request-level diagnostics are run. The
   table name may be schema-qualified; rows are returned verbatim and failures are
   reported as warnings in the diagnose response.
+
+### x-eve.security
+
+Under the project's `strict` profile (rule `isolation.pod_security`, see
+[security profiles](security-profiles.md#rule-set-2-01327)) every service and
+`role: job` service runs with the restricted Pod Security context and a
+**numeric** user. Under `legacy` and `audit` these fields change nothing;
+`audit` records what `strict` would do.
+
+| Field | Description |
+|-------|-------------|
+| `run_as_user` | Numeric uid the containers run as (`runAsUser`). Wins over the image's own `USER`. |
+| `run_as_group` | Numeric gid (`runAsGroup`). |
+| `run_as_root` | `true` lets the containers run as root (no `runAsNonRoot`); the other controls stay. |
+| `capabilities` | Capabilities to add back after dropping all: `NET_BIND_SERVICE`, `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`. |
+
+The numeric-user rule:
+- An image whose `USER` is numeric (`1000` or `1000:1000`) needs no fields:
+  the deployer reads it from the image config with `crane config`, without
+  pulling layers.
+- An image whose `USER` is a name (`USER node`), root, or unset needs
+  `run_as_user` (and usually `run_as_group`), or `run_as_root: true`.
+  Otherwise the strict deploy, or the job, is refused with a message naming
+  these fields. The kubelet cannot check `runAsNonRoot` against a user name,
+  so the pod would never start.
+- When the image config cannot be read (a registry the worker cannot reach,
+  or an image only on the node), set `run_as_user`.
+- A service whose image binds a port below 1024 as a non-root user needs
+  `capabilities: [NET_BIND_SERVICE]`, or a port of 1024 and above.
+- `run_as_root` or any capability beyond `NET_BIND_SERVICE` labels the
+  namespace's Pod Security `warn` and `audit` at `baseline` instead of
+  `restricted`.
+
+```yaml
+services:
+  api:
+    build: { context: ./apps/api }
+    ports: [3000]
+    x-eve:
+      security:
+        run_as_user: 1000   # USER node in the Dockerfile
+        run_as_group: 1000
+  web:
+    image: nginx:1.27-alpine
+    ports: [80]
+    x-eve:
+      security:
+        run_as_root: true
+        capabilities: [NET_BIND_SERVICE, CHOWN, SETUID, SETGID]
+```
+
+Unknown fields under `x-eve.security` fail manifest validation, so a misspelt
+opt-out is not silently ignored. `x-eve.networking.egress: stable` is refused
+under `strict`.
 
 ### TCP Ingress
 

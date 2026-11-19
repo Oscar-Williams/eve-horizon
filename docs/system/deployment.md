@@ -332,6 +332,47 @@ Services can override these values by defining them explicitly in their `environ
 
 For adding SSO login to deployed apps using these variables, see [App SSO Integration](./app-sso-integration.md).
 
+### Service Secrets
+
+Credentials never sit in a Deployment or Job spec, on every security profile.
+At each deploy the deployer writes one Opaque Secret per service,
+`<env>-<service>-eve-secrets` (labelled `eve.service_secrets=true`), holding:
+- every `environment` value that references `${secret.KEY}` or
+  `${managed.*}`, after interpolation;
+- `EVE_SERVICE_TOKEN` and app-link `*_TOKEN` values.
+
+The container reads each of them through `valueFrom.secretKeyRef` under the
+same env var name, so apps see no change. Plain values stay inline.
+
+- **Rolling on change:** the pod template carries `eve.secrets-sha256`, a
+  SHA-256 over the Secret's keys and values, so a changed secret value rolls
+  the pods at the next deploy. (Every deploy mints a new service token, so
+  every deploy rolls the pods, as before.)
+- **Pruning:** after a deploy, Secrets of this env's services that were not
+  rendered are deleted, but only once the Deployment they were written for
+  is gone: Eve does not delete the Deployment of a service dropped from the
+  manifest, and its pods could not restart without their Secret.
+- **Service jobs** (`x-eve.role: job`, migrations) read their values from a
+  Secret made for the run (`<env>-<job>-eve-secrets`, labelled
+  `eve.job_secrets=true`) and removed when the run ends.
+- **First deploy after the upgrade:** values move from the Deployment into
+  the Secret in that deploy's normal rolling update, with the same values.
+- **Rollback to an older release:** an older deployer renders the values
+  inline again and ignores these Secrets; they stay in the namespace until
+  a newer deployer prunes them or the env is deleted.
+
+### Pod Security
+
+Under the project's `strict` profile (rule `isolation.pod_security`), tenant
+pods and service job pods run with the restricted Pod Security context and a
+numeric user from `x-eve.security.run_as_user` or the image's numeric `USER`
+(read with `crane config`, using the env's pull credentials). A strict deploy
+whose service has neither is refused before anything is applied, naming the
+fields; see [manifest](manifest.md#x-evesecurity). The namespace gets the
+Pod Security `warn` and `audit` labels (`restricted`, or `baseline` after an
+opt-out), never `enforce`. Under `audit` and `legacy` pod specs are unchanged;
+`audit` records each service's image user and what `strict` would add.
+
 ### Load Balancer Recovery
 
 k3d's load balancer can become stale after sleep/wake cycles. The `k8s.sh` script auto-recovers:

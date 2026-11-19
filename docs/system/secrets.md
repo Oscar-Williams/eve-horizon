@@ -38,6 +38,20 @@ Resolution order (highest wins): **project → user → org → system**.
 
 System secrets are loaded from `system-secrets.env.local` on API startup; restart the API to pick up changes.
 
+**System secrets and the security profile.** Under a project's `strict`
+profile (rule `secrets.system_scope`) a system secret reaches that project's
+deploys, jobs and harness checks only when the instance shares it by name:
+
+```bash
+eve system settings set secrets.system_shared_keys "SHARED_TOOL_KEY,OTHER_KEY"
+```
+
+Names are separated by commas or spaces. An org or project secret of the same
+name is unaffected. Under `audit`, each resolve that delivers an unshared
+system secret records a `secrets.system_scope` finding naming the keys
+(`eve doctor security --json`); share them, or move them to org scope, before
+the project goes `strict`.
+
 Values are never returned in plaintext. The `show` endpoint returns a fixed
 mask (`••••••••`, never a character of the value), the value's `length`, and a
 `fingerprint`: 12 hex of an HMAC over the scope, key and value, under a key
@@ -276,6 +290,17 @@ For an agent that reads untrusted input, run agent jobs in runner-pod mode
 
 A restricted job token also cannot export (`POST /projects/{id}/secrets/export`)
 a secret its allowlist leaves out.
+
+**Jobs with no allowlist (rule `secrets.unbound_job`).** When the worker or
+agent runtime resolves a job's secrets it names the job and its harness. Under
+`audit` and `strict`, a job whose agent and step declare no allowlist is
+recorded, with `withheld`: the names a bound job would not receive. A job
+always keeps its harness's provider keys and the keys its `env_overrides`
+reference; the clone credential is held only to clone the workspace and is
+neither withheld nor counted as a binding. In this release the rule records
+only: the job still receives every secret under `strict`, and the finding
+says `filtered: false`. Filtering moves to the runner's server-side resolve.
+Declare `access.secrets` on each agent to clear the finding.
 
 App links are project-scoped, not job-scoped: the app-link tokens a job gets
 come from `hints.resolved_app_links`, which any `jobs:write` holder in the
