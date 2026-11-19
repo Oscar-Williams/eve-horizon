@@ -30,6 +30,11 @@ export interface SecurityGateContext extends SecurityScope {
   actor?: AuthUser | null;
   /** Names and ids only; never a secret, token, value or request body. */
   detail?: Record<string, string | number | boolean | null>;
+  /**
+   * Keep the detail the day's row was first written with (findings an
+   * unauthenticated caller can cause).
+   */
+  keepFirstDetail?: boolean;
 }
 
 export type SecurityProfileTarget =
@@ -273,7 +278,8 @@ export class SecurityService {
     if (this.recorded.size >= MAX_RECORD_KEYS) this.recorded.clear();
     this.recorded.set(key, now);
     try {
-      await this.security.recordFinding({
+      const write = ctx.keepFirstDetail ? this.security.recordFindingKeepingDetail : this.security.recordFinding;
+      await write({
         id: generateSecurityFindingId(),
         rule,
         profile,

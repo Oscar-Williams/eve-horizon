@@ -83,7 +83,12 @@ export class SsoSessionService {
     if (caller.kind !== 'refused') {
       return { profile: await this.security.effectiveProfile({}, 'instance'), allowed: true };
     }
-    const profile = await this.security.decide(SSO_SESSION_ORIGIN_RULE, this.refusalContext(caller, input.purpose, null));
+    // This route is public: the finding names an origin only for a project
+    // that exists, and keeps the detail the day's row was first written with.
+    const profile = await this.security.decide(SSO_SESSION_ORIGIN_RULE, {
+      ...this.refusalContext(caller, input.purpose, null),
+      keepFirstDetail: true,
+    });
     return { profile, allowed: false };
   }
 
@@ -138,7 +143,12 @@ export class SsoSessionService {
       governing: 'instance',
       projectId: caller.projectId,
       actor,
-      detail: { purpose, reason: caller.reason, origin: caller.origin },
+      detail: {
+        purpose,
+        reason: caller.reason,
+        // An origin is recorded only against a project that exists.
+        ...(caller.projectId ? { origin: caller.origin } : {}),
+      },
     };
   }
 

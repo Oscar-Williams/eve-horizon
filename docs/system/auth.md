@@ -590,6 +590,23 @@ audience against the app's own (see [Eve Auth SDK](./eve-auth-sdk.md)).
 records a finding for each request `strict` would refuse or answer
 differently. **Under `legacy`** nothing is recorded.
 
+`POST /auth/sso/check-origin` is public: its findings name an origin only for
+a project that exists, and a repeat during the day keeps the detail the row
+was first written with.
+
+#### Upgrade notes
+
+- **Deploy the API before the SSO.** The SSO asks the API's
+  `/auth/sso/check-origin` and `/auth/sso/session` on every `/session` and
+  `/logout`; against an older API they answer 404 and the SSO replies 503
+  until the API is upgraded.
+- **Everyone signs in on the web once more.** The SSO reads only the new
+  host-only refresh cookie, and clears the old parent-domain one.
+- **Leave GoTrue's JWT settings as they are.** Users created by a GoTrue with
+  no `GOTRUE_JWT_AUD` or `GOTRUE_JWT_DEFAULT_GROUP_NAME` keep an empty `aud`
+  and `role`, which the API accepts (see
+  [Supabase Tokens](#supabase-tokens-hs256)).
+
 ### Token Verification (Apps)
 
 Apps can verify Eve tokens via:

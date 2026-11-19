@@ -129,6 +129,26 @@ export function securityQueries(db: Db) {
       `;
     },
 
+    /**
+     * As recordFinding, but a repeat keeps the detail the day's row was
+     * first written with. For findings an unauthenticated caller can cause,
+     * so a later request cannot replace what was recorded.
+     */
+    async recordFindingKeepingDetail(finding: NewSecurityFinding): Promise<void> {
+      await db`
+        INSERT INTO security_findings (id, day, rule, profile, org_id, project_id, actor_type, actor_id, detail)
+        VALUES (
+          ${finding.id}, CURRENT_DATE, ${finding.rule}, ${finding.profile}, ${finding.org_id},
+          ${finding.project_id}, ${finding.actor_type}, ${finding.actor_id}, ${db.json(finding.detail as never)}
+        )
+        ON CONFLICT (day, rule, COALESCE(org_id, ''), COALESCE(project_id, ''), actor_type, actor_id)
+        DO UPDATE SET
+          count = security_findings.count + 1,
+          last_seen = NOW(),
+          profile = EXCLUDED.profile
+      `;
+    },
+
     async listFindings(options: { since: Date; orgId?: string; projectId?: string; limit?: number }): Promise<SecurityFinding[]> {
       const limit = Math.min(Math.max(options.limit ?? 500, 1), 5000);
       if (options.projectId) {
