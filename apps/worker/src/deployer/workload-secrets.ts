@@ -25,9 +25,18 @@ export function holdsCredentialReference(raw: string): boolean {
   return CREDENTIAL_REFERENCE.test(raw);
 }
 
-/** `<base>-eve-secrets`, within the 63-character name limit. */
+const SECRET_SUFFIX = 'eve-secrets';
+
+/**
+ * `<base>-eve-secrets`. A base too long for the 63-character limit is cut and
+ * marked with a hash of the whole base, so two long names never share a Secret.
+ */
 export function workloadSecretName(base: string): string {
-  return appendK8sSuffix(base, 'eve-secrets', 'secret');
+  const name = `${base}-${SECRET_SUFFIX}`;
+  if (name.length <= 63) return name;
+  const digest = createHash('sha256').update(base).digest('hex').slice(0, 8);
+  const room = 63 - SECRET_SUFFIX.length - 1 - digest.length - 1;
+  return appendK8sSuffix(`${base.slice(0, room).replace(/-+$/, '')}-${digest}`, SECRET_SUFFIX, 'secret');
 }
 
 /**

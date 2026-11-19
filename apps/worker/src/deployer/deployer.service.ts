@@ -1752,12 +1752,13 @@ export class DeployerService {
     scope: { envName: string; orgId: string; projectId: string; namespace: string };
     pullSecretConfig: () => Promise<string | null>;
   }): Promise<PodSecurityPlan> {
-    // Environment overrides merge into x-eve after the manifest was validated: check again.
+    // Environment overrides merge into x-eve after the manifest was validated:
+    // check again. Only strict refuses; audit reports as if none were declared.
     const declared = ServiceSecuritySchema.safeParse(this.resolveXeve(args.service)?.security ?? {});
-    if (!declared.success) {
+    if (!declared.success && args.profile === 'strict') {
       throw new Error(`x-eve.security of ${args.serviceName} is invalid: ${this.formatZodIssues(declared.error.issues)}`);
     }
-    const security: ServiceSecurity = declared.data;
+    const security: ServiceSecurity = declared.success ? declared.data : {};
     // Audit reports every image's user; strict reads it only when the manifest does not settle it.
     const readImage = args.profile === 'audit' || needsImageUser(security);
     const imageUser = readImage
