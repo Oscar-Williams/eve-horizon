@@ -326,9 +326,13 @@ a person's own token may approve or reject: job, service, service-principal and
 app-link tokens get 403 (under `audit` they are allowed and recorded). On a
 workflow or pipeline run step the person must also be the run's actor or a
 project admin (rule `jobs.run_step_change`), so a step cannot approve itself or
-another step of its run. A `PATCH` that moves a job from `review` to `done`, or
-changes `review_required` while the job is in review, counts as an approval for
-both rules.
+another step of its run. A `PATCH` that settles a review counts as a decision
+for both rules: moving a job out of `review` (to `done` approves, back to
+`active` rejects, to `cancelled` cancels), changing `review_required` while the
+job is in review, and lowering `review_required` (`human`, then `agent`, then
+`none`) in any phase. A job token of a compiled workflow or pipeline step may
+not lower `review_required` on any job, its own included (rule
+`jobs.run_step_change`).
 
 ## Job Actor on Update
 

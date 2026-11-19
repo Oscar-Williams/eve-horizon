@@ -256,15 +256,31 @@ function changesWhatRuns(job: Job, updates: UpdateJobRequest): boolean {
   );
 }
 
+/** How much review a setting asks for: none, then an agent's, then a person's. */
+const REVIEW_RANK: Record<Job['review_required'], number> = { none: 0, agent: 1, human: 2 };
+
+/** True when an update asks for less review than the job needs now, in any phase. */
+function lowersReview(job: Job, updates: UpdateJobRequest): boolean {
+  return updates.review_required !== undefined
+    && REVIEW_RANK[updates.review_required] < REVIEW_RANK[job.review_required];
+}
+
 /**
- * True when an update to a job in review decides the review without the
- * approve route: moving it to done, or changing whether it needs review.
+ * The review decision an update makes without the approve and reject routes,
+ * or null. Moving a job out of review settles it: to done approves, back to
+ * active rejects, to cancelled cancels. Lowering review_required in any
+ * phase, or changing it while in review, approves.
  */
-function decidesReview(job: Job, updates: UpdateJobRequest): boolean {
-  return job.phase === 'review' && (
-    updates.phase === 'done'
-    || (updates.review_required !== undefined && updates.review_required !== job.review_required)
-  );
+function reviewDecision(job: Job, updates: UpdateJobRequest): 'approve' | 'reject' | 'cancel' | null {
+  if (job.phase === 'review' && updates.phase && updates.phase !== 'review') {
+    if (updates.phase === 'done') return 'approve';
+    return updates.phase === 'cancelled' ? 'cancel' : 'reject';
+  }
+  if (lowersReview(job, updates)) return 'approve';
+  if (job.phase === 'review' && updates.review_required !== undefined && updates.review_required !== job.review_required) {
+    return 'approve';
+  }
+  return null;
 }
 
 /** True when an update moves the job to another phase or changes whether it needs review. */
@@ -1011,8 +1027,12 @@ export class JobsService {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
 
-    if (decidesReview(currentJob, updates)) {
-      await this.guardApprovalToken(currentJob, caller, 'approve');
+    const decision = reviewDecision(currentJob, updates);
+    if (decision) {
+      await this.guardApprovalToken(currentJob, caller, decision);
+    }
+    if (lowersReview(currentJob, updates)) {
+      await this.guardStepTokenLoweringReview(currentJob, caller);
     }
     const cascade = updates.phase === 'cancelled' && await this.cancelCascades(currentJob);
     const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade });
@@ -1207,6 +1227,26 @@ export class JobsService {
       APPROVE_TOKEN_RULE,
       { governing: 'project', projectId: job.project_id, actor: caller, detail: { job_id: job.id, action } },
       `Only a person, with their own token, can ${action} job ${job.id}`,
+    );
+  }
+
+  /**
+   * A compiled run step's token may not lower the review a job needs, its
+   * own job's included, under the project's security profile (rule
+   * jobs.run_step_change).
+   */
+  private async guardStepTokenLoweringReview(job: Job, caller: AuthUser | undefined): Promise<void> {
+    if (!caller?.is_job_token || !caller.job_id) {
+      return;
+    }
+    const own = caller.job_id === job.id ? job : await this.jobs.findById(caller.job_id);
+    if (!own?.step_name) {
+      return;
+    }
+    await this.security!.gate(
+      RUN_STEP_CHANGE_RULE,
+      { governing: 'project', projectId: job.project_id, actor: caller, detail: { job_id: job.id, change: 'lower the review of' } },
+      `A step of a workflow or pipeline run cannot lower the review job ${job.id} needs`,
     );
   }
 
