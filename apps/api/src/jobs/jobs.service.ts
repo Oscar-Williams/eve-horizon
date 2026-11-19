@@ -1042,8 +1042,13 @@ export class JobsService {
       if (changesProgress(currentJob, updates)) {
         await this.guardRunJob(currentJob, caller, 'change the phase or review of');
       }
-      // One transaction: the phase and fields change together or not at all.
-      await this.db.begin((rawTx) => apply(rawTx as unknown as Db));
+      // One transaction: the phase and fields change together or not at all,
+      // on a row whose actor is still the one judged above.
+      await this.db.begin(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        await this.lockJudgedActor(tx, currentJob);
+        return apply(tx);
+      });
     }
 
     // Re-fetch the updated job
@@ -1271,6 +1276,21 @@ export class JobsService {
   }
 
   /**
+   * Holds the job's row for the rest of the transaction and refuses (409)
+   * when its phase or review requirement is no longer what the PATCH was
+   * judged on: whether it approves, rejects or lowers a review, and who may
+   * make it, were decided from that read.
+   */
+  private async lockReviewState(tx: Db, job: Job): Promise<void> {
+    const [row] = await tx<Array<{ phase: Job['phase']; review_required: Job['review_required'] }>>`
+      SELECT phase, review_required FROM jobs WHERE id = ${job.id} FOR UPDATE
+    `;
+    if (!row || row.phase !== job.phase || row.review_required !== job.review_required) {
+      throw new ConflictException(`Job ${job.id} changed while it was being updated; read it again and retry`);
+    }
+  }
+
+  /**
    * The phase transition and field changes of a PATCH, inside its
    * transaction. A move from review to done is an approval: it records the
    * decider, the review status and an audit entry, as the approve route does.
@@ -1282,6 +1302,7 @@ export class JobsService {
     options: { cascade: boolean; decider: { id: string; type: string } },
   ): Promise<void> {
     const txJobs = jobQueries(tx);
+    await this.lockReviewState(tx, job);
 
     // Handle phase transitions through updatePhase for validation
     if (updates.phase && updates.phase !== job.phase) {
