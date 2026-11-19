@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CreateJobRequestSchema, mergeEnvOverrides } from '../job.js';
+import { CreateJobRequestSchema, alwaysRefusedEnvKeys, mergeEnvOverrides } from '../job.js';
 import { ManifestSchema, getManifestRequiredSecrets } from '../manifest.js';
 import { WorkflowInvokeRequestSchema } from '../workflow.js';
 
@@ -105,24 +105,31 @@ describe('workflow env_overrides schemas', () => {
     const oversizePayload = Object.fromEntries(
       Array.from({ length: 10 }, (_, index) => [`KEY_${index}`, 'x'.repeat(500)]),
     );
-    const cases = [
+    const malformed = [
       { bad_key: 'value' },
-      { EVE_JOB_TOKEN: '${secret.TOKEN}' },
       { PROVIDER_URL: '${env.PROVIDER_URL}' },
       oversizePayload,
     ];
-
-    for (const env_overrides of cases) {
-      expect(WorkflowInvokeRequestSchema.safeParse({ env_overrides }).success).toBe(false);
-      expect(ManifestSchema.safeParse({
-        workflows: {
-          invalid: {
-            env_overrides,
-            steps: [{ agent: { prompt: 'Run' } }],
-          },
+    const manifestWith = (env_overrides: Record<string, string>) => ManifestSchema.safeParse({
+      workflows: {
+        invalid: {
+          env_overrides,
+          steps: [{ agent: { prompt: 'Run' } }],
         },
-      }).success).toBe(false);
+      },
+    });
+
+    for (const env_overrides of malformed) {
+      expect(WorkflowInvokeRequestSchema.safeParse({ env_overrides }).success).toBe(false);
+      expect(manifestWith(env_overrides).success).toBe(false);
     }
+
+    // A reserved name is refused on invoke. A stored manifest is read for
+    // format only, so the schema takes it; manifest sync refuses it.
+    const reserved = { EVE_JOB_TOKEN: '${secret.TOKEN}' };
+    expect(WorkflowInvokeRequestSchema.safeParse({ env_overrides: reserved }).success).toBe(false);
+    expect(manifestWith(reserved).success).toBe(true);
+    expect(alwaysRefusedEnvKeys(reserved)).toEqual(['EVE_JOB_TOKEN']);
   });
 
   it('collects workflow env override secret refs as manifest required secrets', () => {
