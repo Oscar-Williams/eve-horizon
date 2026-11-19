@@ -31,7 +31,8 @@ describe('WorkflowsController', () => {
       { env_overrides: { WEB_SEARCH_API_KEY: '${secret.WEB_SEARCH_API_KEY}' } },
       false,
       'user_1',
-      { userSecretsExcluded: false },
+      // The caller is who started the work (rule secrets.use).
+      { userSecretsExcluded: false, startedBy: user },
     );
   });
 
@@ -94,7 +95,8 @@ describe('WorkflowsController', () => {
       body,
       false,
       'user_1',
-      { userSecretsExcluded: false },
+      // The caller is who started the work (rule secrets.use).
+      { userSecretsExcluded: false, startedBy: user },
     );
   });
 });

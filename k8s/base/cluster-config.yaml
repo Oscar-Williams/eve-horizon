@@ -18,8 +18,8 @@ metadata:
   labels:
     app.kubernetes.io/name: eve-cluster-config
 data:
-  # --- Database ---
-  DATABASE_URL: postgres://eve:eve@postgres.eve.svc.cluster.local:5432/eve
+  # The database URL carries the Postgres password, so it is not here: each
+  # service that reads it takes eve-app's DATABASE_URL.
   # --- Service URLs ---
   # In-cluster callers use the API's internal port (EVE_API_INTERNAL_PORT on
   # eve-api), which serves every route and is the only one serving

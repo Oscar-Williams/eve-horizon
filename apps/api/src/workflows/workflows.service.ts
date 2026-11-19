@@ -1,8 +1,9 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException, Optional } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, agentSecretsAllowlist, boundSecretKeys, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
+import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
 import { intersectScopes } from './scope-algebra.js';
 import { SecurityService } from '../security/security.service.js';
@@ -37,6 +38,7 @@ export class WorkflowsService {
     @Inject('DB') private readonly db: Db,
     private readonly accessService: AccessService,
     @Optional() private readonly security?: SecurityService,
+    @Optional() private readonly rbac?: RbacService,
   ) {
     this.manifests = projectManifestQueries(db);
     this.projects = projectQueries(db);
@@ -916,6 +918,14 @@ export class WorkflowsService {
       `Workflow "${workflowName}" invocation env_overrides`,
       'request',
     );
+    if (options.startedBy !== undefined) {
+      await this.requireSecretsUse(projectId, workflowName, steps, stepExecutions, {
+        workflowEnvOverrides,
+        invocationEnvOverrides,
+        callerSecretsAllowlist,
+        startedBy: options.startedBy,
+      });
+    }
     await holdReservedEnvOverrides(
       this.security,
       {
@@ -1752,6 +1762,57 @@ export class WorkflowsService {
    * refuses the run before any job is created; `audit` records it and the
    * step runs with no agent, as before.
    */
+  /**
+   * Rule secrets.use: whoever invokes a workflow whose steps are bound to a
+   * secret beyond their harness credential needs `secrets:use`, judged once,
+   * before any job exists. An agent step is bound to what its agent's
+   * `access.secrets`, its own `secrets:` and the caller's allowlist all name;
+   * every step also to the keys its merged env overrides reference.
+   */
+  private async requireSecretsUse(
+    projectId: string,
+    workflowName: string,
+    steps: Array<Record<string, unknown>>,
+    executions: StepExecution[],
+    context: {
+      workflowEnvOverrides: EnvOverrides | undefined;
+      invocationEnvOverrides: EnvOverrides | undefined;
+      callerSecretsAllowlist: string[] | null;
+      startedBy: AuthUser | null;
+    },
+  ): Promise<void> {
+    if (!this.rbac) return;
+    const agents = await this.agents.listByProject(projectId);
+    const bound = new Set<string>();
+    for (const [index, step] of steps.entries()) {
+      const stepName = (step.name as string) || `step-${index + 1}`;
+      const isAgent = executions[index].executionType === 'agent';
+      const agentName = (step.agent as { name?: unknown } | undefined)?.name;
+      const agent = isAgent && typeof agentName === 'string' ? agents.find((a) => a.id === agentName) : undefined;
+      // A script step receives only what its env overrides reference.
+      const allowlist = isAgent
+        ? narrowSecretsAllowlist(
+          agentSecretsAllowlist(agent?.access_json),
+          context.callerSecretsAllowlist,
+          this.parseSecretsAllowlist((step as { secrets?: unknown }).secrets, `Workflow "${workflowName}" step "${stepName}".secrets`),
+        )
+        : [];
+      const envOverrides = this.mergeStepEnvOverrides(
+        context.workflowEnvOverrides,
+        this.parseEnvOverrides(step.env_overrides, `Workflow "${workflowName}" step "${stepName}".env_overrides`),
+        context.invocationEnvOverrides,
+        `Workflow "${workflowName}" step "${stepName}" merged env_overrides`,
+      );
+      const harness = typeof step.harness === 'string' ? step.harness : null;
+      for (const key of boundSecretKeys({ allowlist, envOverrides, harness })) bound.add(key);
+    }
+    if (bound.size === 0) return;
+    await this.rbac.requireOperatorRight(context.startedBy, projectId, 'secrets:use', SECRETS_USE_RULE, {
+      secrets: [...bound].sort().join(','),
+      workflow: workflowName,
+    });
+  }
+
   private async checkStepAgentsExist(
     projectId: string,
     workflowName: string,

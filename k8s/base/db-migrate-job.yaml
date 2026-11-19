@@ -16,11 +16,13 @@ spec:
           image: eve-horizon/worker:local
           imagePullPolicy: IfNotPresent
           env:
+            # The database URL is a secret (eve-app), not ConfigMap data.
             - name: DATABASE_URL
               valueFrom:
-                configMapKeyRef:
-                  name: eve-cluster-config
+                secretKeyRef:
+                  name: eve-app
                   key: DATABASE_URL
+                  optional: true
           command:
             - node
             - /app/packages/db/dist/migrate.js

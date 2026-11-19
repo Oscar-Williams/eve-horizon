@@ -48,7 +48,10 @@ import {
   exchangeRateQueries,
   projectManifestQueries,
   agentQueries,
+  decideSecurityRule,
+  governingSecurityProfile,
 } from '@eve/db';
+import { CHECKOUT_SETTINGS_RULE, holdCheckoutSettings } from '@eve/shared';
 import {
   resolveHarnessAdapter,
   type HarnessName,
@@ -1530,6 +1533,33 @@ export class InvokeService implements OnModuleInit {
   }
 
   /**
+   * Rule harness.checkout_settings (P2-9), under the project's profile:
+   * routing settings the checkout supplies to the harness are recorded under
+   * audit and strict (names only), and under strict eve-agent-cli is told to
+   * keep them out; a harness with no confirmed way to is refused.
+   */
+  private holdCheckoutSettings(
+    invocation: HarnessInvocation,
+    harness: string,
+    repoPath: string,
+    env?: Record<string, string | undefined>,
+  ): Promise<Record<string, string>> {
+    const scope = { projectId: invocation.projectId, governing: 'project' as const };
+    return holdCheckoutSettings({
+      harness,
+      workspace: repoPath,
+      configDir: env?.CLAUDE_CONFIG_DIR ?? env?.CODEX_HOME,
+      profile: () => governingSecurityProfile(this.db, { ...scope, rule: CHECKOUT_SETTINGS_RULE }),
+      record: (detail) => decideSecurityRule(this.db, CHECKOUT_SETTINGS_RULE, {
+        ...scope,
+        actorType: 'job',
+        actorId: invocation.jobId,
+        detail: { job_id: invocation.jobId, ...detail },
+      }),
+    });
+  }
+
+  /**
    * Resolve the harness adapter, per-job HOME, Codex/Claude auth, adapter
    * options, security preamble, and the eve-agent-cli binary + args.
    */
@@ -1598,6 +1628,13 @@ export class InvokeService implements OnModuleInit {
       helpers,
       env: baseEnv,
     }));
+
+    // Rule harness.checkout_settings: what eve-agent-cli needs to keep
+    // checkout routing settings away from the harness under strict.
+    const checkoutSettingsEnv = await this.holdCheckoutSettings(invocationWithOptions, harnessName, repoPath, harnessOptionsResolved.env);
+    if (Object.keys(checkoutSettingsEnv).length > 0) {
+      harnessOptionsResolved.env = { ...(harnessOptionsResolved.env ?? {}), ...checkoutSettingsEnv };
+    }
 
     // Gap #3: Write security CLAUDE.md for Claude-family harnesses
     const claudeConfigDir = harnessOptionsResolved.env?.CLAUDE_CONFIG_DIR;

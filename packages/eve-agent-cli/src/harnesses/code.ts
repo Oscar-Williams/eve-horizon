@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { resolveCodeConfigDir } from '@eve/shared';
+import { CHECKOUT_SETTINGS_ENV, checkoutSettingsRefusal, resolveCodeConfigDir, strictCodexArgs } from '@eve/shared';
 import type { CliHarnessAdapter, CliContext, HarnessCommand } from './types';
 
 export function buildCodeCommand(
@@ -8,6 +8,10 @@ export function buildCodeCommand(
 ): { command: HarnessCommand; warnings: string[] } {
   const env = { ...ctx.env };
   const warnings: string[] = [];
+  const strictCheckoutSettings = env[CHECKOUT_SETTINGS_ENV] === 'strict';
+  if (strictCheckoutSettings && ctx.harness !== 'codex') {
+    throw new Error(checkoutSettingsRefusal(`${ctx.harness} has no confirmed way to keep checkout settings from rerouting it`));
+  }
   const configDir = resolveCodeConfigDir(
     ctx.harness === 'codex' ? 'codex' : 'code',
     ctx.variant,
@@ -70,6 +74,12 @@ export function buildCodeCommand(
     } else {
       args.push('--reasoning', ctx.reasoning);
     }
+  }
+
+  // Rule harness.checkout_settings under strict: pin the built-in provider
+  // over any a checkout config (project or config home) chooses.
+  if (strictCheckoutSettings) {
+    args.push(...strictCodexArgs(ctx.workspace, configDir, ctx.variant));
   }
 
   if (ctx.variant) {

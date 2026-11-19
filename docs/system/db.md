@@ -22,6 +22,12 @@ eve db new create_users [--path db/migrations]
 
 Migration files use `YYYYMMDDHHmmss_description.sql` under `db/migrations/` by default.
 
+`eve db sql` without `--write` runs in a read-only transaction, as one
+statement on the extended protocol. A statement list (`SELECT 1; SELECT 2`)
+gets 400: on the simple protocol a list could commit the read-only
+transaction and write after it. Send statements one at a time, or use
+`--write`, which runs a list as before.
+
 ### Which database `--env` targets
 
 The API resolves the environment's database in this order:

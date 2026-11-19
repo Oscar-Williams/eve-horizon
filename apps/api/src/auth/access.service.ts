@@ -21,7 +21,8 @@ import type {
   AccessBindingScope,
   AccessEffectiveScopeSummary,
 } from '@eve/shared';
-import { RbacService, IMPLICIT_PROJECT_RULE } from './rbac.service.js';
+import { MEMBER_OPERATOR_PERMISSIONS, OPERATOR_RIGHT_IMPLIED_BY } from '@eve/shared';
+import { RbacService, IMPLICIT_PROJECT_RULE, OPERATOR_RIGHTS_RULE } from './rbac.service.js';
 import { expandPermissions, allPermissions, type Permission } from './permissions.js';
 import { SecurityService } from '../security/security.service.js';
 
@@ -58,12 +59,15 @@ type RawGrant = {
    * What a stricter security profile withholds from this grant: for each
    * rule, whose profile governs it and what is left of the grant under
    * `strict` (the grant with only `leaves` as its scope, or nothing when
-   * `leaves` is null).
+   * `leaves` is null; or the grant without the listed `permissions`).
    */
   withheld?: Withhold[];
 };
 
-type Withhold = { rule: string; governing: 'project' | 'org'; leaves: AccessBindingScope | null };
+type Withhold = { rule: string; governing: 'project' | 'org' } & (
+  | { leaves: AccessBindingScope | null }
+  | { permissions: readonly string[] }
+);
 
 /** Who is being judged, where: the context a withheld grant's rule is decided in. */
 type GrantContext = { orgId: string; projectId?: string; userId: string };
@@ -433,7 +437,7 @@ export class AccessService {
       if (grant.scope_json) {
         grant.withheld = [AccessService.ROLE_WILDCARD_WITHHOLD];
       }
-      grants.push(grant);
+      grants.push(AccessService.withMemberOperatorWithhold(grant));
     }
 
     const orgMembership = await this.membershipStore.findOrgMembership(userId, orgId);
@@ -460,7 +464,7 @@ export class AccessService {
         withheld.push({ rule: IMPLICIT_PROJECT_RULE, governing: 'project', leaves: null });
       }
       if (withheld.length > 0) grant.withheld = withheld;
-      grants.push(grant);
+      grants.push(AccessService.withMemberOperatorWithhold(grant));
     }
 
     const bindings = await this.accessRoles.listApplicableBindings({
@@ -480,7 +484,39 @@ export class AccessService {
       });
     }
 
-    return { grants, context: { orgId, projectId: project?.id, userId } };
+    return { grants: grants.map(AccessService.withImpliedOperatorRights), context: { orgId, projectId: project?.id, userId } };
+  }
+
+  /**
+   * Rule access.operator_rights on a built-in member role grant: a strict
+   * project withholds its jobs:harness_override.
+   */
+  private static withMemberOperatorWithhold(grant: RawGrant): RawGrant {
+    if (grant.role !== 'member') return grant;
+    const held = MEMBER_OPERATOR_PERMISSIONS.filter((permission) => grant.permissions.includes(permission));
+    if (held.length === 0) return grant;
+    return {
+      ...grant,
+      withheld: [...(grant.withheld ?? []), { rule: OPERATOR_RIGHTS_RULE, governing: 'project', permissions: held }],
+    };
+  }
+
+  /**
+   * Rule access.operator_rights on a person's grant: outside a strict
+   * project a read right stands for its operator right (secrets:read for
+   * secrets:use, envdb:read for envdb:export), so the grant carries it, and a
+   * strict project withholds it.
+   */
+  private static withImpliedOperatorRights(grant: RawGrant): RawGrant {
+    const implied = Object.entries(OPERATOR_RIGHT_IMPLIED_BY)
+      .filter(([right, by]) => grant.permissions.includes(by) && !grant.permissions.includes(right))
+      .map(([right]) => right);
+    if (implied.length === 0) return grant;
+    return {
+      ...grant,
+      permissions: [...grant.permissions, ...implied],
+      withheld: [...(grant.withheld ?? []), { rule: OPERATOR_RIGHTS_RULE, governing: 'project', permissions: implied }],
+    };
   }
 
   // ── Service principal resolution ─────────────────────────────────────
@@ -917,7 +953,7 @@ export class AccessService {
               ...(resource ? { resource_type: resource.type, resource: resource.id } : {}),
             },
           })
-        : await this.security.effectiveProfile(scope, governing);
+        : await this.security.effectiveProfile(scope, governing, rule);
       if (profile === 'strict') {
         strictRules.add(rule);
       }
@@ -934,6 +970,10 @@ export class AccessService {
   private applyWithholds(grant: RawGrant, withholds: Withhold[]): RawGrant | null {
     let left: RawGrant = { ...grant, withheld: undefined };
     for (const withhold of withholds) {
+      if ('permissions' in withhold) {
+        left = { ...left, permissions: left.permissions.filter((permission) => !withhold.permissions.includes(permission)) };
+        continue;
+      }
       if (withhold.leaves === null) return null;
       left = { ...left, scope_json: withhold.leaves };
     }

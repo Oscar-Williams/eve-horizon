@@ -55,11 +55,13 @@ spec:
                   optional: true
             # Shared cluster values come from the eve-cluster-config ConfigMap.
             # (No envFrom: the orchestrator must not inherit the storage/SSO vars.)
+            # The database URL is a secret (eve-app), not ConfigMap data.
             - name: DATABASE_URL
               valueFrom:
-                configMapKeyRef:
-                  name: eve-cluster-config
+                secretKeyRef:
+                  name: eve-app
                   key: DATABASE_URL
+                  optional: true
             - name: EVE_API_URL
               valueFrom:
                 configMapKeyRef:

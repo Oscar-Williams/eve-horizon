@@ -12,6 +12,8 @@
  */
 
 import type { SecretResolveItem } from '../schemas/secret.js';
+import { isHarnessCredentialKey } from '../harnesses/auth.js';
+import { extractSecretRefs } from './workspace-secrets.js';
 
 /** The narrowest of the declared allowlists: keys every declared list names. */
 export function narrowSecretsAllowlist(
@@ -22,6 +24,24 @@ export function narrowSecretsAllowlist(
   const [first, ...others] = declared;
   const kept = new Set(first.filter((key) => others.every((list) => list.includes(key))));
   return [...kept].sort();
+}
+
+/**
+ * The secrets a job is bound to beyond its harness credential (rule
+ * secrets.use): the keys its declared allowlist names and its env overrides
+ * reference, less the provider keys of its harness (of any harness, when none
+ * is chosen yet). A job that declares no allowlist counts only what its
+ * overrides reference, since under a strict profile it receives only its
+ * harness credential (secrets.unbound_job). A clone credential the platform
+ * holds only to clone is never declared, so it never counts.
+ */
+export function boundSecretKeys(job: {
+  allowlist: readonly string[] | null | undefined;
+  envOverrides?: Record<string, string> | null;
+  harness?: string | null;
+}): string[] {
+  const keys = new Set([...(job.allowlist ?? []), ...extractSecretRefs(job.envOverrides ?? {})]);
+  return [...keys].filter((key) => !isHarnessCredentialKey(job.harness ?? undefined, key)).sort();
 }
 
 /** Keep only the allowlisted secrets; every secret when nothing is declared. */

@@ -147,7 +147,10 @@ The typical development workflow combines deploy and test commands:
 1. **Ensure cluster**: Creates k3d cluster if missing (`eh k8s start`)
 2. **Build images**: `docker build` for api, orchestrator, worker
 3. **Import to k3d**: `k3d image import` for all images
-4. **Apply manifests**: `kubectl apply -k k8s/overlays/local`
+4. **Apply manifests**: `kubectl apply -k k8s/overlays/local`. Before the
+   first apply, `eh` makes the `eve-postgres` Secret with a generated
+   password (an install that has one keeps it), and after it sets
+   `eve-app`'s `DATABASE_URL` from that Secret.
 5. **Restart deployments**: Force image pull
 6. **Run migration**: Apply db-migrate job, wait for completion
 7. **Wait for rollout**: All deployments must be ready
@@ -371,9 +374,15 @@ The k8s manifests use these environment sources:
 
 | Source | Description |
 |--------|-------------|
-| `k8s/base/configmap.yaml` | Non-sensitive config |
-| `k8s/overlays/local/secrets.yaml` | Local secrets (gitignored) |
+| `k8s/base/cluster-config.yaml` (`eve-cluster-config`) | Non-sensitive config; no database URL |
+| `eve-app` Secret | Platform secrets, including `DATABASE_URL` (set by `bin/eh` from `eve-postgres`) |
+| `eve-postgres` Secret | Postgres user, password and database. `k8s/base` names no password: `bin/eh k8s deploy` (and `start`) generate one for a new install, before Postgres first starts, because `POSTGRES_PASSWORD` is read only when the data directory is created. An install that already has the Secret keeps it. |
 | `system-secrets.env.local` | Auth keys for JWT signing |
+
+Local-only pieces live in `k8s/overlays/local`, not `k8s/base`: the mailpit
+(`mail.eve.lvh.me`) and MinIO (`storage.eve.lvh.me`) ingresses, and the MinIO
+console (`storage-console.eve.lvh.me`, port 9001). Base runs MinIO with the
+console off.
 
 ## Comparison: Docker vs K8s
 

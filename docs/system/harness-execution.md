@@ -397,6 +397,37 @@ Runtime config (worker env, typically from system secrets):
 For bridge routes, the harness receives bridge URL/key (not upstream provider key), while
 `EVE_LLM_PROVIDER` remains the upstream provider for receipts/diagnostics.
 
+## Checkout Settings
+
+A harness reads settings from the job's checkout as well as from Eve, and
+some of them can send model traffic, with the job's provider key, somewhere
+the job's own routing does not. Rule `harness.checkout_settings` (rule set 2,
+see [security profiles](security-profiles.md#rule-set-2-01327)) covers them.
+
+| Harness | Checkout settings read | Under `strict` |
+|---|---|---|
+| `claude`, `mclaude`, `zai` | `.claude/settings.json`, `.claude/settings.local.json`; Eve's copy of `.agent/harnesses/<harness>/settings.json` | Claude Code reads a cleaned merge of the project and local settings through `--settings`, with `--setting-sources user`, so the originals are not read. Eve's copy of the config directory is cleaned in place (its tool gate and hooks stay); a config directory inside the checkout that sets routing is refused. |
+| `codex` | a trusted project's `.codex/config.toml`; `CODEX_HOME/config.toml` when `CODEX_HOME` is in the checkout (`.agent/harnesses/codex/`) | `-c model_provider="openai"` (and `-c profiles.<variant>.model_provider="openai"`), the top config layer, so the built-in provider and the job's own `OPENAI_BASE_URL` apply. A checkout config that sets `openai_base_url`, `chatgpt_base_url` or another `*base_url` outside a provider entry is refused. |
+| `gemini` | `.gemini/.env`, then `.env`, loaded into Gemini's environment | An Eve-owned system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, which outranks workspace settings) lists the project `.env`'s routing names in `advanced.excludedEnvVars`. Routing names in `.gemini/.env`, which Gemini loads whatever the exclusions, are refused. |
+| `code`, `pi` | not confirmed | refused |
+
+Routing settings are the env names P1-9 holds (`*_BASE_URL`, `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, TLS trust such as `NODE_EXTRA_CA_CERTS`,
+`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`), `NODE_OPTIONS`, the
+code-loading names (`LD_PRELOAD`, `BASH_ENV` and the rest), Claude Code's
+`apiKeyHelper`, and Codex's provider keys. No checkout file is ever edited:
+an agent may commit it.
+
+The run (worker, or the agent runtime for inline jobs) reads the project's
+profile. Under `audit` it records each run whose checkout supplies routing
+settings, with the files and names (never values), and changes nothing.
+Under `strict` it records them too and sets `EVE_HARNESS_CHECKOUT_SETTINGS=strict`
+for `eve-agent-cli`, which applies the mechanism above or fails the run with
+the reason; a harness with no confirmed mechanism is refused before it
+starts. The mechanisms were checked against Claude Code 2.1 (`--settings`,
+`--setting-sources`), Codex 0.156 to 0.162 (`-c`, project config layers) and
+Gemini CLI 0.23 (system settings precedence, `advanced.excludedEnvVars`).
+
 ## Per-Harness Configuration
 
 ### Harness Config Root

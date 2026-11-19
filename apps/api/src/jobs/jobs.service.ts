@@ -1,9 +1,9 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, ConflictException, ForbiddenException, MessageEvent } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import type { Db } from '@eve/db';
-import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
+import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
 import type { AccessBindingScope, JobGit, JobWorkspace, JobHarnessOptions, JobCompareResponse, JobTarget, ResourceRef, CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, InlineProfileBundle } from '@eve/shared';
-import { AccessBindingScopeSchema, hasUserActor, isSameActor, narrowSecretsAllowlist, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
+import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
 import * as yaml from 'yaml';
 import { buildApiError } from '../system/api-errors.js';
 import { JobLogsService } from './job-logs.service.js';
@@ -11,7 +11,7 @@ import { JobReceiptsService } from './job-receipts.service.js';
 import { JobBatchService } from './job-batch.service.js';
 import { assertCanGrantJobPermissions, judgeJobScope, workStartOptions, type WorkStartOptions } from '../auth/token-scope.js';
 import { AccessService } from '../auth/access.service.js';
-import { RbacService } from '../auth/rbac.service.js';
+import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
 import { holdReservedEnvOverrides } from '../security/reserved-env.js';
@@ -839,6 +839,10 @@ export class JobsService {
       harnessProfileHash = resolved.profile_hash;
     }
 
+    if (options.startedBy !== undefined) {
+      await this.requireSecretsUse(resolvedProjectId, project.org_id, data, options);
+    }
+
     // Generate job ID using project slug
     const { id: jobId, projectId: resolvedId } = await this.jobs.generateJobId(
       resolvedProjectId,
@@ -901,6 +905,36 @@ export class JobsService {
     });
 
     return this.toJobResponse(job);
+  }
+
+  /**
+   * Rule secrets.use: whoever starts a job bound to a secret beyond its
+   * harness credential needs `secrets:use` (RbacService.requireOperatorRight).
+   * The binding is the job's agent's `access.secrets` narrowed by the starting
+   * caller's allowlist, plus the keys its env overrides reference.
+   */
+  private async requireSecretsUse(
+    projectId: string,
+    orgId: string,
+    data: CreateJobRequest,
+    options: WorkStartOptions,
+  ): Promise<void> {
+    if (!this.rbac) return;
+    const agent = await findJobAgent(this.agents, {
+      projectId,
+      agentId: data.assignee,
+      agentSlug: data.target?.agent_slug,
+    }, orgId);
+    const bound = boundSecretKeys({
+      allowlist: narrowSecretsAllowlist(agentSecretsAllowlist(agent?.access_json), options.secretsAllowlist ?? null),
+      envOverrides: data.env_overrides,
+      harness: data.harness,
+    });
+    if (bound.length === 0) return;
+    await this.rbac.requireOperatorRight(options.startedBy ?? null, projectId, 'secrets:use', SECRETS_USE_RULE, {
+      secrets: bound.join(','),
+      ...(agent ? { agent: agent.id } : {}),
+    });
   }
 
   /**

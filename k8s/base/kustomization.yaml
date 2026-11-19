@@ -1,15 +1,17 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+# Local-only pieces live in k8s/overlays/local: the mailpit and MinIO
+# ingresses and the MinIO console. Base names no Postgres password: the
+# eve-postgres Secret, and eve-app's DATABASE_URL, come from the installer
+# (bin/eh k8s deploy generates them for a new local install).
 resources:
   - namespace.yaml
   - api-rbac.yaml
   - app-secret.yaml
   - cluster-config.yaml
-  - postgres-secret.yaml
   - postgres-statefulset.yaml
   - minio-secret.yaml
   - minio-statefulset.yaml
-  - minio-ingress.yaml
   - buildkitd-pvc.yaml
   - buildkitd-deployment.yaml
   - buildkitd-service.yaml
@@ -38,7 +40,6 @@ resources:
   - registry-service.yaml
   - mailpit-deployment.yaml
   - mailpit-service.yaml
-  - mailpit-ingress.yaml
   - supabase-auth-deployment.yaml
   - supabase-auth-service.yaml
   - supabase-auth-ingress.yaml

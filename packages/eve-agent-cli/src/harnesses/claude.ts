@@ -1,4 +1,4 @@
-import { normalizeClaudeCodeModelAlias, resolveClaudeConfigDir } from '@eve/shared';
+import { CHECKOUT_SETTINGS_ENV, normalizeClaudeCodeModelAlias, resolveClaudeConfigDir, strictClaudeSettingsArgs } from '@eve/shared';
 import type { CliHarnessAdapter, CliContext, HarnessCommand } from './types';
 
 const CLAUDE_ARGS = ['--print', '--verbose', '--output-format', 'stream-json'];
@@ -30,6 +30,12 @@ function buildClaudeFamilyCommand(
   // Sandbox: explicitly restrict tool access to workspace directory only
   // This prevents directory traversal attacks when multiple jobs share a worker
   args.push('--add-dir', ctx.workspace);
+
+  // Rule harness.checkout_settings under strict: a cleaned copy of the
+  // checkout's project and local settings, and only user settings besides.
+  if (env[CHECKOUT_SETTINGS_ENV] === 'strict') {
+    args.push(...strictClaudeSettingsArgs(ctx.workspace, env.CLAUDE_CONFIG_DIR));
+  }
 
   // zai models (glm-*) must not go through the Claude Code alias normalizer
   const model = opts.name === 'zai' ? ctx.model : normalizeClaudeCodeModelAlias(ctx.model);

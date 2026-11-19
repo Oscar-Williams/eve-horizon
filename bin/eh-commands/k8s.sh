@@ -280,6 +280,43 @@ generate_hs256_jwt() {
   "
 }
 
+# The local Postgres credentials (the eve-postgres Secret). k8s/base names no
+# password: a new install gets a generated one here, before Postgres first
+# starts, because POSTGRES_PASSWORD is read only when the data directory is
+# created. An install that already has the Secret keeps it, since its data
+# directory was made with that password.
+ensure_postgres_secret() {
+  if eh_kubectl_local -n eve get secret eve-postgres >/dev/null 2>&1; then
+    echo -e "  eve-postgres:              ${YELLOW}exists (kept)${NC}"
+    return 0
+  fi
+  kubectl_mutate_local apply -f "$REPO_ROOT/k8s/base/namespace.yaml"
+  kubectl_mutate_local -n eve create secret generic eve-postgres \
+    --from-literal=POSTGRES_USER=eve \
+    --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
+    --from-literal=POSTGRES_DB=eve
+  echo -e "  eve-postgres:              ${GREEN}generated${NC}"
+}
+
+# eve-app's DATABASE_URL, from the eve-postgres Secret (the services read the
+# database URL from eve-app, not from the cluster ConfigMap).
+apply_database_url() {
+  local user password database patch_json
+  user=$(eh_kubectl_local -n eve get secret eve-postgres -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)
+  password=$(eh_kubectl_local -n eve get secret eve-postgres -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+  database=$(eh_kubectl_local -n eve get secret eve-postgres -o jsonpath='{.data.POSTGRES_DB}' | base64 -d)
+  if [[ -z "$user" || -z "$password" || -z "$database" ]]; then
+    echo -e "  DATABASE_URL:              ${RED}eve-postgres is incomplete${NC}"
+    exit 1
+  fi
+  patch_json="$(
+    DB_URL="postgres://${user}:${password}@postgres.eve.svc.cluster.local:5432/${database}" \
+    node -e 'process.stdout.write(JSON.stringify({ stringData: { DATABASE_URL: process.env.DB_URL } }))'
+  )"
+  kubectl_mutate_local -n eve patch secret eve-app --type merge -p "$patch_json" >/dev/null
+  echo -e "  DATABASE_URL:              ${GREEN}set from eve-postgres${NC}"
+}
+
 # Generate auth secrets and patch the eve-app K8s secret.
 # Idempotent: reads existing values and only generates missing ones.
 generate_auth_secrets() {
@@ -460,6 +497,7 @@ EOF
 
   # Patch the K8s secret with auth + platform keys.
   kubectl_mutate_local -n eve patch secret eve-app --type merge -p "$patch_json"
+  apply_database_url
 
   generate_minio_secrets
 
@@ -639,8 +677,12 @@ run_deploy() {
   "$SCRIPT_DIR/k8s-image.sh" push-postgres
   "$SCRIPT_DIR/k8s-image.sh" push
 
+  echo "Preparing Postgres credentials..."
+  ensure_postgres_secret
+
   echo "Applying k8s manifests..."
   kubectl_mutate_local apply -k "$LOCAL_OVERLAY"
+  apply_database_url
 
   echo "Applying eve-tunnels namespace + RBAC (private endpoints)..."
   kubectl_mutate_local apply -k "$REPO_ROOT/k8s/base/tunnels"
@@ -740,7 +782,9 @@ case "$COMMAND" in
     ensure_cluster_connectivity
     eh_assert_k3d_context_or_die
     "$SCRIPT_DIR/k8s-image.sh" push-postgres
+    ensure_postgres_secret
     kubectl_mutate_local apply -k "$LOCAL_OVERLAY"
+    apply_database_url
     ;;
   deploy)
     check_k8s_ownership || exit 1

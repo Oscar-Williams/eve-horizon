@@ -286,7 +286,17 @@ export class EnvDbService {
 
     return this.withClient(config, sessionContext, allowWrite, async (client) => {
       const parameters = (params ?? []) as Parameters<DbClient['unsafe']>[1];
-      const result = await client.unsafe(sql, parameters);
+      // Read-only SQL runs as one statement on the extended protocol, which
+      // Postgres refuses for a statement list: a list could commit the
+      // read-only transaction and write after it (RT-23).
+      const result = allowWrite
+        ? await client.unsafe(sql, parameters)
+        : await client.unsafe(sql, parameters, EXTENDED_PROTOCOL).catch((error: unknown) => {
+          if (isStatementListError(error)) {
+            throw new BadRequestException('Read-only SQL runs one statement at a time; send each statement separately, or use --write');
+          }
+          throw error;
+        });
       const rowCount = Array.isArray(result)
         ? result.length
         : typeof (result as { count?: number }).count === 'number'
@@ -997,4 +1007,16 @@ export class EnvDbService {
     };
   }
 
+}
+
+/**
+ * postgres.js sends a query with no parameters on the simple protocol, which
+ * runs a statement list, unless `simple` is false (an option its types omit).
+ */
+const EXTENDED_PROTOCOL = { simple: false } as { prepare?: boolean };
+
+/** Postgres refused a statement list on the extended protocol (SQLSTATE 42601). */
+function isStatementListError(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  return code === '42601' && typeof message === 'string' && message.includes('multiple commands');
 }

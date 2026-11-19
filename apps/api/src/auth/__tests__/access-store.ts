@@ -15,6 +15,8 @@ type Scope = Record<string, unknown> | null;
 interface OrgRow { id: string; slug: string; security_profile: Profile }
 interface ProjectRow {
   id: string; org_id: string; slug: string; name: string; security_profile: Profile;
+  /** The rule set the project's `strict` covers (NULL reads as 1). */
+  security_profile_ruleset?: number | null;
   deleted_at: Date | null; created_at: Date; updated_at: Date; repo_url: string | null; branch: string | null;
 }
 interface MembershipRow { user_id: string; role: Role }
@@ -174,6 +176,7 @@ function createAccessStore() {
         org_id: orgId,
         org_profile: state.orgs.find((o) => o.id === orgId)?.security_profile ?? null,
         project_profile: project?.security_profile ?? null,
+        project_ruleset: project?.security_profile_ruleset ?? null,
       };
     },
     recordFinding: async (finding: Record<string, unknown>) => {
@@ -264,9 +267,10 @@ function createAccessStore() {
     addOrg(id: string, slug: string, profile: Profile = null) {
       state.orgs.push({ id, slug, security_profile: profile });
     },
-    addProject(id: string, orgId: string, slug: string, profile: Profile = null) {
+    /** A `ruleset` stamps the project's `strict` (none reads as rule set 1, P1's rules). */
+    addProject(id: string, orgId: string, slug: string, profile: Profile = null, ruleset: number | null = null) {
       state.projects.push({
-        id, org_id: orgId, slug, name: slug, security_profile: profile,
+        id, org_id: orgId, slug, name: slug, security_profile: profile, security_profile_ruleset: ruleset,
         deleted_at: null, created_at: now, updated_at: now, repo_url: null, branch: null,
       });
     },

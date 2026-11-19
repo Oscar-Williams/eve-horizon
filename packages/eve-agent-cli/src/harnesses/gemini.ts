@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { CHECKOUT_SETTINGS_ENV, strictGeminiSystemSettings } from '@eve/shared';
 import type { CliHarnessAdapter } from './types';
 
 const GEMINI_THINKING_BUDGET: Record<string, number> = {
@@ -51,6 +52,16 @@ export const geminiAdapter: CliHarnessAdapter = {
       args.push('--model', ctx.model);
     }
 
+    // An Eve-owned system settings file, which outranks workspace settings.
+    // Rule harness.checkout_settings under strict: the project .env may not
+    // set a routing name.
+    let systemSettings: Record<string, unknown> | null = env[CHECKOUT_SETTINGS_ENV] === 'strict'
+      ? { ...strictGeminiSystemSettings(ctx.workspace) }
+      : null;
+    let settingsPath: string | null = null;
+    const settingsFile = () =>
+      (settingsPath ??= path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eve-gemini-')), 'settings.json'));
+
     if (ctx.reasoning) {
       if (!ctx.model) {
         warnings.push('Gemini reasoning requires --model; skipping reasoning config.');
@@ -59,13 +70,11 @@ export const geminiAdapter: CliHarnessAdapter = {
         if (!thinkingConfig) {
           warnings.push(`Gemini reasoning level "${ctx.reasoning}" not recognized; skipping.`);
         } else {
-          const settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eve-gemini-'));
-          const settingsPath = path.join(settingsDir, 'settings.json');
-
+          const file = settingsFile();
           let settings: Record<string, unknown> = {};
           try {
-            if (fs.existsSync(settingsPath)) {
-              settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+            if (fs.existsSync(file)) {
+              settings = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
             }
           } catch {
             settings = {};
@@ -87,15 +96,22 @@ export const geminiAdapter: CliHarnessAdapter = {
             },
           };
 
-          settings.modelConfigs = {
-            ...modelConfigs,
-            overrides: [...filteredOverrides, newOverride],
+          systemSettings = {
+            ...settings,
+            ...(systemSettings ?? {}),
+            modelConfigs: {
+              ...modelConfigs,
+              overrides: [...filteredOverrides, newOverride],
+            },
           };
-
-          fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = settingsPath;
         }
       }
+    }
+
+    if (systemSettings) {
+      const file = settingsFile();
+      fs.writeFileSync(file, JSON.stringify(systemSettings, null, 2));
+      env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = file;
     }
 
     if (ctx.permission === 'default') {

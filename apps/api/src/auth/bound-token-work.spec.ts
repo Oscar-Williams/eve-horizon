@@ -205,9 +205,10 @@ describe('work started with an org-bound token', () => {
       await expander.createRun('proj_a', 'release', { git_sha: 'abc' }, BOUND_BOT);
       await environments.deploy('proj_a', 'staging', {} as never, BOUND_BOT);
 
-      expect(jobsService.create).toHaveBeenCalledWith('proj_a', { description: 'go' }, 'user_bot', 'corr', marked);
+      // Job create and workflow invoke also pass who started the work (rule secrets.use).
+      expect(jobsService.create).toHaveBeenCalledWith('proj_a', { description: 'go' }, 'user_bot', 'corr', { ...marked, startedBy: BOUND_BOT });
       expect(jobsService.createBatch).toHaveBeenCalledWith('proj_a', {}, 'corr', 'user_bot', marked);
-      expect(workflowsService.invoke).toHaveBeenCalledWith('proj_a', 'plain', {}, false, 'user_bot', marked);
+      expect(workflowsService.invoke).toHaveBeenCalledWith('proj_a', 'plain', {}, false, 'user_bot', { ...marked, startedBy: BOUND_BOT });
       expect(workflowsService.retry).toHaveBeenCalledWith('proj_a', {}, 'user_bot', marked);
       expect(runsService.createRun).toHaveBeenCalledWith('proj_a', 'release', {}, 'async', { actorUserId: 'user_bot', userSecretsExcluded: true });
       expect(expanderService.expandPipeline).toHaveBeenCalledWith('proj_a', expect.anything(), 'user_bot', marked);
@@ -221,8 +222,8 @@ describe('work started with an org-bound token', () => {
       await jobs.create('proj_a', { description: 'go' } as never, BOT_JOB_TOKEN, 'c1');
       await jobs.create('proj_a', { description: 'go' } as never, PERSON, 'c2');
 
-      expect(jobsService.create).toHaveBeenNthCalledWith(1, 'proj_a', { description: 'go' }, 'user_bot', 'c1', { userSecretsExcluded: true });
-      expect(jobsService.create).toHaveBeenNthCalledWith(2, 'proj_a', { description: 'go' }, 'user_owner', 'c2', { userSecretsExcluded: false });
+      expect(jobsService.create).toHaveBeenNthCalledWith(1, 'proj_a', { description: 'go' }, 'user_bot', 'c1', { userSecretsExcluded: true, startedBy: BOT_JOB_TOKEN });
+      expect(jobsService.create).toHaveBeenNthCalledWith(2, 'proj_a', { description: 'go' }, 'user_owner', 'c2', { userSecretsExcluded: false, startedBy: PERSON });
     });
 
     it('on the jobs a job, workflow or pipeline creates', async () => {

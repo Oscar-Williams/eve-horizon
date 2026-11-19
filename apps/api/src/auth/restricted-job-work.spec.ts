@@ -267,6 +267,7 @@ describe('work started by a job with a secrets allowlist', () => {
 
     await jobs.create('proj_a', { description: 'go' } as never, PERSON, 'c');
 
-    expect(jobsService.create).toHaveBeenCalledWith('proj_a', { description: 'go' }, 'user_owner', 'c', { userSecretsExcluded: false });
+    // The person is passed on only as who started the work (rule secrets.use).
+    expect(jobsService.create).toHaveBeenCalledWith('proj_a', { description: 'go' }, 'user_owner', 'c', { userSecretsExcluded: false, startedBy: PERSON });
   });
 });

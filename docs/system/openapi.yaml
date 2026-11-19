@@ -6019,7 +6019,8 @@ paths:
         "200":
           description: ""
       security: *a52
-      summary: Get presigned download URL for snapshot
+      summary: Get presigned download URL for snapshot (needs envdb:export under a
+        strict project)
       tags: *a53
   /projects/{id}/envs/{name}/db/backup-status:
     get:

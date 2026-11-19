@@ -109,6 +109,7 @@ export {
   filterSecretsByAllowlist,
   agentSecretsAllowlist,
   selectJobSecrets,
+  boundSecretKeys,
 } from './secrets-allowlist.js';
 
 // Per-job env_overrides application
