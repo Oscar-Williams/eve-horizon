@@ -39,7 +39,8 @@ export class ScriptExecutorController {
         try {
           const result = await this.scriptExecutor.execute(invocation.jobId, invocation.attemptId);
           if (!result.runnerEventEmitted) {
-            if (dispatching && !result.success) {
+            // A dispatch that failed before the runner reported is a runner failure.
+            if (dispatching && !result.success && !result.runnerReported) {
               await emitRunnerEvent(invocation.projectId, 'runner.failed', {
                 attemptId: invocation.attemptId,
                 jobId: invocation.jobId,

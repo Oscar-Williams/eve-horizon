@@ -32,3 +32,6 @@ export {
   SERVICE_KEY_HEADER,
 } from './internal-keys.js';
 export type { InternalCall, InternalKeyService } from './internal-keys.js';
+
+export { RunnerApiClient, RunnerApiError } from './runner-client.js';
+export type { RunnerApiClientOptions } from './runner-client.js';

@@ -7,7 +7,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { Db } from '@eve/db';
-import { decideSecurityRule, executionLogQueries, jobQueries, threadMessageQueries } from '@eve/db';
+import { decideSecurityRule, executionLogQueries, jobQueries, runnerResultQueries, threadMessageQueries } from '@eve/db';
 import {
   applyEnvOverrides,
   buildAppApiEnvVars,
@@ -38,11 +38,15 @@ import {
   toK8sName,
   deriveNamespace,
   serviceGitEnv,
+  prepareGitAuth,
+  type PreparedScriptJob,
+  type RunnerApiClient,
+  type RunnerSubmit,
 } from '@eve/shared';
 import { runStreamingCommand } from '../execution/streaming-command.js';
 import { buildJobCommandEnv } from '../execution/job-command-env.js';
 import { tokenScopeForJob } from '../execution/job-token-scope.js';
-import { runInvocationInK8s } from '../invoke/k8s-runner.js';
+import { dispatchToRunnerPod, runnerApiUrl } from '../invoke/runner-dispatch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -98,6 +102,10 @@ interface ScriptExecutionResult {
   errorCode?: string;
   durationMs: number;
   runnerEventEmitted?: boolean;
+  /** The result came from a runner pod's own report (not a dispatch failure). */
+  runnerReported?: boolean;
+  /** Git metadata a runner pod reported. */
+  gitMeta?: ResolvedGitMetadata;
 }
 
 type GitRefSource = 'env_release' | 'manifest' | 'project_default' | 'explicit';
@@ -146,9 +154,34 @@ export class ScriptExecutorService {
   private logs: ReturnType<typeof executionLogQueries>;
   private jobs: ReturnType<typeof jobQueries>;
 
+  /** Set in a runner pod: the step the worker prepared and the attempt's push routes. No database. */
+  private runner: { prepared: PreparedScriptJob; projectId: string; jobToken: string; client: RunnerApiClient; gitMeta?: ResolvedGitMetadata } | null = null;
+
   constructor(@Inject('DB') private db: Db) {
     this.logs = executionLogQueries(this.db);
     this.jobs = jobQueries(this.db);
+  }
+
+  /** The service as a runner pod runs it: the prepared step, and push routes for what it writes. */
+  static forRunner(
+    submit: { project_id: string; job_token: string; script: PreparedScriptJob },
+    client: RunnerApiClient,
+    sink: { appendLog(type: string, content: Record<string, unknown>): void },
+  ): ScriptExecutorService {
+    const service = new ScriptExecutorService(null as unknown as Db);
+    service.runner = { prepared: submit.script, projectId: submit.project_id, jobToken: submit.job_token, client };
+    service.logs = { appendLog: async (_attemptId: string, type: string, content: Record<string, unknown>) => sink.appendLog(type, content) } as never;
+    service.jobs = {
+      findById: async () => ({ phase: 'active' }),
+      updateRuntimeMeta: async (_attemptId: string, meta: Record<string, unknown>) => { await client.updateRuntimeMeta(meta); return null; },
+      markExecutionStarted: async () => undefined,
+    } as never;
+    return service;
+  }
+
+  /** Git metadata the runner recorded (sent with its result). */
+  runnerGitMeta(): ResolvedGitMetadata | undefined {
+    return this.runner?.gitMeta;
   }
 
   shouldDispatchToRunner(): boolean {
@@ -157,7 +190,7 @@ export class ScriptExecutorService {
   }
 
   private async updateScriptToolchainMeta(attemptId: string, toolchains: Record<string, unknown>): Promise<void> {
-    if (process.env.EVE_TOOLCHAIN_INIT_MOUNTED === 'true') {
+    if (process.env.EVE_TOOLCHAIN_INIT_MOUNTED === 'true' && !this.runner) {
       const [attempt] = await this.db<{ runtime_meta: { toolchains?: Record<string, unknown> } }[]>`
         SELECT runtime_meta FROM job_attempts WHERE id = ${attemptId}::uuid
       `;
@@ -170,6 +203,17 @@ export class ScriptExecutorService {
   }
 
   private buildRelayDb(): RelayDb {
+    if (this.runner) {
+      const { relay } = this.runner.prepared;
+      const client = this.runner.client;
+      return {
+        queryJobHints: async (jobId) => relay?.jobs[jobId] ?? undefined,
+        findThreadProjectId: async (threadId) => relay?.threads[threadId] ?? null,
+        createThreadMessage: async (msg) => {
+          await client.createThreadMessage({ id: msg.id, thread_id: msg.thread_id, body: msg.body, actor_type: msg.actor_type, actor_id: msg.actor_id });
+        },
+      };
+    }
     return {
       queryJobHints: async (jobId) => {
         const rows = await this.db<{ hints: Record<string, unknown> | null; project_id: string }[]>`
@@ -223,68 +267,46 @@ export class ScriptExecutorService {
     let workspacePathForCleanup: string | null = null;
 
     try {
-      // 1. Fetch job details
-      const job = await this.jobs.findById(jobId);
-      if (!job) {
-        throw new Error(`Job not found: ${jobId}`);
+      let prepared: PreparedScriptJob;
+      let projectId: string;
+      let jobToken: string | undefined;
+      if (this.runner) {
+        prepared = this.runner.prepared;
+        projectId = this.runner.projectId;
+        jobToken = this.runner.jobToken;
+      } else {
+        // 1. Fetch job details
+        const job = await this.jobs.findById(jobId);
+        if (!job) {
+          throw new Error(`Job not found: ${jobId}`);
+        }
+
+        // 2. Validate execution type
+        const executionType = (job as unknown as { execution_type?: string }).execution_type;
+        if (executionType !== 'script') {
+          throw new Error(`Job ${jobId} is not a script job (type: ${executionType})`);
+        }
+
+        const scriptCommand = (job as unknown as { script_command?: string }).script_command;
+        if (!scriptCommand) {
+          throw new Error(`Job ${jobId} has no script_command defined`);
+        }
+
+        if (this.shouldDispatchToRunner()) {
+          return await this.dispatchScript(job, jobId, attemptId, scriptCommand, cancellation, startTime);
+        }
+
+        await this.jobs.markExecutionStarted(attemptId);
+        ({ prepared, jobToken } = await this.prepareScriptJob(job, jobId, attemptId, scriptCommand, { forRunner: false }));
+        projectId = job.project_id;
       }
 
-      // 2. Validate execution type
-      const executionType = (job as unknown as { execution_type?: string }).execution_type;
-      if (executionType !== 'script') {
-        throw new Error(`Job ${jobId} is not a script job (type: ${executionType})`);
-      }
-
-      const scriptCommand = (job as unknown as { script_command?: string }).script_command;
-      if (!scriptCommand) {
-        throw new Error(`Job ${jobId} has no script_command defined`);
-      }
-
-      if (this.shouldDispatchToRunner()) {
-        const invocation = { jobId, attemptId, projectId: job.project_id,
-          text: '', toolchains: getJobToolchains(job) } as HarnessInvocation;
-        const result = await runInvocationInK8s(invocation,
-          (runtimeMeta) => this.jobs.updateRuntimeMeta(attemptId, runtimeMeta).then(() => undefined),
-          undefined, { submitPath: 'scripts/execute', signal: cancellation.signal });
-        const data = result.resultJson as { stdout?: string; stderr?: string; error_code?: string } | undefined;
-        return { success: result.success, exitCode: result.exitCode ?? (result.success ? 0 : 1),
-          stdout: data?.stdout, stderr: data?.stderr, error: result.error,
-          errorCode: data?.error_code ?? (result.error?.startsWith('toolchain_unavailable:') ? 'toolchain_unavailable' : undefined),
-          durationMs: Date.now() - startTime,
-          runnerEventEmitted: result.runnerEventObserved === true };
-      }
-
-      await this.jobs.markExecutionStarted(attemptId);
-
-      const scriptTimeoutSeconds = (job as unknown as { script_timeout_seconds?: number }).script_timeout_seconds ?? 300;
-      const timeoutMs = scriptTimeoutSeconds * 1000;
-
-      const envName = (job as unknown as { env_name?: string }).env_name;
-
-      // Get project info (repo URL, org slug, project slug) for workspace and env resolution
-      const [projectRow] = await this.db<{ repo_url: string | null; slug: string; org_slug: string; branch: string | null }[]>`
-        SELECT p.repo_url, p.slug, p.branch, o.slug AS org_slug
-        FROM projects p
-        JOIN orgs o ON o.id = p.org_id
-        WHERE p.id = ${job.project_id}
-      `;
-      if (!projectRow?.repo_url) {
-        throw new Error(`Project ${job.project_id} has no repo_url configured`);
-      }
-
-      const repoUrl = projectRow.repo_url;
-      const envOverrides = ((job as unknown as { env_overrides?: Record<string, string> | null }).env_overrides) ?? null;
-      const envOverrideSecretRefs = extractSecretRefs(envOverrides ?? {});
-      const resolvedSecrets = await this.resolveSecretsForExecution(
-        job.project_id,
-        envOverrideSecretRefs.length > 0,
-        this.repoMayNeedGitAuth(repoUrl),
-      );
-
-      // Resolve the k8s namespace for the target environment
-      const envNamespace = await this.resolveEnvNamespace(
-        job.project_id, envName, projectRow.org_slug, projectRow.slug,
-      );
+      const timeoutMs = prepared.timeout_seconds * 1000;
+      const envName = prepared.env_name ?? undefined;
+      const repoUrl = prepared.repo_url;
+      const envOverrides = prepared.env_overrides ?? null;
+      const resolvedSecrets = prepared.secrets;
+      const envNamespace = prepared.env_namespace ?? null;
       const workspacePath = path.join('/tmp', 'eve-script-workspaces', attemptId);
       workspacePathForCleanup = workspacePath;
 
@@ -296,51 +318,29 @@ export class ScriptExecutorService {
       });
 
       // 3. Prepare workspace (clone repo)
-      const gitConfig = ((job as unknown as { git_json?: JobGit | null }).git_json) ?? undefined;
+      const gitConfig = prepared.git ?? undefined;
       const gitWorkspaceResult = gitConfig
         ? await this.prepareWorkspaceWithGitControls({
           workspacePath,
           repoUrl,
           attemptId,
-          projectId: job.project_id,
+          projectId,
           envName,
           gitConfig,
-          defaultBranch: projectRow.branch ?? 'main',
+          defaultBranch: prepared.default_branch,
           resolvedSecrets,
+          resolvedRef: prepared.git_ref ?? undefined,
         })
         : {
-          repoPath: await this.prepareWorkspace(workspacePath, repoUrl, attemptId, job.project_id, resolvedSecrets),
+          repoPath: await this.prepareWorkspace(workspacePath, repoUrl, attemptId, projectId, resolvedSecrets),
           gitWorkspace: undefined,
         };
       const repoPath = gitWorkspaceResult.repoPath;
       const gitWorkspace = gitWorkspaceResult.gitWorkspace;
 
-      // 3b. Mint a job token so the script can call the Eve CLI.
-      // Honour per-job overrides persisted by the workflow/pipeline expander
-      // (jobs.token_permissions, jobs.token_scope) — fall back to the broad
-      // script default when the step did not declare anything.
-      const tokenPermissions =
-        Array.isArray((job as unknown as { token_permissions?: unknown }).token_permissions) &&
-        ((job as unknown as { token_permissions?: string[] }).token_permissions?.length ?? 0) > 0
-          ? (job as unknown as { token_permissions: string[] }).token_permissions
-          : [...DEFAULT_SCRIPT_JOB_PERMISSIONS];
-      // Org data in the scope follows the orchestrator's decision (P1-6).
-      const tokenScope = await tokenScopeForJob(job, (rule, ctx) => decideSecurityRule(this.db, rule, ctx));
-
-      let jobToken: string | undefined;
-      try {
-        const tokenResult = await mintJobToken(jobId, {
-          permissions: tokenPermissions,
-          scope: tokenScope,
-        });
-        if (tokenResult) {
-          jobToken = tokenResult.access_token;
-        } else {
-          this.logger.warn(`[script-executor] Could not mint job token for ${jobId} — script will run without auth`);
-        }
-      } catch (err) {
-        this.logger.warn(`[script-executor] Token mint failed for ${jobId}: ${err instanceof Error ? err.stack : String(err)}`);
-      }
+      // 3b. The job token (minted by the worker) lets the script call the Eve CLI.
+      const scriptCommand = prepared.command;
+      const scriptTimeoutSeconds = prepared.timeout_seconds;
 
       // 3c. Write ~/.eve/credentials.json into a workspace-scoped HOME so the
       // CLI's standard credential resolution path works without env vars.
@@ -353,11 +353,7 @@ export class ScriptExecutorService {
         }
       }
 
-      const appLinkEnv = await this.buildAppLinkEnvForScript(
-        jobId,
-        envName ?? null,
-        this.getResolvedAppLinks(job),
-      );
+      const appLinkEnv = prepared.app_link_env;
 
       await this.appendLog(attemptId, 'status', {
         message: `Running script: ${scriptCommand}`,
@@ -369,23 +365,23 @@ export class ScriptExecutorService {
       const result = await this.runScript(repoPath, scriptCommand, timeoutMs, {
         signal: cancellation.signal,
         jobId,
-        projectId: job.project_id,
-        runId: (job as unknown as { run_id?: string }).run_id,
+        projectId,
+        runId: prepared.run_id ?? undefined,
         attemptId,
         envName,
         envNamespace,
         jobToken,
         scriptHome,
-        toolchains: getJobToolchains(job),
+        toolchains: prepared.toolchains ?? [],
         envOverrides,
-        strictEnvOverrides: await reservedEnvOverridesStrict(this.db, job),
+        strictEnvOverrides: prepared.strict_env_overrides === true,
         ...(appLinkEnv ? { appLinkEnv } : {}),
-        resolvedSecrets,
-        parentJobId: job.parent_id ?? null,
+        resolvedSecrets: resolvedSecrets.filter((secret) => !secret.clone_only),
+        parentJobId: prepared.parent_id ?? null,
         relayMissingSecrets: (missing) =>
           deliverProvisioningError(this.buildRelayDb(), {
             jobId,
-            parentJobId: job.parent_id ?? null,
+            parentJobId: prepared.parent_id ?? null,
             assignee: null,
             errorCode: 'missing_secret_override',
             message: `env_overrides reference unresolved secret(s): ${missing.join(', ')}`,
@@ -486,11 +482,158 @@ export class ScriptExecutorService {
     }
   }
 
+  /**
+   * Everything a script step needs from the database and the internal API,
+   * resolved by the worker: the project's repo, the step's git ref, its env
+   * namespace, its attempt-bound job token, app-link env, and its secrets
+   * (the keys its env overrides reference, and the clone credential). For a
+   * runner pod the clone credential is flagged clone_only unless the step's
+   * env overrides reference it, so it never lands in the checkout.
+   */
+  private async prepareScriptJob(
+    job: Awaited<ReturnType<ReturnType<typeof jobQueries>['findById']>> & object,
+    jobId: string,
+    attemptId: string,
+    scriptCommand: string,
+    opts: { forRunner: boolean },
+  ): Promise<{ prepared: PreparedScriptJob; jobToken?: string }> {
+    const raw = job as unknown as {
+      script_timeout_seconds?: number; env_name?: string; env_overrides?: Record<string, string> | null;
+      git_json?: JobGit | null; run_id?: string | null; parent_id?: string | null;
+      token_permissions?: string[] | null; hints?: Record<string, unknown> | null;
+    };
+    const [projectRow] = await this.db<{ repo_url: string | null; slug: string; org_slug: string; branch: string | null }[]>`
+      SELECT p.repo_url, p.slug, p.branch, o.slug AS org_slug
+      FROM projects p
+      JOIN orgs o ON o.id = p.org_id
+      WHERE p.id = ${job.project_id}
+    `;
+    if (!projectRow?.repo_url) {
+      throw new Error(`Project ${job.project_id} has no repo_url configured`);
+    }
+    const repoUrl = projectRow.repo_url;
+    const envName = raw.env_name;
+    const envOverrides = raw.env_overrides ?? null;
+    const referenced = new Set(extractSecretRefs(envOverrides ?? {}));
+    const all = await this.resolveSecretsForExecution(job.project_id, referenced.size > 0, this.repoMayNeedGitAuth(repoUrl));
+    const gitToken = all.find((s) => s.type === 'github_token') ?? all.find((s) => ['GITHUB_TOKEN', 'GH_TOKEN'].includes(s.key));
+    const secrets = all
+      .filter((secret) => referenced.has(secret.key) || secret === gitToken)
+      .map((secret) => (opts.forRunner && secret === gitToken && !referenced.has(secret.key) ? { ...secret, clone_only: true } : secret));
+
+    const gitConfig = raw.git_json ?? undefined;
+    const defaultBranch = projectRow.branch ?? 'main';
+    const gitRef = gitConfig
+      ? await this.resolveGitRef({ projectId: job.project_id, envName, gitConfig, defaultBranch })
+      : null;
+
+    // A job token for the Eve CLI, bound to this attempt. Per-job overrides
+    // persisted by the workflow/pipeline expander (jobs.token_permissions,
+    // jobs.token_scope) apply; otherwise the broad script default.
+    const tokenPermissions = Array.isArray(raw.token_permissions) && raw.token_permissions.length > 0
+      ? raw.token_permissions
+      : [...DEFAULT_SCRIPT_JOB_PERMISSIONS];
+    // Org data in the scope follows the orchestrator's decision (P1-6).
+    const tokenScope = await tokenScopeForJob(job, (rule, ctx) => decideSecurityRule(this.db, rule, ctx));
+    let jobToken: string | undefined;
+    try {
+      const tokenResult = await mintJobToken(jobId, { permissions: tokenPermissions, scope: tokenScope, attemptId });
+      jobToken = tokenResult?.access_token;
+      if (!jobToken) this.logger.warn(`[script-executor] Could not mint job token for ${jobId} — script will run without auth`);
+    } catch (err) {
+      this.logger.warn(`[script-executor] Token mint failed for ${jobId}: ${err instanceof Error ? err.stack : String(err)}`);
+    }
+
+    const appLinkEnv = await this.buildAppLinkEnvForScript(jobId, envName ?? null, this.getResolvedAppLinks(job));
+    const relay = await this.relayLookups(jobId, raw.parent_id ?? null);
+
+    return {
+      jobToken,
+      prepared: {
+        command: scriptCommand,
+        timeout_seconds: raw.script_timeout_seconds ?? 300,
+        repo_url: repoUrl,
+        default_branch: defaultBranch,
+        git: gitConfig ?? null,
+        git_ref: gitRef,
+        env_name: envName ?? null,
+        env_namespace: await this.resolveEnvNamespace(job.project_id, envName, projectRow.org_slug, projectRow.slug),
+        env_overrides: envOverrides,
+        strict_env_overrides: await reservedEnvOverridesStrict(this.db, job),
+        run_id: raw.run_id ?? null,
+        parent_id: raw.parent_id ?? null,
+        toolchains: getJobToolchains(job),
+        ...(appLinkEnv ? { app_link_env: appLinkEnv } : {}),
+        secrets,
+        relay,
+      },
+    };
+  }
+
+  /** The job and parent hints, and the threads they name, for provisioning-error delivery. */
+  private async relayLookups(jobId: string, parentId: string | null): Promise<NonNullable<PreparedScriptJob['relay']>> {
+    const relayDb = this.buildRelayDb();
+    const jobs: NonNullable<PreparedScriptJob['relay']>['jobs'] = {};
+    const threads: Record<string, string | null> = {};
+    for (const id of [jobId, parentId].filter((v): v is string => Boolean(v))) {
+      const row = await relayDb.queryJobHints(id);
+      if (!row) continue;
+      jobs[id] = { hints: row.hints, project_id: row.project_id ?? null };
+      const coordination = (row.hints?.coordination as { thread_id?: unknown } | undefined)?.thread_id;
+      for (const threadId of [row.hints?.thread_id, coordination]) {
+        if (typeof threadId === 'string' && threadId && !(threadId in threads)) {
+          threads[threadId] = (await relayDb.findThreadProjectId(threadId)) ?? null;
+        }
+      }
+    }
+    return { jobs, threads };
+  }
+
+  /** Run a prepared script step in a runner pod; the attempt is recorded once its result exists and the pod has ended. */
+  private async dispatchScript(
+    job: Awaited<ReturnType<ReturnType<typeof jobQueries>['findById']>> & object,
+    jobId: string,
+    attemptId: string,
+    scriptCommand: string,
+    cancellation: JobCancellationMonitor,
+    startTime: number,
+  ): Promise<ScriptExecutionResult> {
+    const { prepared, jobToken } = await this.prepareScriptJob(job, jobId, attemptId, scriptCommand, { forRunner: true });
+    if (!jobToken) throw new Error(`Could not mint a job token for ${jobId}; a runner pod needs one`);
+    const submit: RunnerSubmit = {
+      kind: 'script', job_id: jobId, attempt_id: attemptId, project_id: job.project_id,
+      job_token: jobToken, api_url: runnerApiUrl(), script: prepared,
+    };
+    const result = await dispatchToRunnerPod(submit, {
+      pod: { toolchains: prepared.toolchains },
+      readResult: async (id) => (await runnerResultQueries(this.db).find(id))?.result as never ?? null,
+      onPodCreated: (runtimeMeta) => this.jobs.updateRuntimeMeta(attemptId, runtimeMeta).then(() => undefined),
+      onSubmitted: () => this.jobs.markExecutionStarted(attemptId),
+      signal: cancellation.signal,
+    });
+    if (result.gitMeta) await this.updateAttemptGitMeta(attemptId, result.gitMeta);
+    const report = result.resultReport;
+    return {
+      success: result.success,
+      exitCode: result.exitCode ?? (result.success ? 0 : 1),
+      stdout: report?.stdout,
+      stderr: report?.stderr,
+      error: result.error,
+      errorCode: report?.error_code ?? (result.error?.startsWith('toolchain_unavailable:') ? 'toolchain_unavailable' : undefined),
+      durationMs: Date.now() - startTime,
+      runnerReported: Boolean(report),
+    };
+  }
+
   private async updateAttemptGitMeta(
     attemptId: string,
     gitMeta: ResolvedGitMetadata | undefined,
   ): Promise<void> {
     if (!gitMeta) return;
+    if (this.runner) {
+      this.runner.gitMeta = gitMeta;
+      return;
+    }
     try {
       await this.db`
         UPDATE job_attempts
@@ -610,6 +753,8 @@ export class ScriptExecutorService {
     gitConfig: JobGit;
     defaultBranch: string;
     resolvedSecrets?: SecretResolveItem[];
+    /** The ref the worker resolved; resolved here when absent. */
+    resolvedRef?: { ref: string; source: GitRefSource };
   }): Promise<{ repoPath: string; gitWorkspace: GitWorkspace }> {
     try {
       const { workspacePath, repoUrl, attemptId, projectId, gitConfig, defaultBranch } = args;
@@ -620,14 +765,13 @@ export class ScriptExecutorService {
         has_git_controls: true,
       });
 
-      const { ref: resolvedRef, source: refSource } = await this.resolveGitRef({
+      const { ref: resolvedRef, source: refSource } = args.resolvedRef ?? await this.resolveGitRef({
         projectId,
         envName: args.envName,
         gitConfig,
         defaultBranch,
       });
-      const cloneUrl = await this.injectGitAuth(repoUrl, projectId, args.resolvedSecrets);
-      const gitAuth: GitAuth | undefined = cloneUrl !== repoUrl ? { cloneUrl } : undefined;
+      const gitAuth = await this.gitAuthFor(repoUrl, projectId, attemptId, args.resolvedSecrets);
 
       const workspace = new GitWorkspace({
         repoUrl,
@@ -715,11 +859,12 @@ export class ScriptExecutorService {
         }
         await fs.cp(localRepoPath, repoPath, { recursive: true });
       } else {
-        const cloneUrl = await this.injectGitAuth(repoUrl, projectId, resolvedSecrets);
+        const gitAuth = await this.gitAuthFor(repoUrl, projectId, attemptId, resolvedSecrets);
+        const cloneUrl = gitAuth?.cloneUrl ?? repoUrl;
         const cloneArgs = ['clone', '--depth', '1', '--', cloneUrl, repoPath];
         this.logger.log(`Cloning repository from ${redactRepoUrl(cloneUrl)} to ${repoPath}`);
         try {
-          await runGit(cloneArgs);
+          await runGit(cloneArgs, { env: gitAuth?.env });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           if (errMsg.includes('Authentication') || errMsg.includes('could not read Username') || errMsg.includes('fatal: repository')) {
@@ -1098,6 +1243,20 @@ export class ScriptExecutorService {
     }
 
     return result.secrets;
+  }
+
+  /**
+   * Git auth for the step's clone and git policies. A clone-only credential
+   * travels as a header in the platform's git calls, never in the clone URL
+   * (and so never in the checkout's .git/config); otherwise the token is
+   * embedded in the HTTPS clone URL.
+   */
+  private async gitAuthFor(repoUrl: string, projectId: string, attemptId: string, resolvedSecrets?: SecretResolveItem[]): Promise<GitAuth | undefined> {
+    if (resolvedSecrets?.some((secret) => secret.clone_only)) {
+      return prepareGitAuth({ repoUrl, attemptId, jobId: '', projectId, text: '', workspacePath: '' } as unknown as HarnessInvocation, resolvedSecrets);
+    }
+    const cloneUrl = await this.injectGitAuth(repoUrl, projectId, resolvedSecrets);
+    return cloneUrl !== repoUrl ? { cloneUrl } : undefined;
   }
 
   /**

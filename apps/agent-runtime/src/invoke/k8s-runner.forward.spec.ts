@@ -17,6 +17,7 @@ beforeEach(() => {
   vi.stubEnv('EVE_API_URL', 'http://eve-api.test');
   vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
   vi.stubEnv('EVE_K8S_POLL_INTERVAL_MS', '1');
+  vi.stubEnv('DATABASE_URL', 'postgres://eve@db/eve');
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); spawn.mockReset(); });
 

@@ -91,7 +91,7 @@ execution modes:
 | Mode | When | Process | Kubernetes API | Worker secrets |
 | --- | --- | --- | --- | --- |
 | In-process | Default; always outside Kubernetes | `bash` child of the worker, same UID | Worker service account token is readable on disk | Not in the env (allowlist) |
-| Runner pod | `EVE_RUNTIME=k8s` and `EVE_SCRIPT_K8S_RUNNER=true` | Ephemeral pod per attempt | No token mounted | Runner holds `DATABASE_URL` and the internal key (see below) |
+| Runner pod | `EVE_RUNTIME=k8s` and `EVE_SCRIPT_K8S_RUNNER=true` | Ephemeral pod per attempt | No token mounted | None: the worker prepares the step; the pod holds its job token, its env-override secrets and a clone-only git credential ([runner pods](runner-pods.md)) |
 
 In both modes the command starts from an allowlisted environment
 (`apps/worker/src/execution/job-command-env.ts`): `PATH`, `HOME` (a
@@ -138,10 +138,11 @@ bound to it (GKE Workload Identity, EKS IRSA) still reaches job code without a
 token. `EVE_RUNNER_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN=true` restores the token for
 an install that knowingly gives job code API access. Placement must be set in
 pairs: a key without a value fails the job rather than scheduling job code on
-the wrong pool. The worker's runner mounts the org filesystem claim
-`eve-org-fs-org-default`. With a `ReadWriteOnce` claim the runner must land on
-the node that already holds it, or it hangs in `ContainerCreating` with a
-Multi-Attach error. Set pod affinity to the agent runtime for that case:
+the wrong pool. A runner mounts the org filesystem claim
+`eve-org-fs-org-default` only when the job's `orgfs_mount` mode is not `none`,
+read-only unless it writes. With a `ReadWriteOnce` claim such a runner must
+land on the node that already holds it, or it hangs in `ContainerCreating`
+with a Multi-Attach error. Set pod affinity to the agent runtime for that case:
 
 ```yaml
 - name: EVE_RUNNER_POD_AFFINITY_KEY     # required affinity, topologyKey
@@ -156,9 +157,9 @@ Multi-Attach error. Set pod affinity to the agent runtime for that case:
 docker-compose has no Kubernetes, the k3d stack has not been verified with
 runner-pod scripts, and on a `ReadWriteOnce` org filesystem a runner without
 pod affinity would hang. The production default belongs in the deployment manifests.
-See [job-execution-isolation-plan.md](../plans/job-execution-isolation-plan.md)
-for what remains (runner pods still carry `DATABASE_URL` and the internal key;
-the worker's own RBAC is cluster-wide).
+See [runner pods](runner-pods.md) for the protocol, and
+[job-execution-isolation-plan.md](../plans/job-execution-isolation-plan.md)
+for what remains (the worker's own RBAC is cluster-wide).
 
 ### Job Graph Expansion
 

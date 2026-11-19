@@ -120,7 +120,8 @@ export async function prepareGitAuth(
   }
 
   if (githubToken && usesGitHubToken(repoUrl)) {
-    const jobMayHoldToken = !invocation.secrets_allowlist || invocation.secrets_allowlist.includes(githubToken.key);
+    const jobMayHoldToken = !githubToken.clone_only
+      && (!invocation.secrets_allowlist || invocation.secrets_allowlist.includes(githubToken.key));
     if (jobMayHoldToken) {
       const cloneUrl = buildAuthenticatedHttpsUrl(repoUrl, githubToken.value);
       if (cloneUrl !== repoUrl) {
@@ -179,10 +180,12 @@ export async function assertCloneOnlyGitCredentialSafe(
 
 /** The key of the git credential the platform would use for this repo but the job may not hold, if any. */
 function cloneOnlyGitCredential(invocation: HarnessInvocation, secrets: SecretResolveItem[]): string | null {
-  const allowlist = invocation.secrets_allowlist;
-  if (!allowlist) return null;
   const credential = cloneCredentialKey(invocation.repoUrl, secrets);
-  return credential && !allowlist.includes(credential) ? credential : null;
+  if (!credential) return null;
+  // The server flags the clone credential of a job that may not hold it.
+  if (secrets.some((secret) => secret.key === credential && secret.clone_only)) return credential;
+  const allowlist = invocation.secrets_allowlist;
+  return allowlist && !allowlist.includes(credential) ? credential : null;
 }
 
 /**

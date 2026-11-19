@@ -51,6 +51,8 @@ export async function writeBackCodexAuth(
   scopeType: 'user' | 'org' | 'project',
   scopeId: string,
   codexHome?: string,
+  /** Where the refreshed value goes; the internal secrets API when omitted. A runner pod passes its credential route. */
+  write: (newB64: string) => Promise<void> = (newB64) => updateSecret(scopeType, scopeId, 'CODEX_AUTH_JSON_B64', newB64),
 ): Promise<void> {
   try {
     // Only the job's own CODEX_HOME: the runtime's HOME is shared by every job on it.
@@ -81,7 +83,7 @@ export async function writeBackCodexAuth(
     if (newB64 === originalB64) return;
 
     console.log(`[codex-writeback] Token refreshed — updating secret ${scopeType}/${scopeId}/CODEX_AUTH_JSON_B64`);
-    await updateSecret(scopeType, scopeId, 'CODEX_AUTH_JSON_B64', newB64);
+    await write(newB64);
   } catch (err) {
     console.warn(`[codex-writeback] Failed to write back Codex auth: ${err instanceof Error ? err.message : String(err)}`);
   }

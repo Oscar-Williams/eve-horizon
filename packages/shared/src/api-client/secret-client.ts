@@ -63,6 +63,11 @@ export async function resolveProjectSecrets(
     jobId?: string;
     /** That job's selected harness. */
     harness?: string;
+    /**
+     * With jobId: the job's bound secrets only, for the actor its token is
+     * minted for (userId is not sent), the clone credential flagged clone_only.
+     */
+    bound?: boolean;
   },
 ): Promise<SecretResolutionResult> {
   const config = loadConfig();
@@ -79,8 +84,9 @@ export async function resolveProjectSecrets(
   try {
     const url = `${config.EVE_API_URL}${apiPath`/internal/projects/${projectId}/secrets/resolve`}`;
     console.log(`[secrets] Resolving secrets for project ${projectId} via ${config.EVE_API_URL}`);
-    const body: Record<string, string> = { project_id: projectId };
-    if (options?.userId) {
+    const body: Record<string, string | boolean> = { project_id: projectId };
+    const bound = Boolean(options?.bound && options.jobId);
+    if (options?.userId && !bound) {
       body.user_id = options.userId;
     }
     if (options?.jobId) {
@@ -88,6 +94,9 @@ export async function resolveProjectSecrets(
     }
     if (options?.jobId && options.harness) {
       body.harness = options.harness;
+    }
+    if (bound) {
+      body.bound = true;
     }
 
     const response = await fetch(url, {

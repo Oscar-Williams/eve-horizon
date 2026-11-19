@@ -122,6 +122,22 @@ Key settings:
 - `EVE_RUNNER_REAPER_INTERVAL_MS`
 - `EVE_RUNNER_REAPER_GRACE_SECONDS`
 
+### Runner Pods
+
+Job code runs in runner pods that hold no platform credential (no
+`DATABASE_URL`, no internal key): the worker prepares each job and posts it to
+the pod, which reports with the attempt's job token through
+`/jobs/:job/attempts/:attempt/runner/*` on the API. Base sets:
+
+- `EVE_RUNNER_SERVICE_ACCOUNT=eve-runner` on the worker. `eve-runner`
+  (`k8s/base/runner-serviceaccount.yaml`) has `automountServiceAccountToken:
+  false` and no RoleBinding; never bind a cloud identity to it.
+- `EVE_REQUIRE_ENVIRON_PROTECTION=true` on the worker and agent runtime: they
+  refuse to start if job processes could read their environment.
+
+Runner pods must reach the API's public port (`EVE_API_APP_URL`, else
+`EVE_API_URL`). See [runner pods](runner-pods.md).
+
 ### Secrets Provisioning
 
 All secrets are managed through a system-level flow:

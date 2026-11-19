@@ -26,9 +26,9 @@ describe('runner results', () => {
 
   beforeAll(async () => {
     db = postgres(testDbUrl!, { max: 2 }) as unknown as Db;
-    await db`INSERT INTO orgs (id, name, slug) VALUES (${org}, ${org}, ${`acme${suffix}`})`;
+    await db`INSERT INTO orgs (id, name, slug) VALUES (${org}, ${org}, ${`a${suffix}`})`;
     await db`INSERT INTO projects (id, org_id, name, slug, repo_url)
-             VALUES (${project}, ${org}, ${project}, ${`shop${suffix}`}, 'https://example.com/shop.git')`;
+             VALUES (${project}, ${org}, ${project}, ${`s${suffix}`}, 'https://example.com/shop.git')`;
     await db`INSERT INTO jobs (id, project_id, title, description) VALUES (${job}, ${project}, 'job', 'job')`;
     const [attempt] = await db<{ id: string }[]>`
       INSERT INTO job_attempts (job_id, attempt_number, status) VALUES (${job}, 1, 'running') RETURNING id`;

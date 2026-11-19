@@ -56,6 +56,12 @@ export const SecretResolveRequestSchema = z.object({
   job_id: z.string().optional(),
   /** That job's selected harness, whose provider keys a binding always keeps. */
   harness: z.string().optional(),
+  /**
+   * With `job_id`: return the job's bound secrets only, resolved for the
+   * actor its token is minted for (`user_id` is then ignored), with the
+   * clone credential flagged `clone_only`.
+   */
+  bound: z.boolean().optional(),
 });
 
 export type SecretResolveRequest = z.infer<typeof SecretResolveRequestSchema>;
@@ -66,6 +72,8 @@ export const SecretResolveItemSchema = z.object({
   type: SecretTypeSchema,
   scope_type: z.enum(['user', 'org', 'project', 'system']).optional(),
   scope_id: z.string().optional(),
+  /** The platform's credential for the workspace clone only: never the job's, never in its env. */
+  clone_only: z.boolean().optional(),
 });
 
 export type SecretResolveItem = z.infer<typeof SecretResolveItemSchema>;

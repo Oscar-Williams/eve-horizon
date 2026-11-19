@@ -17,7 +17,7 @@ import {
   type SecretScopeType,
   type SecretType,
 } from '@eve/db';
-import { ManifestSchema, agentSecretsAllowlist, cloneCredentialKey, extractSecretRefs, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isHarnessCredentialKey, isUserSecretWithheldKey, narrowSecretsAllowlist, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretStorageCounts, type SecretValidationResult, type SecretsReencryptResponse, type UpdateSecretRequest } from '@eve/shared';
+import { ManifestSchema, agentSecretsAllowlist, cloneCredentialKey, extractSecretRefs, hasUserActor, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isHarnessCredentialKey, isUserSecretWithheldKey, narrowSecretsAllowlist, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretStorageCounts, type SecretValidationResult, type SecretsReencryptResponse, type UpdateSecretRequest } from '@eve/shared';
 import * as yaml from 'yaml';
 import { SecurityService } from '../security/security.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -38,7 +38,7 @@ const VALUE_READ_RULE = 'secrets.value_read';
 const SYSTEM_SCOPE_RULE = 'secrets.system_scope';
 /** Instance setting: the system secret names every project may receive (comma or space separated). */
 export const SYSTEM_SHARED_KEYS_SETTING = 'secrets.system_shared_keys';
-/** Project rule: a job that declares no secret binding (recorded here; filtered by the runner resolve). */
+/** Project rule: a job that declares no secret binding (recorded; under strict the job resolve filters it). */
 const UNBOUND_JOB_RULE = 'secrets.unbound_job';
 /** At most this many withheld names are written into a finding. */
 const MAX_FINDING_KEYS = 40;
@@ -263,7 +263,58 @@ export class SecretsService {
     projectId: string,
     userId?: string,
     options: { jobId?: string; harness?: string } = {},
-  ): Promise<Array<{ key: string; value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string }>> {
+  ): Promise<ResolvedItem[]> {
+    const { project, resolved } = await this.resolveLayers(projectId, userId);
+    if (options.jobId && this.security) {
+      const job = await jobQueries(this.db).findById(options.jobId);
+      if (job && job.project_id === project.id && await this.jobAllowlist(project, job) === null) {
+        const items = toItems(resolved);
+        await this.decideUnboundJob(project, job, options.harness, items, { filtered: false });
+      }
+    }
+    return toItems(resolved);
+  }
+
+  /**
+   * The secrets a job's runner receives: resolved for the actor its job token
+   * is minted for (its actor, unless the job may resolve no user secrets),
+   * then narrowed to its binding. A declared allowlist is the binding. An
+   * unbound job is recorded (rule secrets.unbound_job) and, under `strict`,
+   * receives only its harness credential and the keys its env overrides
+   * reference. The clone credential always comes, flagged `clone_only` when
+   * the binding leaves it out: the runner clones with it and never hands it
+   * to job code.
+   */
+  async resolveForJob(projectId: string, jobId: string, harness?: string): Promise<ResolvedItem[]> {
+    const job = await jobQueries(this.db).findById(jobId);
+    if (!job || job.project_id !== projectId) {
+      throw new NotFoundException(`Job ${jobId} not found in project ${projectId}`);
+    }
+    const userId = hasUserActor(job.actor_user_id) && !job.user_secrets_excluded ? job.actor_user_id : undefined;
+    const { project, resolved } = await this.resolveLayers(projectId, userId);
+    const items = toItems(resolved);
+    const clone = cloneCredentialKey(project.repo_url, items);
+
+    let bound: Set<string> | null = null;
+    const allowlist = await this.jobAllowlist(project, job);
+    if (allowlist !== null) {
+      bound = new Set(allowlist);
+    } else {
+      const kept = unboundJobKeeps(job, harness, items);
+      const profile = await this.decideUnboundJob(project, job, harness, items, { boundResolve: true });
+      if (profile === 'strict') bound = kept;
+    }
+    if (!bound) return items;
+    return items
+      .filter((item) => bound!.has(item.key) || item.key === clone)
+      .map((item) => (bound!.has(item.key) ? item : { ...item, clone_only: true }));
+  }
+
+  /** Every system, org, user (with `userId`) and project secret, the narrower scope winning. */
+  private async resolveLayers(projectId: string, userId?: string): Promise<{
+    project: { id: string; org_id: string; repo_url?: string | null };
+    resolved: Map<string, ResolvedSecret>;
+  }> {
     this.ensureConfigured();
     const project = await this.projects.findById(projectId, { include_deleted: false });
     if (!project) {
@@ -271,8 +322,7 @@ export class SecretsService {
     }
 
     const orgId = project.org_id;
-
-    const resolved = new Map<string, { value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string }>();
+    const resolved = new Map<string, ResolvedSecret>();
 
     // Resolution order: system → org → user → project (project wins)
 
@@ -295,17 +345,7 @@ export class SecretsService {
     await this.decryptSecrets(projectSecrets, resolved, 'project', projectId);
 
     await this.applySystemScope(resolved, { projectId });
-    if (options.jobId) {
-      await this.recordUnboundJob(project, options.jobId, options.harness, resolved);
-    }
-
-    return Array.from(resolved.entries()).map(([key, entry]) => ({
-      key,
-      value: entry.value,
-      type: entry.type,
-      scope_type: entry.scope_type,
-      scope_id: entry.scope_id,
-    }));
+    return { project, resolved };
   }
 
   /**
@@ -339,40 +379,39 @@ export class SecretsService {
     return new Set((row?.value ?? '').split(/[\s,]+/).map((key) => key.trim()).filter(Boolean));
   }
 
-  /**
-   * Rule secrets.unbound_job: a job whose agent and job declare no secrets
-   * allowlist is recorded, with the secrets `strict` would withhold. Kept
-   * under strict: its harness credential, the keys its env overrides
-   * reference, and the clone credential, which the platform holds only to
-   * clone and which does not count as a binding. The filtering itself belongs
-   * to the runner resolve; here every secret is still returned.
-   */
-  private async recordUnboundJob(
-    project: { id: string; org_id: string; repo_url?: string | null },
-    jobId: string,
-    harness: string | undefined,
-    resolved: Map<string, ResolvedSecret>,
-  ): Promise<void> {
-    if (!this.security) return;
-    const job = await jobQueries(this.db).findById(jobId);
-    if (!job || job.project_id !== project.id) return;
+  /** A job's declared secrets allowlist (its agent's and its own, narrowed); null when it declares none. */
+  private async jobAllowlist(
+    project: { org_id: string },
+    job: { project_id: string; assignee?: string | null; target?: unknown; secrets_allowlist?: string[] | null },
+  ): Promise<string[] | null> {
     const target = job.target as { agent_slug?: string } | null;
     const agent = await findJobAgent(agentQueries(this.db), {
       projectId: job.project_id,
-      agentId: job.assignee,
+      agentId: job.assignee ?? null,
       agentSlug: target?.agent_slug,
     }, project.org_id);
-    if (narrowSecretsAllowlist(agentSecretsAllowlist(agent?.access_json), job.secrets_allowlist ?? null) !== null) return;
+    return narrowSecretsAllowlist(agentSecretsAllowlist(agent?.access_json), job.secrets_allowlist ?? null);
+  }
 
-    const overrides = (job as { env_overrides?: Record<string, string> | null }).env_overrides ?? {};
-    const referenced = new Set(extractSecretRefs(overrides));
-    const items = [...resolved.entries()].map(([key, entry]) => ({ key, type: entry.type }));
+  /**
+   * Rule secrets.unbound_job, for a job whose agent and job declare no
+   * secrets allowlist: records the secrets `strict` withholds and returns the
+   * governing profile. Kept under strict: the harness credential, the keys
+   * its env overrides reference, and the clone credential, which the
+   * platform holds only to clone and which does not count as a binding.
+   */
+  private async decideUnboundJob(
+    project: { id: string; repo_url?: string | null },
+    job: { id: string; actor_user_id?: string | null; env_overrides?: unknown },
+    harness: string | undefined,
+    items: Array<{ key: string; type: SecretType }>,
+    mode: { filtered?: boolean; boundResolve?: boolean },
+  ): Promise<string> {
+    if (!this.security) return 'legacy';
+    const kept = unboundJobKeeps(job, harness, items);
     const clone = cloneCredentialKey(project.repo_url, items);
-    const withheld = items
-      .map((item) => item.key)
-      .filter((key) => key !== clone && !referenced.has(key) && !isHarnessCredentialKey(harness, key))
-      .sort();
-    await this.security.decide(UNBOUND_JOB_RULE, {
+    const withheld = items.map((item) => item.key).filter((key) => key !== clone && !kept.has(key)).sort();
+    return this.security.decide(UNBOUND_JOB_RULE, {
       projectId: project.id,
       governing: 'project',
       actor: { user_id: job.actor_user_id ?? 'system', is_job_token: true, job_id: job.id } as AuthUser,
@@ -381,7 +420,7 @@ export class SecretsService {
         harness: harness ?? null,
         withheld: withheld.slice(0, MAX_FINDING_KEYS).join(','),
         withheld_count: withheld.length,
-        filtered: false,
+        ...(mode.boundResolve ? { bound_resolve: true } : { filtered: mode.filtered ?? false }),
       },
     });
   }
@@ -746,4 +785,27 @@ export class SecretsService {
   private decrypt(payload: string, location: SecretLocation): Promise<string> {
     return this.cipher.openSecret(location, payload);
   }
+}
+
+type ResolvedItem = { key: string; value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string; clone_only?: boolean };
+
+function toItems(resolved: Map<string, ResolvedSecret>): ResolvedItem[] {
+  return Array.from(resolved.entries()).map(([key, entry]) => ({
+    key,
+    value: entry.value,
+    type: entry.type,
+    scope_type: entry.scope_type,
+    scope_id: entry.scope_id,
+  }));
+}
+
+/** What an unbound job keeps under strict: its harness credential and the keys its env overrides reference. */
+function unboundJobKeeps(
+  job: { env_overrides?: unknown },
+  harness: string | undefined,
+  items: Array<{ key: string }>,
+): Set<string> {
+  const overrides = (job.env_overrides ?? {}) as Record<string, string>;
+  const referenced = new Set(extractSecretRefs(overrides));
+  return new Set(items.map((item) => item.key).filter((key) => referenced.has(key) || isHarnessCredentialKey(harness, key)));
 }

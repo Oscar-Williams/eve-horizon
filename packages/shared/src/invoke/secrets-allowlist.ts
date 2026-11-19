@@ -65,7 +65,8 @@ export async function selectJobSecrets(
   logLifecycle?: AllowlistLogger,
 ): Promise<SecretResolveItem[]> {
   const allowlist = invocation.secrets_allowlist;
-  const kept = filterSecretsByAllowlist(resolved, allowlist);
+  // A clone-only credential is the platform's, for the workspace clone: never the job's.
+  const kept = filterSecretsByAllowlist(resolved.filter((secret) => !secret.clone_only), allowlist);
   if (allowlist && invocation.attemptId && logLifecycle) {
     const present = new Set(kept.map((secret) => secret.key));
     await logLifecycle(invocation.attemptId, 'secrets', 'log', {

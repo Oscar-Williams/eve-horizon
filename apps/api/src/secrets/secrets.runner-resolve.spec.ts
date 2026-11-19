@@ -45,7 +45,7 @@ function env(key: string, value: string, type = 'env_var') {
 function service(profiles: Record<string, SecurityProfile>) {
   process.env.DATABASE_URL = 'postgres://eve:eve@localhost:5432/eve';
   process.env.EVE_SECRETS_MASTER_KEY = 'test-master-key';
-  const decide = vi.fn(async (rule: string) => profiles[rule] ?? 'legacy');
+  const decide = vi.fn(async (rule: string, _ctx?: { detail?: unknown }) => profiles[rule] ?? 'legacy');
   const secrets = new SecretsService({} as never, { decide } as unknown as SecurityService);
   (secrets as unknown as { decrypt: (v: string) => string }).decrypt = (v) => v;
   return { secrets, decide };
@@ -100,8 +100,8 @@ describe('a job resolve for a runner pod', () => {
       APP_DB_URL: 'postgres://app',
       GITHUB_TOKEN: 'ghp_shop (clone only)',
     });
-    expect(decide.mock.calls.filter(([rule]) => rule === 'secrets.unbound_job').map(([, ctx]) => ctx.detail))
-      .toEqual([expect.objectContaining({ withheld: 'ALICE_NOTES_KEY,MAPS_KEY,STRIPE_KEY', filtered: true })]);
+    expect(decide.mock.calls.filter(([rule]) => rule === 'secrets.unbound_job').map(([, ctx]) => ctx?.detail))
+      .toEqual([expect.objectContaining({ withheld: 'ALICE_NOTES_KEY,MAPS_KEY,STRIPE_KEY', bound_resolve: true })]);
   });
 
   it('delivers every secret to an unbound job under audit, the clone credential included as its own', async () => {
@@ -113,8 +113,8 @@ describe('a job resolve for a runner pod', () => {
       ANTHROPIC_API_KEY: 'sk-org', MAPS_KEY: 'maps-org', GITHUB_TOKEN: 'ghp_shop', APP_DB_URL: 'postgres://app',
       STRIPE_KEY: 'sk_live_shop', ALICE_NOTES_KEY: 'alice-1',
     });
-    expect(decide.mock.calls.filter(([rule]) => rule === 'secrets.unbound_job').map(([, ctx]) => ctx.detail))
-      .toEqual([expect.objectContaining({ filtered: false })]);
+    expect(decide.mock.calls.filter(([rule]) => rule === 'secrets.unbound_job').map(([, ctx]) => ctx?.detail))
+      .toEqual([expect.objectContaining({ withheld: 'ALICE_NOTES_KEY,MAPS_KEY,STRIPE_KEY', bound_resolve: true })]);
   });
 
   it("resolves user secrets for the job's own actor only", async () => {

@@ -16,10 +16,6 @@ spec:
               value: inline
             - name: EVE_AGENT_CLI_PATH
               value: /app/packages/eve-agent-cli/bin/eve-agent-cli.js
-            - name: EVE_RUNNER_IMAGE
-              value: eve-horizon/worker:local
-            - name: EVE_RUNNER_SERVICE_ACCOUNT
-              value: eve-worker
             - name: EVE_TOOLCHAIN_IMAGE_PREFIX
               value: "eve-registry.eve.svc.cluster.local:5000/eve-horizon/toolchain-"
             - name: EVE_TOOLCHAIN_IMAGE_TAG

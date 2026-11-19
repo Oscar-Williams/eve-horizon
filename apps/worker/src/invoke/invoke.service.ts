@@ -60,6 +60,12 @@ import {
   probeBrowserRuntime,
   rejectBrowserPathOverrides,
   mayReadJobAttachment,
+  DEFAULT_AGENT_PERMISSIONS,
+  RunnerApiClient,
+  type PreparedAgentJob,
+  type RunnerContextFile,
+  type RunnerResource,
+  type RunnerSubmit,
 } from '@eve/shared';
 // Shared invoke module — single source of truth for agent-execution logic
 import {
@@ -103,6 +109,7 @@ import {
 } from '@eve/shared';
 import {
   type Db,
+  agentQueries,
   executionLogQueries,
   jobQueries,
   orgQueries,
@@ -115,10 +122,12 @@ import {
   projectQueries,
   systemSettingsQueries,
   threadMessageQueries,
+  runnerResultQueries,
 } from '@eve/db';
 import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type HarnessHelpers } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
-import { runInvocationInK8s } from './k8s-runner';
+import { dispatchToRunnerPod, runnerApiUrl, type RunnerOutcome } from './runner-dispatch.js';
+import { orgFsPodMount } from './org-fs-plan.js';
 import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintJobAppLinkTokens } from '@eve/shared';
 import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { resolveProjectSecrets, mintJobToken, updateSecret } from '@eve/shared';
@@ -159,6 +168,57 @@ export class InvokeService implements OnModuleInit {
   private attachments: ReturnType<typeof jobAttachmentQueries>;
   private events: ReturnType<typeof eventQueries>;
   private _storageClient: ObjectStorageClient | null = null;
+  /**
+   * Set in a runner pod: the job the worker prepared and the attempt's push
+   * routes. The runner has no database: reads come from `prepared`, writes go
+   * through `client`.
+   */
+  private runner: {
+    prepared: PreparedAgentJob;
+    client: RunnerApiClient;
+    logs: Array<{ type: string; content: Record<string, unknown> }>;
+    gitMeta?: ResolvedGitMetadata;
+  } | null = null;
+
+  /**
+   * The service as a runner pod runs it: no database, the prepared job, and
+   * the attempt's push-only routes for everything it writes.
+   */
+  static forRunner(prepared: PreparedAgentJob, client: RunnerApiClient, sink: { appendLog(type: string, content: Record<string, unknown>): void }): InvokeService {
+    const service = new InvokeService(null as unknown as Db);
+    const runner = { prepared, client, logs: [] as Array<{ type: string; content: Record<string, unknown> }> } as NonNullable<InvokeService['runner']>;
+    service.runner = runner;
+    const own = prepared.invocation;
+    const unavailable = (what: string) => async () => { throw new Error(`${what} is not available in a runner pod`); };
+    service.logs = {
+      appendLog: async (_attemptId: string, type: string, content: Record<string, unknown>) => {
+        runner.logs.push({ type, content });
+        sink.appendLog(type, content);
+      },
+      listLogs: async () => runner.logs.map((entry, i) => ({ seq: i + 1, type: entry.type, content: entry.content })),
+    } as never;
+    service.jobs = {
+      findById: async (id: string) => (id === own.jobId
+        ? { id, project_id: own.projectId, phase: 'active', actor_user_id: prepared.actor_user_id ?? null, hints: prepared.relay?.jobs[id]?.hints ?? {} }
+        : null),
+      updateRuntimeMeta: async (_attemptId: string, meta: Record<string, unknown>) => { await client.updateRuntimeMeta(meta); return null; },
+      markExecutionStarted: async () => undefined,
+    } as never;
+    service.events = { create: async (event: { type: string; payload_json?: Record<string, unknown> }) => {
+      await client.emitEvent(event.type, event.payload_json ?? {});
+      return event;
+    } } as never;
+    service.projects = { findById: unavailable('project lookup') } as never;
+    service.orgs = { findById: unavailable('org lookup') } as never;
+    service.documents = { findByOrgAndPath: unavailable('org document lookup') } as never;
+    service.attachments = { findByJobIdAndName: unavailable('attachment lookup') } as never;
+    return service;
+  }
+
+  /** Git metadata the runner recorded for its attempt (sent with its result). */
+  runnerGitMeta(): ResolvedGitMetadata | undefined {
+    return this.runner?.gitMeta;
+  }
 
   /** Earlier versions wrote jobs' Codex auth into this service's HOME; remove what is left (k8s only). */
   async onModuleInit(): Promise<void> {
@@ -406,6 +466,17 @@ export class InvokeService implements OnModuleInit {
   }
 
   private buildRelayDb(): RelayDb {
+    if (this.runner) {
+      const { relay } = this.runner.prepared;
+      const client = this.runner.client;
+      return {
+        queryJobHints: async (jobId) => relay?.jobs[jobId] ?? undefined,
+        findThreadProjectId: async (threadId) => relay?.threads[threadId] ?? null,
+        createThreadMessage: async (msg) => {
+          await client.createThreadMessage({ id: msg.id, thread_id: msg.thread_id, body: msg.body, actor_type: msg.actor_type, actor_id: msg.actor_id });
+        },
+      };
+    }
     return {
       queryJobHints: async (jobId) => {
         const rows = await this.db<{ hints: Record<string, unknown> | null; project_id: string }[]>`
@@ -430,8 +501,22 @@ export class InvokeService implements OnModuleInit {
       this.logLifecycleEvent(attemptId, phase, action, meta, opts);
   }
 
+  /**
+   * The agent's own access permissions (agents.yaml `access.permissions`), on
+   * top of the agent defaults, as the agent runtime mints them.
+   */
+  private async resolveAgentPermissions(invocation: HarnessInvocation): Promise<string[] | undefined> {
+    if (!invocation.agentId || !invocation.projectId) return undefined;
+    const agent = await agentQueries(this.db).findByProjectAndId(invocation.projectId, invocation.agentId);
+    const rawPerms = (agent?.access_json as Record<string, unknown> | undefined)?.permissions;
+    if (!Array.isArray(rawPerms)) return undefined;
+    const accessPerms = rawPerms.filter((p): p is string => typeof p === 'string');
+    if (accessPerms.length === 0) return undefined;
+    return [...new Set([...DEFAULT_AGENT_PERMISSIONS, ...accessPerms])];
+  }
+
   private async getInvocationWithJobToken(invocation: HarnessInvocation): Promise<HarnessInvocation> {
-    const token = await resolveInvocationJobToken(invocation);
+    const token = await resolveInvocationJobToken(invocation, undefined, await this.resolveAgentPermissions(invocation));
     if (!token) return invocation;
 
     return {
@@ -471,6 +556,7 @@ export class InvokeService implements OnModuleInit {
     if (data.skip_workspace_skills === true || data.skip_skills === true) {
       return true;
     }
+    if (this.runner) return this.runner.prepared.skip_workspace_skills === true;
 
     if (!invocation.jobId) return false;
     const rows = await this.db<{ hints: Record<string, unknown> | null }[]>`
@@ -532,6 +618,11 @@ export class InvokeService implements OnModuleInit {
     gitMeta: ResolvedGitMetadata | undefined,
   ): Promise<void> {
     if (!gitMeta) return;
+    if (this.runner) {
+      // Reported with the runner's result; the worker records it.
+      this.runner.gitMeta = gitMeta;
+      return;
+    }
     try {
       await this.db`
         UPDATE job_attempts
@@ -561,6 +652,9 @@ export class InvokeService implements OnModuleInit {
     gitConfig: JobGit,
   ): Promise<{ ref: string; source: 'env_release' | 'manifest' | 'project_default' | 'explicit' }> {
     const refPolicy = gitConfig.ref_policy ?? 'auto';
+
+    // A runner pod's ref was resolved by the worker.
+    if (this.runner?.prepared.git_ref) return this.runner.prepared.git_ref;
 
     // Explicit ref provided
     if (gitConfig.ref) {
@@ -878,7 +972,10 @@ export class InvokeService implements OnModuleInit {
       });
     }
 
-    const result = await resolveProjectSecrets(projectId, { userId, jobId: job?.jobId, harness: job?.harness });
+    // A runner pod receives the job's bound secrets from the worker.
+    const result = this.runner
+      ? { resolved: true, secrets: this.runner.prepared.secrets, error: undefined }
+      : await resolveProjectSecrets(projectId, { userId, jobId: job?.jobId, harness: job?.harness });
 
     if (attemptId) {
       if (!result.resolved) {
@@ -915,7 +1012,101 @@ export class InvokeService implements OnModuleInit {
       resolved_at: string;
     };
   }> {
-    const refs = invocation.resource_refs ?? [];
+    // A runner pod has no database: the worker resolved its refs before the submit.
+    const planned = this.runner ? (this.runner.prepared.resources ?? []) : await this.planResources(invocation, orgId);
+    return this.materializeResources(planned, repoPath);
+  }
+
+  /**
+   * Resolve a job's resource refs (worker side): org documents and job
+   * attachments inline, ingest files as presigned URLs. A ref that cannot be
+   * resolved carries its error code.
+   */
+  private async planResources(invocation: HarnessInvocation, orgId: string): Promise<RunnerResource[]> {
+    const planned: RunnerResource[] = [];
+    const usedMountPaths = new Map<string, string>();
+    let readingJob: { actor_user_id: string | null } | null | undefined;
+
+    for (const ref of invocation.resource_refs ?? []) {
+      const required = ref.required !== false;
+      const base = { uri: ref.uri, label: ref.label, required, ...(ref.mime_type ? { mime_type: ref.mime_type } : {}), ...(ref.metadata ? { metadata: ref.metadata as Record<string, unknown> } : {}) };
+      const parsed = parseResourceUri(ref.uri);
+      const mountPath = parsed ? (ref.mount_path ?? defaultMountPathForUri(parsed)) : '';
+      if (!parsed || !isValidMountPath(mountPath)) {
+        planned.push({ ...base, mount_path: '', error_code: 'resource_uri_invalid' });
+        continue;
+      }
+      if (usedMountPaths.has(mountPath)) {
+        planned.push({ ...base, mount_path: '', error_code: 'resource_mount_conflict' });
+        continue;
+      }
+      usedMountPaths.set(mountPath, ref.uri);
+
+      try {
+        if (parsed.scheme === 'org_docs') {
+          const doc = await this.documents.findByOrgAndPath(orgId, parsed.path);
+          if (!doc) throw new Error('resource_not_found');
+          let content = doc.content;
+          let contentHash = doc.content_hash;
+          let version = parsed.version ?? null;
+          if (parsed.version) {
+            const versionRow = await this.documents.findVersion(doc.id, parsed.version);
+            if (!versionRow) throw new Error('resource_not_found');
+            content = versionRow.content;
+            contentHash = versionRow.content_hash;
+            version = versionRow.version;
+          } else {
+            version = (await this.documents.getLatestVersionInfo(doc.id))?.version ?? null;
+          }
+          planned.push({ ...base, mount_path: mountPath, content_b64: Buffer.from(content).toString('base64'),
+            content_hash: contentHash, version, mime_type: undefined, metadata: undefined });
+          continue;
+        }
+
+        if (parsed.scheme === 'ingest') {
+          const storageClient = this.getStorageClient();
+          if (!storageClient) throw new Error('resource_storage_unavailable');
+          const org = await this.orgs.findById(orgId);
+          if (!org) throw new Error('resource_access_denied');
+          // path.basename keeps a crafted file name inside the ingest prefix.
+          const storageKey = `ingest/${parsed.ingestId}/${path.basename(parsed.fileName)}`;
+          const url = await storageClient.getPresignedDownloadUrl(this.getOrgBucketName(org.slug), storageKey, 15 * 60);
+          planned.push({ ...base, mount_path: mountPath, url });
+          continue;
+        }
+
+        const job = await this.jobs.findById(parsed.jobId);
+        if (!job) throw new Error('resource_not_found');
+        const project = await this.projects.findById(job.project_id);
+        if (!project || project.org_id !== orgId) throw new Error('resource_access_denied');
+        const attachment = await this.attachments.findByJobIdAndName(parsed.jobId, parsed.name);
+        if (!attachment) throw new Error('resource_not_found');
+        // Take in only attachments this job's own actor created.
+        readingJob ??= await this.jobs.findById(invocation.jobId);
+        if (!readingJob || !mayReadJobAttachment(readingJob.actor_user_id, attachment)) {
+          console.warn(`[resources] Skipping ${ref.uri} for job ${invocation.jobId}: attachment created by someone other than this job's actor`);
+          throw new Error('resource_access_denied');
+        }
+        planned.push({ ...base, mount_path: mountPath, content_b64: Buffer.from(attachment.content).toString('base64'),
+          content_hash: attachment.content_hash, mime_type: undefined, metadata: undefined });
+      } catch (err) {
+        planned.push({ ...base, mount_path: mountPath, error_code: err instanceof Error ? err.message : 'resource_not_found' });
+      }
+    }
+    return planned;
+  }
+
+  /** Write resolved resources into `.eve/resources/` and record the index. */
+  private async materializeResources(planned: RunnerResource[], repoPath: string): Promise<{
+    indexPath: string | null;
+    summary: {
+      resolved_count: number;
+      missing_optional_count: number;
+      failed_required_count: number;
+      resources: Array<Record<string, unknown>>;
+      resolved_at: string;
+    };
+  }> {
     const resolvedAt = new Date().toISOString();
     const summary = {
       resolved_count: 0,
@@ -924,196 +1115,62 @@ export class InvokeService implements OnModuleInit {
       resources: [] as Array<Record<string, unknown>>,
       resolved_at: resolvedAt,
     };
-
-    if (refs.length === 0) {
-      return { indexPath: null, summary };
-    }
+    if (planned.length === 0) return { indexPath: null, summary };
 
     const resourcesDir = path.join(repoPath, '.eve', 'resources');
     await fs.mkdir(resourcesDir, { recursive: true });
+    const missing = (item: RunnerResource, errorCode: string, indexPath?: string) => {
+      summary.resources.push({ uri: item.uri, ...(indexPath ? { local_path: indexPath } : {}), label: item.label,
+        required: item.required, status: 'missing', error_code: errorCode });
+      if (item.required) summary.failed_required_count += 1;
+      else summary.missing_optional_count += 1;
+    };
 
-    const usedMountPaths = new Map<string, string>();
-    let readingJob: { actor_user_id: string | null } | null | undefined;
-
-    for (const ref of refs) {
-      const required = ref.required !== false;
-      const parsed = parseResourceUri(ref.uri);
-      if (!parsed) {
-        summary.resources.push({
-          uri: ref.uri,
-          label: ref.label,
-          required,
-          status: 'missing',
-          error_code: 'resource_uri_invalid',
-        });
-        if (required) summary.failed_required_count += 1;
-        else summary.missing_optional_count += 1;
+    for (const item of planned) {
+      if (!item.mount_path || !isValidMountPath(item.mount_path)) {
+        missing(item, item.error_code ?? 'resource_uri_invalid');
         continue;
       }
-
-      const mountPath = ref.mount_path ?? defaultMountPathForUri(parsed);
-      if (!isValidMountPath(mountPath)) {
-        summary.resources.push({
-          uri: ref.uri,
-          label: ref.label,
-          required,
-          status: 'missing',
-          error_code: 'resource_uri_invalid',
-        });
-        if (required) summary.failed_required_count += 1;
-        else summary.missing_optional_count += 1;
+      const localPath = path.join(resourcesDir, item.mount_path);
+      const indexPath = path.posix.join('.eve', 'resources', item.mount_path);
+      if (item.error_code) {
+        missing(item, item.error_code, indexPath);
         continue;
       }
-
-      const existing = usedMountPaths.get(mountPath);
-      if (existing) {
-        summary.resources.push({
-          uri: ref.uri,
-          label: ref.label,
-          required,
-          status: 'missing',
-          error_code: 'resource_mount_conflict',
-        });
-        if (required) summary.failed_required_count += 1;
-        else summary.missing_optional_count += 1;
-        continue;
-      }
-      usedMountPaths.set(mountPath, ref.uri);
-
-      const localPath = path.join(resourcesDir, mountPath);
-      const indexPath = path.posix.join('.eve', 'resources', mountPath);
-
       try {
-        if (parsed.scheme === 'org_docs') {
-          const doc = await this.documents.findByOrgAndPath(orgId, parsed.path);
-          if (!doc) {
-            throw new Error('resource_not_found');
-          }
-
-          let content = doc.content;
-          let contentHash = doc.content_hash;
-          let version = parsed.version ?? null;
-
-          if (parsed.version) {
-            const versionRow = await this.documents.findVersion(doc.id, parsed.version);
-            if (!versionRow) {
-              throw new Error('resource_not_found');
-            }
-            content = versionRow.content;
-            contentHash = versionRow.content_hash;
-            version = versionRow.version;
-          } else {
-            const latest = await this.documents.getLatestVersionInfo(doc.id);
-            version = latest?.version ?? null;
-          }
-
-          await fs.mkdir(path.dirname(localPath), { recursive: true });
-          await fs.writeFile(localPath, content);
-
-          summary.resources.push({
-            uri: ref.uri,
-            local_path: indexPath,
-            content_hash: `sha256:${contentHash}`,
-            version,
-            label: ref.label,
-            required,
-            status: 'resolved',
-          });
-          summary.resolved_count += 1;
-          continue;
+        let body: Buffer;
+        let contentHash = item.content_hash;
+        if (item.url) {
+          const response = await fetch(item.url);
+          if (!response.ok) throw new Error('resource_not_found');
+          body = Buffer.from(await response.arrayBuffer());
+          contentHash = createHash('sha256').update(body).digest('hex');
+        } else {
+          body = Buffer.from(item.content_b64 ?? '', 'base64');
         }
-
-        if (parsed.scheme === 'ingest') {
-          // Download ingested file from object store
-          const storageClient = this.getStorageClient();
-          if (!storageClient) throw new Error('resource_storage_unavailable');
-
-          const org = await this.orgs.findById(orgId);
-          if (!org) throw new Error('resource_access_denied');
-
-          const bucketName = this.getOrgBucketName(org.slug);
-          // Use path.basename to prevent path traversal from malicious file names
-          const safeFileName = path.basename(parsed.fileName);
-          const storageKey = `ingest/${parsed.ingestId}/${safeFileName}`;
-
-          const result = await storageClient.getObject(bucketName, storageKey);
-          const bodyBytes = result.body;
-          await fs.mkdir(path.dirname(localPath), { recursive: true });
-          await fs.writeFile(localPath, bodyBytes);
-
-          const contentHash = createHash('sha256').update(bodyBytes).digest('hex');
-
-          const resourceEntry: Record<string, unknown> = {
-            uri: ref.uri,
-            local_path: indexPath,
-            content_hash: `sha256:${contentHash}`,
-            label: ref.label,
-            required,
-            status: 'resolved',
-          };
-          if (ref.mime_type) resourceEntry.mime_type = ref.mime_type;
-          if (ref.metadata) resourceEntry.metadata = ref.metadata;
-          summary.resources.push(resourceEntry);
-          summary.resolved_count += 1;
-          continue;
-        }
-
-        const job = await this.jobs.findById(parsed.jobId);
-        if (!job) {
-          throw new Error('resource_not_found');
-        }
-
-        const project = await this.projects.findById(job.project_id);
-        if (!project || project.org_id !== orgId) {
-          throw new Error('resource_access_denied');
-        }
-
-        const attachment = await this.attachments.findByJobIdAndName(parsed.jobId, parsed.name);
-        if (!attachment) {
-          throw new Error('resource_not_found');
-        }
-        // Take in only attachments this job's own actor created.
-        readingJob ??= await this.jobs.findById(invocation.jobId);
-        if (!readingJob || !mayReadJobAttachment(readingJob.actor_user_id, attachment)) {
-          console.warn(
-            `[resources] Skipping ${ref.uri} for job ${invocation.jobId}: attachment created by someone other than this job's actor`,
-          );
-          throw new Error('resource_access_denied');
-        }
-
         await fs.mkdir(path.dirname(localPath), { recursive: true });
-        await fs.writeFile(localPath, attachment.content);
-
+        await fs.writeFile(localPath, body);
         summary.resources.push({
-          uri: ref.uri,
+          uri: item.uri,
           local_path: indexPath,
-          content_hash: `sha256:${attachment.content_hash}`,
-          label: ref.label,
-          required,
+          content_hash: `sha256:${contentHash}`,
+          ...(item.version !== undefined ? { version: item.version } : {}),
+          label: item.label,
+          required: item.required,
           status: 'resolved',
+          ...(item.mime_type ? { mime_type: item.mime_type } : {}),
+          ...(item.metadata ? { metadata: item.metadata } : {}),
         });
         summary.resolved_count += 1;
       } catch (err) {
-        const errorCode = err instanceof Error ? err.message : 'resource_not_found';
-        summary.resources.push({
-          uri: ref.uri,
-          local_path: indexPath,
-          label: ref.label,
-          required,
-          status: 'missing',
-          error_code: errorCode,
-        });
-        if (required) summary.failed_required_count += 1;
-        else summary.missing_optional_count += 1;
+        missing(item, err instanceof Error ? err.message : 'resource_not_found', indexPath);
       }
     }
 
-    const indexFilePath = path.join(resourcesDir, 'index.json');
-    await fs.writeFile(indexFilePath, JSON.stringify({
+    await fs.writeFile(path.join(resourcesDir, 'index.json'), JSON.stringify({
       resolved_at: resolvedAt,
       resources: summary.resources,
     }, null, 2));
-
     return { indexPath: '.eve/resources/index.json', summary };
   }
 
@@ -1211,6 +1268,233 @@ export class InvokeService implements OnModuleInit {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Runner pods: the worker prepares, the runner runs.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run an agent job in a runner pod. The worker does the job's database and
+   * internal-API work here (prepareAgentJob), sends the result in the submit
+   * body, and records the attempt once the runner's result exists and its
+   * pod has ended.
+   */
+  private async dispatchAgentJob(
+    effectiveInvocation: HarnessInvocation,
+    cancellation: JobCancellationMonitor,
+    runnerResources: { requests?: { cpu?: string; memory?: string }; limits?: { cpu?: string; memory?: string } } | undefined,
+  ): Promise<HarnessResult> {
+    const prepared = await this.prepareAgentJob(effectiveInvocation);
+    const jobToken = getInvocationJobToken(prepared.invocation);
+    if (!jobToken) throw new Error(`Could not mint a job token for ${effectiveInvocation.jobId}; a runner pod needs one`);
+    const submit: RunnerSubmit = {
+      kind: 'agent',
+      job_id: effectiveInvocation.jobId,
+      attempt_id: effectiveInvocation.attemptId,
+      project_id: effectiveInvocation.projectId,
+      job_token: jobToken,
+      api_url: runnerApiUrl(),
+      agent: prepared,
+    };
+    const attemptId = effectiveInvocation.attemptId;
+    const outcome = await dispatchToRunnerPod(submit, {
+      pod: {
+        toolchains: prepared.invocation.toolchains,
+        appClis: prepared.invocation.appClis,
+        resources: runnerResources,
+        orgFs: orgFsPodMount(effectiveInvocation.data?.orgfs_mount),
+      },
+      readResult: async (id) => (await runnerResultQueries(this.db).find(id))?.result as never ?? null,
+      onPodCreated: async (runtimeMeta) => {
+        try {
+          await this.jobs.updateRuntimeMeta(attemptId, runtimeMeta);
+        } catch (error) {
+          console.error(`Failed to update runtime_meta for attempt ${attemptId}:`, error);
+        }
+        await this.logLifecycleEvent(attemptId, 'runner', 'log', { kind: 'runner_pod_created', ...runtimeMeta });
+      },
+      onSubmitted: () => this.jobs.markExecutionStarted(attemptId),
+      signal: cancellation.signal,
+    });
+    await this.recordRunnerOutcome(effectiveInvocation, outcome);
+    const { gitMeta: _gitMeta, resultReport: _report, ...result } = outcome;
+    return result;
+  }
+
+  private async recordRunnerOutcome(invocation: HarnessInvocation, outcome: RunnerOutcome): Promise<void> {
+    if (outcome.gitMeta) await this.updateAttemptGitMeta(invocation.attemptId, outcome.gitMeta);
+    if (!outcome.success && outcome.error?.startsWith('toolchain_unavailable:')) {
+      const requested = [...new Set(invocation.toolchains ?? [])];
+      await this.jobs.updateRuntimeMeta(invocation.attemptId, {
+        toolchains: { requested, resolved: [], missing: requested, source: 'unavailable',
+          error_code: 'toolchain_unavailable', error: outcome.error },
+      }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Everything an agent job's runner needs, resolved by the worker: the
+   * effective invocation with its attempt-bound job token and app CLIs, the
+   * job's bound secrets (the clone credential flagged clone_only), its git
+   * ref, resources and chat attachments (inline or as presigned URLs), its
+   * rendered `.eve/` context, app API links with their tokens, its budget
+   * and the lookups its message relay makes.
+   */
+  async prepareAgentJob(effectiveInvocation: HarnessInvocation): Promise<PreparedAgentJob> {
+    const invocation = await this.getInvocationWithAppClis(await this.getInvocationWithJobToken(effectiveInvocation));
+    const resolution = await resolveProjectSecrets(invocation.projectId, {
+      jobId: invocation.jobId,
+      harness: invocation.harness,
+      bound: true,
+    });
+    if (!resolution.resolved) throw new Error(`Secret resolution failed: ${resolution.error}`);
+    await this.logLifecycleEvent(invocation.attemptId, 'secrets', 'log', {
+      kind: 'runner_secrets_bound',
+      keys: resolution.secrets.filter((secret) => !secret.clone_only).map((secret) => secret.key).sort(),
+      clone_only: resolution.secrets.filter((secret) => secret.clone_only).map((secret) => secret.key),
+    });
+
+    const gitConfig = invocation.git as JobGit | undefined;
+    const job = await this.jobs.findById(invocation.jobId);
+    const project = await this.projects.findById(invocation.projectId);
+    if (!project) throw new Error(`Project ${invocation.projectId} not found`);
+
+    return {
+      invocation,
+      secrets: resolution.secrets,
+      git_ref: gitConfig ? await this.resolveGitRef(invocation, gitConfig) : null,
+      skip_workspace_skills: await this.shouldSkipWorkspaceSkills(invocation),
+      resources: invocation.resource_refs?.length ? await this.planResources(invocation, project.org_id) : [],
+      chat_attachments: await this.presignChatAttachments(invocation),
+      context_files: await this.renderContextFiles(invocation),
+      app_apis: await this.resolveAppApis(invocation),
+      budget: await this.resolveBudgetEnforcementConfig(invocation).catch(() => null) as PreparedAgentJob['budget'],
+      relay: await this.relayLookups(invocation),
+      actor_user_id: (job as { actor_user_id?: string | null } | null)?.actor_user_id ?? null,
+    };
+  }
+
+  /** Render the job's `.eve/` context (coordination inbox, thread history, carryover) into files. */
+  private async renderContextFiles(invocation: HarnessInvocation): Promise<RunnerContextFile[]> {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'eve-context-'));
+    try {
+      const coordDb = this.buildCoordinationDb();
+      await writeCoordinationInbox(invocation, scratch, coordDb);
+      await writeThreadContext(invocation, scratch, coordDb);
+      await writeCarryoverContext(invocation, scratch, this.buildCarryoverContextDb());
+      const root = path.join(scratch, '.eve');
+      const entries = await fs.readdir(root, { recursive: true, withFileTypes: true }).catch(() => []);
+      const files: RunnerContextFile[] = [];
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const full = path.join(entry.parentPath ?? (entry as unknown as { path: string }).path, entry.name);
+        files.push({ path: path.relative(scratch, full), content_b64: (await fs.readFile(full)).toString('base64') });
+      }
+      return files;
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
+  }
+
+  /** Write the context files the worker rendered, under the repo's `.eve/` only. */
+  private async writeContextFiles(repoPath: string, files: RunnerContextFile[]): Promise<void> {
+    const eveRoot = path.join(repoPath, '.eve');
+    for (const file of files) {
+      const target = path.resolve(repoPath, file.path);
+      if (!target.startsWith(`${eveRoot}${path.sep}`)) continue;
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, Buffer.from(file.content_b64, 'base64'));
+    }
+  }
+
+  /** The job's app APIs and app links, with each link's token minted for this attempt. */
+  private async resolveAppApis(invocation: HarnessInvocation): Promise<Array<Record<string, unknown>>> {
+    const hintsRow = await this.db<{ hints: Record<string, unknown> | null }[]>`
+      SELECT hints FROM jobs WHERE id = ${invocation.jobId}
+    `;
+    const resolvedApis = (hintsRow[0]?.hints?.resolved_app_apis ?? []) as Array<{ name: string; type?: string; base_url: string; cli?: unknown }>;
+    const resolvedLinks = (hintsRow[0]?.hints?.resolved_app_links ?? []) as Parameters<typeof mintJobAppLinkTokens>[1];
+    const links = await mintJobAppLinkTokens(invocation, resolvedLinks);
+    return [
+      ...resolvedApis.map((api) => ({ ...api, type: api.type ?? 'openapi' })),
+      ...links,
+    ] as Array<Record<string, unknown>>;
+  }
+
+  /** The job and parent hints, and the threads they name, that the message relay looks up. */
+  private async relayLookups(invocation: HarnessInvocation): Promise<NonNullable<PreparedAgentJob['relay']>> {
+    const relayDb = this.buildRelayDb();
+    const jobs: NonNullable<PreparedAgentJob['relay']>['jobs'] = {};
+    const threads: Record<string, string | null> = {};
+    for (const id of [invocation.jobId, invocation.parentJobId].filter((v): v is string => Boolean(v))) {
+      const row = await relayDb.queryJobHints(id);
+      if (!row) continue;
+      jobs[id] = { hints: row.hints, project_id: row.project_id ?? invocation.projectId };
+      const coordination = (row.hints?.coordination as { thread_id?: unknown } | undefined)?.thread_id;
+      for (const threadId of [row.hints?.thread_id, coordination]) {
+        if (typeof threadId === 'string' && threadId && !(threadId in threads)) {
+          threads[threadId] = (await relayDb.findThreadProjectId(threadId)) ?? null;
+        }
+      }
+    }
+    return { jobs, threads };
+  }
+
+  /** Presigned download URLs for the job's chat attachments (eve-storage:// files). */
+  private async presignChatAttachments(invocation: HarnessInvocation): Promise<NonNullable<PreparedAgentJob['chat_attachments']>> {
+    const files = (Array.isArray(invocation.data?.chat_files) ? invocation.data.chat_files : []) as ChatFile[];
+    const apiUrl = process.env.EVE_API_URL;
+    const staged: NonNullable<PreparedAgentJob['chat_attachments']> = [];
+    if (!apiUrl) return staged;
+    const usedNames = new Set<string>();
+    for (const file of files.filter((f) => f.url?.startsWith('eve-storage://'))) {
+      const key = file.url!.replace('eve-storage://', '');
+      const filename = uniqueAttachmentName(sanitizeFilename(file.name || file.id || 'attachment'), usedNames);
+      try {
+        const presign = await fetch(`${apiUrl}/internal/storage/chat-attachments/presign`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...internalAuthHeaders() },
+          // The API presigns only keys under this job's org.
+          body: JSON.stringify({ key, operation: 'download', job_id: invocation.jobId }),
+        });
+        if (!presign.ok) {
+          console.warn(`[attachments] Presign failed for ${key}: ${presign.status}`);
+          continue;
+        }
+        const { url } = await presign.json() as { url: string };
+        staged.push({ filename, url, index: {
+          id: file.id, name: file.name || file.id || 'attachment', path: `.eve/attachments/${filename}`,
+          mimetype: file.mimetype, size: file.size, source_url: file.source_url,
+          source_provider: file.source_provider, storage_key: file.storage_key,
+        } });
+      } catch (err) {
+        console.warn(`[attachments] Failed to presign ${key}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return staged;
+  }
+
+  /** Download presigned chat attachments into `.eve/attachments/`, with their index. */
+  private async writeChatAttachments(repoPath: string, staged: NonNullable<PreparedAgentJob['chat_attachments']>): Promise<void> {
+    if (staged.length === 0) return;
+    const dir = path.join(repoPath, '.eve', 'attachments');
+    await fs.mkdir(dir, { recursive: true });
+    const index: AttachmentIndex = { files: [] };
+    for (const item of staged) {
+      try {
+        const response = await fetch(item.url);
+        if (!response.ok) {
+          console.warn(`[attachments] Download failed for ${item.filename}: ${response.status}`);
+          continue;
+        }
+        await fs.writeFile(path.join(dir, path.basename(item.filename)), Buffer.from(await response.arrayBuffer()));
+        index.files.push(item.index as AttachmentIndex['files'][number]);
+      } catch (err) {
+        console.warn(`[attachments] Failed to stage ${item.filename}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (index.files.length > 0) await fs.writeFile(path.join(dir, 'index.json'), JSON.stringify(index, null, 2));
+  }
+
   async execute(invocation: HarnessInvocation): Promise<HarnessResult> {
     const cancellation = await watchJobCancellation(async () => (await this.jobs.findById(invocation.jobId))?.phase);
     try {
@@ -1265,26 +1549,7 @@ export class InvokeService implements OnModuleInit {
           console.warn(`[k8s] Failed to resolve resource class sizing for ${effectiveInvocation.jobId}: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        const runnerInvocation = await this.getInvocationWithAppClis(
-          await this.getInvocationWithJobToken(effectiveInvocation),
-        );
-
-        return await runInvocationInK8s(
-          runnerInvocation,
-          async (runtimeMeta) => {
-            // Update runtime_meta in the database when pod is created
-            try {
-              await this.jobs.updateRuntimeMeta(effectiveInvocation.attemptId, runtimeMeta);
-              console.log(`Updated runtime_meta for attempt ${effectiveInvocation.attemptId}:`, runtimeMeta);
-            } catch (error) {
-              console.error(`Failed to update runtime_meta for attempt ${effectiveInvocation.attemptId}:`, error);
-            }
-          },
-          async (phase, action, meta, opts) => {
-            await this.logLifecycleEvent(effectiveInvocation.attemptId, phase, action, meta, opts);
-          },
-          { resources: runnerResources, signal: cancellation.signal },
-        );
+        return await this.dispatchAgentJob(effectiveInvocation, cancellation, runnerResources);
       }
 
       inlineExecution = true;
@@ -1365,7 +1630,7 @@ export class InvokeService implements OnModuleInit {
 
       let resourceIndexPath: string | null = null;
       if (effectiveInvocation.resource_refs && effectiveInvocation.resource_refs.length > 0) {
-        const project = await this.projects.findById(effectiveInvocation.projectId);
+        const project = this.runner ? { org_id: '' } : await this.projects.findById(effectiveInvocation.projectId);
         if (!project) {
           throw new Error(`Project ${effectiveInvocation.projectId} not found for resource hydration`);
         }
@@ -1406,7 +1671,9 @@ export class InvokeService implements OnModuleInit {
 
       // Stage chat file attachments into .eve/attachments/
       const chatFiles = effectiveInvocation.data?.chat_files;
-      if (Array.isArray(chatFiles) && chatFiles.length > 0) {
+      if (this.runner) {
+        await this.writeChatAttachments(repoPath, this.runner.prepared.chat_attachments ?? []);
+      } else if (Array.isArray(chatFiles) && chatFiles.length > 0) {
         await this.stageAttachments(repoPath, chatFiles as ChatFile[], effectiveInvocation.jobId);
       }
 
@@ -1583,7 +1850,9 @@ export class InvokeService implements OnModuleInit {
 
         // Write back refreshed Codex auth.json if the token was refreshed during execution
         if (originalCodexB64 && codexScopeType && codexScopeId) {
-          await writeBackCodexAuth(originalCodexB64, codexScopeType, codexScopeId, options.env?.CODEX_HOME);
+          const runnerClient = this.runner?.client;
+          await writeBackCodexAuth(originalCodexB64, codexScopeType, codexScopeId, options.env?.CODEX_HOME,
+            runnerClient ? (newB64) => runnerClient.writeBackCredential('CODEX_AUTH_JSON_B64', newB64) : undefined);
         }
 
         if (cancellation.signal.aborted) return result;
@@ -1620,7 +1889,8 @@ export class InvokeService implements OnModuleInit {
         const image = error instanceof ToolchainProvisionError ? error.image :
           `${process.env.EVE_TOOLCHAIN_IMAGE_PREFIX ?? 'eve-horizon/toolchain-'}${toolchain}:${process.env.EVE_TOOLCHAIN_IMAGE_TAG ?? 'local'}`;
         if (invocation.attemptId) {
-          const [attempt] = await this.db<{ runtime_meta: { toolchains?: { image_ids?: Record<string, string> } } }[]>`
+          // In a runner pod the API keeps the image IDs the worker recorded.
+          const [attempt] = this.runner ? [] : await this.db<{ runtime_meta: { toolchains?: { image_ids?: Record<string, string> } } }[]>`
             SELECT runtime_meta FROM job_attempts WHERE id = ${invocation.attemptId}::uuid
           `;
           await this.jobs.updateRuntimeMeta(invocation.attemptId, {
@@ -1654,9 +1924,10 @@ export class InvokeService implements OnModuleInit {
    * @returns Enhanced invocation with manifest defaults applied
    */
   private async applyManifestDefaults(invocation: HarnessInvocation): Promise<HarnessInvocation> {
-    // If invocation already has env_name set (or explicitly null), use it as-is
+    // If invocation already has env_name set (or explicitly null), use it as-is.
+    // A runner pod's invocation was made effective by the worker.
     const hasExplicitEnv = invocation.data?.env_name !== undefined;
-    if (hasExplicitEnv) {
+    if (hasExplicitEnv || this.runner) {
       return invocation;
     }
 
@@ -2052,7 +2323,8 @@ export class InvokeService implements OnModuleInit {
       ...(options.variant ? { variant: options.variant } : {}),
       ...(options.model ? { model: options.model } : {}),
     };
-    const budgetConfig = await this.resolveBudgetEnforcementConfig(invocation).catch((err) => {
+    const budgetConfig = this.runner ? (this.runner.prepared.budget as Awaited<ReturnType<InvokeService['resolveBudgetEnforcementConfig']>> ?? null)
+      : await this.resolveBudgetEnforcementConfig(invocation).catch((err) => {
       console.warn(
         `[budget] Failed to resolve budget config for job ${invocation.jobId}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -2083,15 +2355,20 @@ export class InvokeService implements OnModuleInit {
       }
     }
 
-    // Write coordination inbox if this job has a parent with a coordination thread
-    const coordDb = this.buildCoordinationDb();
-    await writeCoordinationInbox(invocation, repoPath, coordDb);
+    if (this.runner) {
+      // The worker rendered the coordination inbox, thread history and carryover context.
+      await this.writeContextFiles(repoPath, this.runner.prepared.context_files ?? []);
+    } else {
+      // Write coordination inbox if this job has a parent with a coordination thread
+      const coordDb = this.buildCoordinationDb();
+      await writeCoordinationInbox(invocation, repoPath, coordDb);
 
-    // Write thread conversation history for multi-turn continuity
-    await writeThreadContext(invocation, repoPath, coordDb);
+      // Write thread conversation history for multi-turn continuity
+      await writeThreadContext(invocation, repoPath, coordDb);
 
-    // Materialize agent context hints into .eve/context/* for carryover.
-    await writeCarryoverContext(invocation, repoPath, this.buildCarryoverContextDb());
+      // Materialize agent context hints into .eve/context/* for carryover.
+      await writeCarryoverContext(invocation, repoPath, this.buildCarryoverContextDb());
+    }
 
     // Phase 2 secret isolation: HOME is created before harness option
     // resolution so Claude config/auth can be materialized outside repoPath.
@@ -2112,12 +2389,22 @@ export class InvokeService implements OnModuleInit {
     // and set up app CLIs (chmod + add to PATH) for repo-bundled CLIs
     const appCliBinPaths: string[] = [];
     try {
-      const hintsRow = await this.db<{ hints: Record<string, unknown> | null }[]>`
-        SELECT hints FROM jobs WHERE id = ${invocation.jobId}
-      `;
-      const resolvedApis = hintsRow[0]?.hints?.resolved_app_apis as Array<{ name: string; type?: string; base_url: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
-      const resolvedLinks = hintsRow[0]?.hints?.resolved_app_links as Array<{ name: string; alias: string; subscription_id: string; type?: string; base_url: string; scopes?: string[]; producer_project_id?: string; producer_env?: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
-      const resolvedLinksWithTokens = await mintJobAppLinkTokens(invocation, resolvedLinks ?? []);
+      type AppApi = { name: string; type?: string; base_url: string; cli?: { name: string; bin: string; image?: string } };
+      let resolvedApis: AppApi[] | undefined;
+      let resolvedLinksWithTokens: Awaited<ReturnType<typeof mintJobAppLinkTokens>>;
+      if (this.runner) {
+        // The worker minted the link tokens; a runner pod cannot.
+        const prepared = (this.runner.prepared.app_apis ?? []) as Array<AppApi & { origin?: string }>;
+        resolvedApis = prepared.filter((api) => api.origin !== 'app_link');
+        resolvedLinksWithTokens = prepared.filter((api) => api.origin === 'app_link') as never;
+      } else {
+        const hintsRow = await this.db<{ hints: Record<string, unknown> | null }[]>`
+          SELECT hints FROM jobs WHERE id = ${invocation.jobId}
+        `;
+        resolvedApis = hintsRow[0]?.hints?.resolved_app_apis as AppApi[] | undefined;
+        const resolvedLinks = hintsRow[0]?.hints?.resolved_app_links as Array<{ name: string; alias: string; subscription_id: string; type?: string; base_url: string; scopes?: string[]; producer_project_id?: string; producer_env?: string; cli?: { name: string; bin: string; image?: string } }> | undefined;
+        resolvedLinksWithTokens = await mintJobAppLinkTokens(invocation, resolvedLinks ?? []);
+      }
       if (resolvedApis?.length || resolvedLinksWithTokens.length > 0) {
         Object.assign(adapterEnv, buildAppApiEnvVars([
           ...(resolvedApis ?? []).map((api) => ({ ...api, type: api.type ?? 'openapi' })),
@@ -2655,4 +2942,16 @@ export class InvokeService implements OnModuleInit {
       });
     });
   }
+}
+
+function uniqueAttachmentName(safeName: string, used: Set<string>): string {
+  let filename = safeName;
+  let suffix = 1;
+  while (used.has(filename)) {
+    const dot = safeName.lastIndexOf('.');
+    filename = dot > 0 ? `${safeName.slice(0, dot)}-${suffix}${safeName.slice(dot)}` : `${safeName}-${suffix}`;
+    suffix += 1;
+  }
+  used.add(filename);
+  return filename;
 }

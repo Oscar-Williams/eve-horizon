@@ -4452,6 +4452,240 @@ paths:
           description: Job requeued successfully
       summary: Requeue a job to ready phase (internal only)
       tags: *a40
+  /jobs/{job_id}/attempts/{attempt_id}/runner/logs:
+    post:
+      operationId: AttemptsRunnerController_appendLogs
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entries:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      content:
+                        type: object
+              required:
+                - entries
+      responses:
+        "204":
+          description: ""
+      security: &a41
+        - bearer: []
+      summary: Append a runner's execution log entries to its attempt (the attempt's
+        job token only)
+      tags: &a42
+        - jobs
+  /jobs/{job_id}/attempts/{attempt_id}/runner/events:
+    post:
+      operationId: AttemptsRunnerController_emitEvent
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                payload:
+                  type: object
+              required:
+                - type
+      responses:
+        "204":
+          description: ""
+      security: *a41
+      summary: Emit a runner's resource hydration event for its attempt (the attempt's
+        job token only)
+      tags: *a42
+  /jobs/{job_id}/attempts/{attempt_id}/runner/runtime-meta:
+    post:
+      operationId: AttemptsRunnerController_updateRuntimeMeta
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                meta:
+                  type: object
+              required:
+                - meta
+      responses:
+        "204":
+          description: ""
+      security: *a41
+      summary: Report a runner's runtime fields for its attempt (the attempt's job
+        token only)
+      tags: *a42
+  /jobs/{job_id}/attempts/{attempt_id}/runner/thread-messages:
+    post:
+      operationId: AttemptsRunnerController_createThreadMessage
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                thread_id:
+                  type: string
+                body:
+                  type: string
+                actor_type:
+                  type: string
+                  enum:
+                    - agent
+                    - system
+                actor_id:
+                  type: string
+                id:
+                  type: string
+              required:
+                - thread_id
+                - body
+                - actor_type
+      responses:
+        "204":
+          description: ""
+      security: *a41
+      summary: Post a runner's message to its job's chat or coordination thread (the
+        attempt's job token only)
+      tags: *a42
+  /jobs/{job_id}/attempts/{attempt_id}/runner/credential:
+    post:
+      operationId: AttemptsRunnerController_writeBackCredential
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                key:
+                  type: string
+                  enum:
+                    - CODEX_AUTH_JSON_B64
+                value:
+                  type: string
+              required:
+                - key
+                - value
+      responses:
+        "204":
+          description: ""
+      security: *a41
+      summary: Write back a refreshed Codex credential for the runner's job (same
+        account only; the attempt's job token only)
+      tags: *a42
+  /jobs/{job_id}/attempts/{attempt_id}/runner/result:
+    post:
+      operationId: AttemptsRunnerController_pushResult
+      parameters:
+        - name: job_id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: attempt_id
+          required: true
+          in: path
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                exit_code:
+                  type: integer
+                error:
+                  type: string
+                result_text:
+                  type: string
+                result_json: {}
+                duration_ms:
+                  type: integer
+                token_input:
+                  type: integer
+                token_output:
+                  type: integer
+              required:
+                - success
+                - exit_code
+      responses:
+        "201":
+          description: ""
+      security: *a41
+      summary: Report the attempt's result, once (the attempt's job token only)
+      tags: *a42
   /harnesses:
     get:
       operationId: HarnessesController_list
@@ -4476,7 +4710,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HarnessListResponse"
       summary: List harnesses and auth status
-      tags: &a41
+      tags: &a43
         - harnesses
   /harnesses/{name}:
     get:
@@ -4507,7 +4741,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HarnessInfoResponse"
       summary: Get harness details and auth status
-      tags: *a41
+      tags: *a43
   /projects/{project_id}/harness-profile/validate:
     post:
       operationId: HarnessesController_validate
@@ -4534,7 +4768,7 @@ paths:
       security:
         - bearer: []
       summary: Validate an inline harness_profile_override + env_overrides for a project
-      tags: *a41
+      tags: *a43
   /system/status:
     get:
       operationId: SystemController_getStatus
@@ -4542,10 +4776,10 @@ paths:
       responses:
         "200":
           description: System status including API, orchestrator, worker, and postgres
-      security: &a42
+      security: &a44
         - bearer: []
       summary: Get system health status
-      tags: &a43
+      tags: &a45
         - system
   /system/envs:
     get:
@@ -4576,9 +4810,9 @@ paths:
       responses:
         "200":
           description: List of environments (admin scope)
-      security: *a42
+      security: *a44
       summary: List environments across projects (admin scope)
-      tags: *a43
+      tags: *a45
   /system/logs/{service}:
     get:
       operationId: SystemController_getLogs
@@ -4604,9 +4838,9 @@ paths:
       responses:
         "200":
           description: Recent log entries
-      security: *a42
+      security: *a44
       summary: Get recent logs for a service
-      tags: *a43
+      tags: *a45
   /system/pods:
     get:
       operationId: SystemController_getPods
@@ -4614,9 +4848,9 @@ paths:
       responses:
         "200":
           description: List of pods with status, labels, and metadata
-      security: *a42
+      security: *a44
       summary: List pods with status
-      tags: *a43
+      tags: *a45
   /system/events:
     get:
       operationId: SystemController_getEvents
@@ -4630,9 +4864,9 @@ paths:
       responses:
         "200":
           description: Recent cluster events
-      security: *a42
+      security: *a44
       summary: Get recent cluster events
-      tags: *a43
+      tags: *a45
   /system/config:
     get:
       operationId: SystemController_getConfig
@@ -4640,9 +4874,9 @@ paths:
       responses:
         "200":
           description: Cluster and deployment configuration
-      security: *a42
+      security: *a44
       summary: Get deployment configuration summary
-      tags: *a43
+      tags: *a45
   /system/users:
     get:
       operationId: SystemController_getUsers
@@ -4650,9 +4884,9 @@ paths:
       responses:
         "200":
           description: List of all users with their org roles
-      security: *a42
+      security: *a44
       summary: List all users with org memberships (system_admin only)
-      tags: *a43
+      tags: *a45
   /system/settings:
     get:
       operationId: SystemController_getSettings
@@ -4660,9 +4894,9 @@ paths:
       responses:
         "200":
           description: List of all system settings
-      security: *a42
+      security: *a44
       summary: Get all system settings (system_admin only)
-      tags: *a43
+      tags: *a45
   /system/settings/{key}:
     get:
       operationId: SystemController_getSetting
@@ -4675,9 +4909,9 @@ paths:
       responses:
         "200":
           description: System setting value
-      security: *a42
+      security: *a44
       summary: Get a specific system setting (system_admin only)
-      tags: *a43
+      tags: *a45
     put:
       operationId: SystemController_setSetting
       parameters:
@@ -4689,9 +4923,9 @@ paths:
       responses:
         "200":
           description: Updated system setting
-      security: *a42
+      security: *a44
       summary: Set a system setting (system_admin only)
-      tags: *a43
+      tags: *a45
   /system/env-health:
     get:
       operationId: SystemController_getEnvHealth
@@ -4717,9 +4951,9 @@ paths:
       responses:
         "200":
           description: Environment health summary and details
-      security: *a42
+      security: *a44
       summary: Get environment health status across all orgs
-      tags: *a43
+      tags: *a45
   /projects/{id}/envs:
     post:
       operationId: EnvironmentsController_create
@@ -4742,10 +4976,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: &a44
+      security: &a46
         - bearer: []
       summary: Create an environment for a project (admin)
-      tags: &a45
+      tags: &a47
         - environments
     get:
       operationId: EnvironmentsController_list
@@ -4772,9 +5006,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentListResponse"
-      security: *a44
+      security: *a46
       summary: List environments for a project
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}:
     get:
       operationId: EnvironmentsController_findByName
@@ -4796,9 +5030,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a44
+      security: *a46
       summary: Get environment by name
-      tags: *a45
+      tags: *a47
     put:
       operationId: EnvironmentsController_update
       parameters:
@@ -4825,9 +5059,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a44
+      security: *a46
       summary: Update environment (admin)
-      tags: *a45
+      tags: *a47
     delete:
       operationId: EnvironmentsController_delete
       parameters:
@@ -4850,9 +5084,9 @@ paths:
       responses:
         "204":
           description: Environment deleted
-      security: *a44
+      security: *a46
       summary: Delete environment (admin)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/undeploy:
     post:
       operationId: EnvironmentsController_undeploy
@@ -4880,9 +5114,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvironmentResponse"
-      security: *a44
+      security: *a46
       summary: Undeploy an environment (tear down K8s, keep config)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/deploy:
     post:
       operationId: EnvironmentsController_deploy
@@ -4910,9 +5144,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeployResponse"
-      security: *a44
+      security: *a46
       summary: Deploy a release to an environment
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/rollback:
     post:
       operationId: EnvironmentsController_rollback
@@ -4930,9 +5164,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a44
+      security: *a46
       summary: Rollback environment to a specified release
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/reset:
     post:
       operationId: EnvironmentsController_reset
@@ -4950,9 +5184,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a44
+      security: *a46
       summary: Reset environment by tearing down workloads and redeploying release
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/recover:
     get:
       operationId: EnvironmentsController_recover
@@ -4970,9 +5204,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a44
+      security: *a46
       summary: Analyze environment state and suggest next recovery action
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/services/{service}/logs:
     get:
       operationId: EnvironmentsController_logs
@@ -5046,9 +5280,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvLogsResponse"
-      security: *a44
+      security: *a46
       summary: Get logs for a service in an environment (k8s-only)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/services/{service}/logs/stream:
     get:
       operationId: EnvironmentsController_streamLogs
@@ -5112,9 +5346,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a44
+      security: *a46
       summary: Stream logs for a service in an environment (k8s-only)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/health:
     get:
       operationId: EnvironmentsController_health
@@ -5136,9 +5370,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvHealthResponse"
-      security: *a44
+      security: *a46
       summary: Get deployment health for an environment (k8s-only)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/diagnose:
     get:
       operationId: EnvironmentsController_diagnose
@@ -5178,9 +5412,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvDiagnoseResponse"
-      security: *a44
+      security: *a46
       summary: Diagnose environment deployments (k8s-only)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/suspend:
     post:
       operationId: EnvironmentsController_suspend
@@ -5208,9 +5442,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuspendEnvironmentResponse"
-      security: *a44
+      security: *a46
       summary: Suspend an environment (admin/org-owner)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/resume:
     post:
       operationId: EnvironmentsController_resume
@@ -5232,9 +5466,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ResumeEnvironmentResponse"
-      security: *a44
+      security: *a46
       summary: Resume a suspended environment (admin/org-owner)
-      tags: *a45
+      tags: *a47
   /projects/{id}/envs/{name}/db/schema:
     get:
       operationId: EnvDbController_schema
@@ -5261,10 +5495,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbSchemaResponse"
-      security: &a46
+      security: &a48
         - bearer: []
       summary: Get environment DB schema
-      tags: &a47
+      tags: &a49
         - env-db
   /projects/{id}/envs/{name}/db/rls:
     get:
@@ -5292,9 +5526,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbRlsResponse"
-      security: *a46
+      security: *a48
       summary: Get environment DB RLS policies
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/extensions:
     get:
       operationId: EnvDbController_extensions
@@ -5321,9 +5555,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbExtensionsResponse"
-      security: *a46
+      security: *a48
       summary: List environment DB extensions
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/sql:
     post:
       operationId: EnvDbController_sql
@@ -5356,9 +5590,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbSqlResponse"
-      security: *a46
+      security: *a48
       summary: Execute SQL against environment DB
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/migrate:
     post:
       operationId: EnvDbController_migrate[0]
@@ -5391,9 +5625,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrateResponse"
-      security: *a46
+      security: *a48
       summary: Apply migrations to environment DB
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/migrate:
     post:
       operationId: EnvDbController_migrate[1]
@@ -5426,9 +5660,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrateResponse"
-      security: *a46
+      security: *a48
       summary: Apply migrations to environment DB
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/migrations:
     get:
       operationId: EnvDbController_listMigrations[0]
@@ -5455,9 +5689,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrationsResponse"
-      security: *a46
+      security: *a48
       summary: List applied migrations for environment DB
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/migrations:
     get:
       operationId: EnvDbController_listMigrations[1]
@@ -5484,9 +5718,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbMigrationsResponse"
-      security: *a46
+      security: *a48
       summary: List applied migrations for environment DB
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/reset:
     post:
       operationId: EnvDbController_reset
@@ -5519,9 +5753,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DbResetResponse"
-      security: *a46
+      security: *a48
       summary: Reset environment DB schema and optionally re-apply migrations
-      tags: *a47
+      tags: *a49
   /projects/{id}/envs/{name}/db/managed:
     get:
       operationId: ManagedDbController_getManagedDb
@@ -5539,10 +5773,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a48
+      security: &a50
         - bearer: []
       summary: Get managed DB status for environment
-      tags: &a49
+      tags: &a51
         - managed-db
     delete:
       operationId: ManagedDbController_destroyManagedDb
@@ -5565,9 +5799,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a48
+      security: *a50
       summary: Destroy managed DB for environment
-      tags: *a49
+      tags: *a51
   /projects/{id}/envs/{name}/db/managed/rotate:
     post:
       operationId: ManagedDbController_rotateCredentials
@@ -5585,9 +5819,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a48
+      security: *a50
       summary: Rotate managed DB credentials
-      tags: *a49
+      tags: *a51
   /projects/{id}/envs/{name}/db/managed/scale:
     post:
       operationId: ManagedDbController_scaleManagedDb
@@ -5605,9 +5839,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a48
+      security: *a50
       summary: Scale managed DB class
-      tags: *a49
+      tags: *a51
   /admin/managed-db/instances:
     get:
       operationId: ManagedDbController_listInstances
@@ -5615,18 +5849,18 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a48
+      security: *a50
       summary: List managed DB instances (admin)
-      tags: *a49
+      tags: *a51
     post:
       operationId: ManagedDbController_registerInstance
       parameters: []
       responses:
         "201":
           description: ""
-      security: *a48
+      security: *a50
       summary: Register managed DB instance (admin)
-      tags: *a49
+      tags: *a51
   /admin/managed-db/instances/{instanceId}:
     get:
       operationId: ManagedDbController_getInstance
@@ -5639,9 +5873,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a48
+      security: *a50
       summary: Get managed DB instance details (admin)
-      tags: *a49
+      tags: *a51
   /projects/{id}/envs/{name}/db/snapshots:
     post:
       operationId: ManagedDbSnapshotController_createSnapshot
@@ -5659,10 +5893,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a50
+      security: &a52
         - bearer: []
       summary: Create managed DB snapshot
-      tags: &a51
+      tags: &a53
         - managed-db-snapshots
     get:
       operationId: ManagedDbSnapshotController_listSnapshots
@@ -5690,9 +5924,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: List managed DB snapshots
-      tags: *a51
+      tags: *a53
   /projects/{id}/envs/{name}/db/snapshots/{snapshotId}:
     get:
       operationId: ManagedDbSnapshotController_getSnapshot
@@ -5715,9 +5949,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: Get managed DB snapshot details
-      tags: *a51
+      tags: *a53
     delete:
       operationId: ManagedDbSnapshotController_deleteSnapshot
       parameters:
@@ -5739,9 +5973,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: Delete managed DB snapshot
-      tags: *a51
+      tags: *a53
   /projects/{id}/envs/{name}/db/restore:
     post:
       operationId: ManagedDbSnapshotController_restoreFromSnapshot
@@ -5759,9 +5993,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: Restore managed DB from snapshot
-      tags: *a51
+      tags: *a53
   /projects/{id}/envs/{name}/db/snapshots/{snapshotId}/download:
     get:
       operationId: ManagedDbSnapshotController_downloadSnapshot
@@ -5784,9 +6018,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: Get presigned download URL for snapshot
-      tags: *a51
+      tags: *a53
   /projects/{id}/envs/{name}/db/backup-status:
     get:
       operationId: ManagedDbSnapshotController_getBackupStatus
@@ -5804,9 +6038,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a50
+      security: *a52
       summary: Get managed DB backup schedule and status
-      tags: *a51
+      tags: *a53
   /projects/{id}/pipelines:
     get:
       operationId: PipelinesController_list
@@ -5823,10 +6057,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineListResponse"
-      security: &a52
+      security: &a54
         - bearer: []
       summary: List pipelines for a project (manifest-defined)
-      tags: &a53
+      tags: &a55
         - pipelines
   /projects/{id}/pipelines/{name}:
     get:
@@ -5849,9 +6083,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineResponse"
-      security: *a52
+      security: *a54
       summary: Get pipeline by name (manifest-defined)
-      tags: *a53
+      tags: *a55
     delete:
       operationId: PipelinesController_delete
       parameters:
@@ -5868,9 +6102,9 @@ paths:
       responses:
         "204":
           description: Pipeline runs deleted
-      security: *a52
+      security: *a54
       summary: Delete all pipeline runs for a named pipeline
-      tags: *a53
+      tags: *a55
   /projects/{id}/pipelines/{name}/run:
     post:
       operationId: PipelineRunsController_createRun
@@ -5916,10 +6150,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: &a54
+      security: &a56
         - bearer: []
       summary: Create a pipeline run
-      tags: &a55
+      tags: &a57
         - pipeline-runs
   /projects/{id}/pipelines/{name}/runs:
     get:
@@ -5952,9 +6186,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunListResponse"
-      security: *a54
+      security: *a56
       summary: List pipeline runs for a pipeline
-      tags: *a55
+      tags: *a57
     post:
       description: Creates a pipeline run and expands the pipeline definition into a
         job graph. Each step becomes a job with appropriate phase (ready or
@@ -5985,10 +6219,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunWithJobsResponse"
-      security: &a57
+      security: &a59
         - bearer: []
       summary: Create a pipeline run (expands into job graph)
-      tags: &a58
+      tags: &a60
         - pipeline-expander
   /projects/{id}/pipelines/{name}/runs/{runId}:
     get:
@@ -6016,9 +6250,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a54
+      security: *a56
       summary: Get pipeline run details
-      tags: *a55
+      tags: *a57
   /pipeline-runs/{runId}/approve:
     post:
       operationId: PipelineRunsController_approveRun
@@ -6035,9 +6269,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a54
+      security: *a56
       summary: Approve a pipeline run awaiting approval
-      tags: *a55
+      tags: *a57
   /pipeline-runs/{runId}/cancel:
     post:
       operationId: PipelineRunsController_cancelRun
@@ -6054,9 +6288,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunDetailResponse"
-      security: *a54
+      security: *a56
       summary: Cancel a pipeline run
-      tags: *a55
+      tags: *a57
   /pipeline-runs/{runId}/stream:
     get:
       operationId: PipelineRunsController_streamRunLogs
@@ -6069,9 +6303,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream of pipeline logs
-      security: *a54
+      security: *a56
       summary: Stream logs for all steps in a pipeline run (SSE)
-      tags: *a55
+      tags: *a57
   /pipeline-runs/{runId}/steps/{name}/stream:
     get:
       operationId: PipelineRunsController_streamStepLogs
@@ -6089,9 +6323,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream of pipeline step logs
-      security: *a54
+      security: *a56
       summary: Stream logs for a single pipeline step (SSE)
-      tags: *a55
+      tags: *a57
   /pipeline-runs/{runId}/logs:
     get:
       operationId: PipelineRunsController_getRunLogs
@@ -6122,9 +6356,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a54
+      security: *a56
       summary: Get logs for a pipeline run
-      tags: *a55
+      tags: *a57
   /internal/pipeline-runs/{runId}:
     patch:
       operationId: PipelineRunsInternalController_updateRun
@@ -6153,7 +6387,7 @@ paths:
         "200":
           description: Pipeline run updated
       summary: Update pipeline run status (internal only)
-      tags: &a56
+      tags: &a58
         - internal
   /internal/pipeline-runs/{runId}/steps/{stepId}:
     patch:
@@ -6198,7 +6432,7 @@ paths:
         "200":
           description: Pipeline step updated
       summary: Update pipeline step status (internal only)
-      tags: *a56
+      tags: *a58
   /internal/pipeline-runs/{runId}/steps/{stepId}/logs:
     post:
       operationId: PipelineRunsInternalController_appendLog
@@ -6231,7 +6465,7 @@ paths:
         "200":
           description: Log appended successfully
       summary: Append pipeline step log (internal only)
-      tags: *a56
+      tags: *a58
   /projects/{id}/runs/{runId}:
     get:
       description: Retrieves a pipeline run along with all associated jobs and their
@@ -6255,9 +6489,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineRunWithJobsResponse"
-      security: *a57
+      security: *a59
       summary: Get pipeline run with its job graph
-      tags: *a58
+      tags: *a60
   /projects/{id}/runs/{runId}/jobs:
     get:
       description: Lists all jobs associated with a pipeline run, ordered by priority.
@@ -6280,9 +6514,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PipelineJobListResponse"
-      security: *a57
+      security: *a59
       summary: List jobs for a pipeline run
-      tags: *a58
+      tags: *a60
   /internal/projects/{id}/pipelines/{name}/runs:
     post:
       operationId: PipelineExpanderInternalController_createRun
@@ -6396,10 +6630,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowListResponse"
-      security: &a59
+      security: &a61
         - bearer: []
       summary: List workflows for a project (manifest-defined)
-      tags: &a60
+      tags: &a62
         - workflows
   /projects/{id}/workflows/{name}:
     get:
@@ -6422,9 +6656,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowResponse"
-      security: *a59
+      security: *a61
       summary: Get workflow by name (manifest-defined)
-      tags: *a60
+      tags: *a62
   /projects/{id}/workflows/{name}/invoke:
     post:
       operationId: WorkflowsController_invoke
@@ -6455,9 +6689,9 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/WorkflowInvokeResponse"
                   - $ref: "#/components/schemas/WorkflowInvokeResult"
-      security: *a59
+      security: *a61
       summary: Invoke a workflow by creating a job
-      tags: *a60
+      tags: *a62
   /projects/{id}/workflows/retry:
     post:
       operationId: WorkflowsController_retry
@@ -6474,9 +6708,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowRetryResponse"
-      security: *a59
+      security: *a61
       summary: Retry failed workflow steps without rerunning successful steps
-      tags: *a60
+      tags: *a62
   /internal/projects/{id}/workflows/{name}/invoke:
     post:
       operationId: WorkflowsInternalController_invoke
@@ -6549,10 +6783,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationListResponse"
-      security: &a61
+      security: &a63
         - bearer: []
       summary: List integrations for an org
-      tags: &a62
+      tags: &a64
         - integrations
   /orgs/{org_id}/integrations/slack/connect:
     post:
@@ -6576,9 +6810,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationResponse"
-      security: *a61
+      security: *a63
       summary: Connect a Slack workspace to an org
-      tags: *a62
+      tags: *a64
   /orgs/{org_id}/integrations/slack/install-token:
     post:
       operationId: OrgIntegrationsController_generateSlackInstallToken
@@ -6600,9 +6834,9 @@ paths:
       responses:
         "200":
           description: Install URL and expiry
-      security: *a61
+      security: *a63
       summary: Generate a shareable Slack install link (no Eve auth needed to redeem)
-      tags: *a62
+      tags: *a64
   /orgs/{org_id}/integrations/{integration_id}/settings:
     patch:
       operationId: OrgIntegrationsController_updateSettings
@@ -6631,9 +6865,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IntegrationResponse"
-      security: *a61
+      security: *a63
       summary: Update integration settings (e.g., admin_channel_id)
-      tags: *a62
+      tags: *a64
   /orgs/{org_id}/integrations/{integration_id}/test:
     post:
       operationId: IntegrationsController_test
@@ -6684,10 +6918,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestListResponse"
-      security: &a63
+      security: &a65
         - bearer: []
       summary: List membership requests for an org
-      tags: &a64
+      tags: &a66
         - integrations
   /orgs/{org_id}/membership-requests/{request_id}/approve:
     post:
@@ -6716,9 +6950,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestResponse"
-      security: *a63
+      security: *a65
       summary: Approve a membership request
-      tags: *a64
+      tags: *a66
   /orgs/{org_id}/membership-requests/{request_id}/deny:
     post:
       operationId: MembershipRequestsController_deny
@@ -6740,9 +6974,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MembershipRequestResponse"
-      security: *a63
+      security: *a65
       summary: Deny a membership request
-      tags: *a64
+      tags: *a66
   /internal/integrations/resolve:
     post:
       operationId: IntegrationsInternalController_resolveIntegration
@@ -6761,7 +6995,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IntegrationResolveResponse"
       summary: Resolve integration by provider + account (internal only)
-      tags: &a65
+      tags: &a67
         - internal
   /internal/integrations/external-identities/resolve:
     post:
@@ -6781,7 +7015,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ExternalIdentityResolveResponse"
       summary: Resolve external identity and create membership request (internal only)
-      tags: *a65
+      tags: *a67
   /internal/integrations/tokens:
     post:
       operationId: IntegrationsInternalController_fetchTokens
@@ -6800,7 +7034,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IntegrationTokensResponse"
       summary: Fetch integration tokens (internal only)
-      tags: *a65
+      tags: *a67
   /internal/identity-link-tokens/redeem:
     post:
       operationId: IntegrationsInternalController_redeemLinkToken
@@ -6819,7 +7053,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/IdentityLinkRedeemResponse"
       summary: Redeem an identity link token (internal, called by gateway)
-      tags: *a65
+      tags: *a67
   /internal/integrations/active:
     get:
       operationId: IntegrationsInternalController_listActiveIntegrations
@@ -6828,7 +7062,7 @@ paths:
         "200":
           description: ""
       summary: List active integrations for gateway bootstrap (internal only)
-      tags: *a65
+      tags: *a67
   /users/me/identity-link-tokens:
     post:
       operationId: IdentityLinkController_generateLinkToken
@@ -6866,7 +7100,7 @@ paths:
           description: ""
       summary: Redirect to Slack OAuth for workspace install; the state is bound to
         the caller
-      tags: &a66
+      tags: &a68
         - integrations
   /integrations/slack/install:
     get:
@@ -6877,7 +7111,7 @@ paths:
           description: ""
       summary: Public Slack install via signed token (no Eve auth required); bound to
         this browser by a cookie
-      tags: *a66
+      tags: *a68
   /integrations/slack/oauth/callback:
     get:
       operationId: SlackOAuthController_callback
@@ -6888,7 +7122,7 @@ paths:
       summary: "Handle Slack OAuth callback: stores the code for the user who started
         the install to complete; a signed-link install completes here with its
         cookie"
-      tags: *a66
+      tags: *a68
   /orgs/{org_id}/integrations/providers/{provider}/config:
     post:
       operationId: OAuthAppConfigController_upsertConfig
@@ -6909,7 +7143,7 @@ paths:
         "201":
           description: ""
       summary: Create or update OAuth app credentials for a provider
-      tags: &a67
+      tags: &a69
         - integrations
     get:
       operationId: OAuthAppConfigController_getConfig
@@ -6930,7 +7164,7 @@ paths:
         "200":
           description: ""
       summary: Get OAuth app config for a provider (secrets redacted)
-      tags: *a67
+      tags: *a69
     delete:
       operationId: OAuthAppConfigController_removeConfig
       parameters:
@@ -6950,7 +7184,7 @@ paths:
         "200":
           description: ""
       summary: Remove OAuth app config for a provider
-      tags: *a67
+      tags: *a69
   /orgs/{org_id}/integrations/providers/{provider}/setup-info:
     get:
       operationId: OAuthAppConfigController_getSetupInfo
@@ -6970,7 +7204,7 @@ paths:
         "200":
           description: ""
       summary: Get setup instructions and URLs for configuring an OAuth app
-      tags: *a67
+      tags: *a69
   /integrations/{provider}/oauth/complete:
     post:
       operationId: OAuthCompleteController_complete
@@ -7021,10 +7255,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecResponse"
-      security: &a68
+      security: &a70
         - bearer: []
       summary: Create a build spec
-      tags: &a69
+      tags: &a71
         - builds
     get:
       operationId: BuildsController_listSpecs
@@ -7051,9 +7285,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecListResponse"
-      security: *a68
+      security: *a70
       summary: List build specs for a project
-      tags: *a69
+      tags: *a71
   /builds/{build_id}:
     get:
       operationId: BuildsController_getSpec
@@ -7070,9 +7304,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildSpecResponse"
-      security: *a68
+      security: *a70
       summary: Get a build spec
-      tags: *a69
+      tags: *a71
     delete:
       operationId: BuildsController_delete
       parameters:
@@ -7084,9 +7318,9 @@ paths:
       responses:
         "204":
           description: Build deleted
-      security: *a68
+      security: *a70
       summary: Delete a build spec and all associated runs/artifacts/logs
-      tags: *a69
+      tags: *a71
   /builds/{build_id}/runs:
     post:
       operationId: BuildsController_createRun
@@ -7109,9 +7343,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunResponse"
-      security: *a68
+      security: *a70
       summary: Create a build run
-      tags: *a69
+      tags: *a71
     get:
       operationId: BuildsController_listRuns
       parameters:
@@ -7137,9 +7371,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunListResponse"
-      security: *a68
+      security: *a70
       summary: List build runs for a build spec
-      tags: *a69
+      tags: *a71
   /builds/{build_id}/artifacts:
     get:
       operationId: BuildsController_listArtifacts
@@ -7166,9 +7400,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildArtifactListResponse"
-      security: *a68
+      security: *a70
       summary: List build artifacts
-      tags: *a69
+      tags: *a71
   /builds/{build_id}/logs:
     get:
       operationId: BuildsController_getLogs
@@ -7195,9 +7429,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildLogsResponse"
-      security: *a68
+      security: *a70
       summary: Get build logs (optionally after a sequence)
-      tags: *a69
+      tags: *a71
   /projects/{project_id}/builds/prune:
     post:
       operationId: BuildsController_prune
@@ -7220,9 +7454,9 @@ paths:
       responses:
         "200":
           description: Prune result
-      security: *a68
+      security: *a70
       summary: Prune old builds, keeping the most recent N
-      tags: *a69
+      tags: *a71
   /builds/{build_id}/cancel:
     post:
       operationId: BuildsController_cancel
@@ -7245,9 +7479,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildRunResponse"
-      security: *a68
+      security: *a70
       summary: Cancel a build run
-      tags: *a69
+      tags: *a71
   /threads/{thread_id}:
     get:
       operationId: ThreadsController_findById
@@ -7264,10 +7498,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: &a70
+      security: &a72
         - bearer: []
       summary: Get thread by id
-      tags: &a71
+      tags: &a73
         - threads
     delete:
       operationId: ThreadsController_delete
@@ -7280,9 +7514,9 @@ paths:
       responses:
         "204":
           description: Thread deleted
-      security: *a70
+      security: *a72
       summary: Delete a thread and all its messages
-      tags: *a71
+      tags: *a73
   /threads/{thread_id}/stream:
     get:
       operationId: ThreadsController_streamMessages
@@ -7295,9 +7529,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a70
+      security: *a72
       summary: Stream messages in a thread (SSE)
-      tags: *a71
+      tags: *a73
   /threads/{thread_id}/events/stream:
     get:
       operationId: ThreadsController_streamEvents
@@ -7351,9 +7585,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a70
+      security: *a72
       summary: Stream normalized conversation events in a thread (SSE)
-      tags: *a71
+      tags: *a73
   /threads/{thread_id}/events:
     get:
       operationId: ThreadsController_listEvents
@@ -7412,9 +7646,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventListResponse"
-      security: *a70
+      security: *a72
       summary: List normalized conversation events in a thread
-      tags: *a71
+      tags: *a73
     post:
       operationId: ThreadsController_createEvent
       parameters:
@@ -7436,9 +7670,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventResponse"
-      security: *a70
+      security: *a72
       summary: Emit an app-defined conversation event into a thread
-      tags: *a71
+      tags: *a73
   /threads/{thread_id}/messages:
     get:
       operationId: ThreadsController_listMessages
@@ -7467,9 +7701,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageListResponse"
-      security: *a70
+      security: *a72
       summary: List messages in a thread
-      tags: *a71
+      tags: *a73
     post:
       operationId: ThreadsController_createMessage
       parameters:
@@ -7491,9 +7725,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageResponse"
-      security: *a70
+      security: *a72
       summary: Post a message to a thread
-      tags: *a71
+      tags: *a73
   /threads/{thread_id}/chat:
     post:
       operationId: ThreadsController_continueChat
@@ -7516,9 +7750,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
-      security: *a70
+      security: *a72
       summary: Continue an existing chat thread and trigger agent processing
-      tags: *a71
+      tags: *a73
   /orgs/{org_id}/threads:
     post:
       operationId: OrgThreadsController_create
@@ -7536,10 +7770,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: &a72
+      security: &a74
         - bearer: []
       summary: Create or retrieve an org-scoped thread
-      tags: &a73
+      tags: &a75
         - org-threads
     get:
       operationId: OrgThreadsController_list
@@ -7579,9 +7813,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadListResponse"
-      security: *a72
+      security: *a74
       summary: List org-scoped threads
-      tags: *a73
+      tags: *a75
   /orgs/{org_id}/threads/{thread_id}:
     get:
       operationId: OrgThreadsController_show
@@ -7605,9 +7839,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-      security: *a72
+      security: *a74
       summary: Get an org-scoped thread by ID
-      tags: *a73
+      tags: *a75
   /orgs/{org_id}/threads/{thread_id}/messages:
     post:
       operationId: OrgThreadsController_postMessage
@@ -7631,9 +7865,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageResponse"
-      security: *a72
+      security: *a74
       summary: Post a message to an org thread
-      tags: *a73
+      tags: *a75
     get:
       operationId: OrgThreadsController_listMessages
       parameters:
@@ -7667,9 +7901,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageListResponse"
-      security: *a72
+      security: *a74
       summary: List messages in an org thread
-      tags: *a73
+      tags: *a75
   /projects/{project_id}/chat/route:
     post:
       operationId: ChatController_routeMessage
@@ -7692,10 +7926,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
-      security: &a74
+      security: &a76
         - bearer: []
       summary: Route a chat message to agents/teams/workflows
-      tags: &a75
+      tags: &a77
         - chat
   /projects/{project_id}/chat/simulate:
     post:
@@ -7719,9 +7953,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
-      security: *a74
+      security: *a76
       summary: Simulate an inbound chat message (test-only)
-      tags: *a75
+      tags: *a77
   /internal/projects/{project_id}/chat/route:
     post:
       operationId: ChatInternalController_routeMessage
@@ -7745,7 +7979,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
       summary: Route a chat message (internal only)
-      tags: &a76
+      tags: &a78
         - internal
   /internal/projects/{project_id}/chat/deliver:
     post:
@@ -7766,7 +8000,7 @@ paths:
         "200":
           description: Delivery result
       summary: Deliver an agent result to the originating chat thread (internal only)
-      tags: *a76
+      tags: *a78
   /internal/orgs/{org_id}/chat/route:
     post:
       operationId: ChatGatewayController_routeBySlug
@@ -7790,7 +8024,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatRouteResponse"
       summary: Route a chat message to an org-scoped agent slug (internal only)
-      tags: &a77
+      tags: &a79
         - internal
   /internal/orgs/{org_id}/chat/listen:
     post:
@@ -7815,7 +8049,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatListenResponse"
       summary: Subscribe an agent slug to a channel or thread (internal only)
-      tags: *a77
+      tags: *a79
   /internal/orgs/{org_id}/chat/unlisten:
     post:
       operationId: ChatGatewayController_unlisten
@@ -7839,7 +8073,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatUnlistenResponse"
       summary: Remove a listener subscription (internal only)
-      tags: *a77
+      tags: *a79
   /internal/orgs/{org_id}/chat/listeners:
     post:
       operationId: ChatGatewayController_listeners
@@ -7863,7 +8097,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatListenersResponse"
       summary: List listeners for channel/thread (internal only)
-      tags: *a77
+      tags: *a79
   /internal/orgs/{org_id}/chat/dispatch:
     post:
       operationId: ChatGatewayController_dispatch
@@ -7887,7 +8121,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChatDispatchResponse"
       summary: Dispatch a message to all listeners (internal only)
-      tags: *a77
+      tags: *a79
   /projects/{project_id}/conversations:
     post:
       operationId: ConversationsController_ensure
@@ -7910,10 +8144,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationResponse"
-      security: &a78
+      security: &a80
         - bearer: []
       summary: Find or create an embedded app conversation
-      tags: &a79
+      tags: &a81
         - conversations
   /projects/{project_id}/conversations/{app_key}:
     get:
@@ -7942,9 +8176,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationResponse"
-      security: *a78
+      security: *a80
       summary: Resolve an app conversation key to an Eve thread
-      tags: *a79
+      tags: *a81
   /projects/{project_id}/conversations/{app_key}/turns:
     post:
       operationId: ConversationsController_sendTurn
@@ -7972,9 +8206,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationTurnResponse"
-      security: *a78
+      security: *a80
       summary: Append a user turn and route it through Eve chat
-      tags: *a79
+      tags: *a81
   /projects/{project_id}/conversations/{app_key}/stream:
     get:
       operationId: ConversationsController_stream
@@ -7998,9 +8232,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a78
+      security: *a80
       summary: Stream messages for an embedded app conversation
-      tags: *a79
+      tags: *a81
   /projects/{project_id}/conversations/{app_key}/events/stream:
     get:
       operationId: ConversationsController_streamEvents
@@ -8065,9 +8299,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a78
+      security: *a80
       summary: Stream normalized events for an embedded app conversation
-      tags: *a79
+      tags: *a81
   /projects/{project_id}/conversations/{app_key}/events:
     get:
       operationId: ConversationsController_events
@@ -8137,9 +8371,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventListResponse"
-      security: *a78
+      security: *a80
       summary: List normalized events for an embedded app conversation
-      tags: *a79
+      tags: *a81
     post:
       operationId: ConversationsController_emitEvent
       parameters:
@@ -8172,9 +8406,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationEventResponse"
-      security: *a78
+      security: *a80
       summary: Emit an app-defined event into an embedded app conversation
-      tags: *a79
+      tags: *a81
   /projects/{project_id}/conversations/{app_key}/messages:
     get:
       operationId: ConversationsController_messages
@@ -8214,9 +8448,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessageListResponse"
-      security: *a78
+      security: *a80
       summary: List messages for an embedded app conversation
-      tags: *a79
+      tags: *a81
   /orgs/{org_id}/agent-runtime/status:
     get:
       operationId: AgentRuntimeController_status
@@ -8246,7 +8480,7 @@ paths:
         "200":
           description: ""
       summary: List org IDs for agent runtime auto-discovery (internal only)
-      tags: &a80
+      tags: &a82
         - internal
   /internal/orgs/{org_id}/agent-runtime/heartbeat:
     post:
@@ -8271,7 +8505,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentRuntimePod"
       summary: Record agent runtime heartbeat (internal only)
-      tags: *a80
+      tags: *a82
   /admin/pricing/rate-cards:
     post:
       operationId: PricingController_createRateCard
@@ -8279,10 +8513,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a81
+      security: &a83
         - bearer: []
       summary: Create a new pricing rate card version (immutable)
-      tags: &a82
+      tags: &a84
         - pricing
     get:
       operationId: PricingController_listRateCards
@@ -8295,9 +8529,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a81
+      security: *a83
       summary: List rate cards by name (admin)
-      tags: *a82
+      tags: *a84
   /admin/pricing/rate-cards/effective:
     get:
       operationId: PricingController_getEffectiveRateCard
@@ -8316,9 +8550,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a81
+      security: *a83
       summary: Get the effective rate card for a name at a point in time (admin)
-      tags: *a82
+      tags: *a84
   /admin/pricing/exchange-rates:
     post:
       operationId: PricingController_insertExchangeRate
@@ -8326,9 +8560,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a81
+      security: *a83
       summary: Insert an exchange rate snapshot (admin)
-      tags: *a82
+      tags: *a84
   /admin/pricing/exchange-rates/latest:
     get:
       operationId: PricingController_getLatestExchangeRate
@@ -8346,9 +8580,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a81
+      security: *a83
       summary: Get the latest exchange rate snapshot (admin)
-      tags: *a82
+      tags: *a84
   /admin/pricing/refresh-openrouter:
     post:
       operationId: PricingController_refreshFromOpenRouter
@@ -8356,9 +8590,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a81
+      security: *a83
       summary: Refresh rate card pricing from OpenRouter model catalog
-      tags: *a82
+      tags: *a84
   /admin/receipts/recompute:
     post:
       operationId: ReceiptsAdminController_recompute
@@ -8393,10 +8627,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a83
+      security: &a85
         - bearer: []
       summary: Get current balance for an org (admin)
-      tags: &a84
+      tags: &a86
         - billing
   /admin/orgs/{orgId}/balance/transactions:
     get:
@@ -8428,9 +8662,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a83
+      security: *a85
       summary: List balance transactions for an org (admin)
-      tags: *a84
+      tags: *a86
   /admin/orgs/{orgId}/balance/credit:
     post:
       operationId: BalanceController_addCredit
@@ -8443,9 +8677,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a83
+      security: *a85
       summary: Add credit to an org balance (admin)
-      tags: *a84
+      tags: *a86
   /admin/orgs/{orgId}/usage:
     get:
       operationId: UsageController_listUsage
@@ -8476,10 +8710,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a85
+      security: &a87
         - bearer: []
       summary: List usage records for an org (admin)
-      tags: &a86
+      tags: &a88
         - billing
   /admin/orgs/{orgId}/usage/summary:
     get:
@@ -8505,9 +8739,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a85
+      security: *a87
       summary: Aggregated usage summary for an org (admin)
-      tags: *a86
+      tags: *a88
   /admin/cost/apps:
     get:
       operationId: CostController_getAppCosts
@@ -8521,10 +8755,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a87
+      security: &a89
         - bearer: []
       summary: Per-app cost report across all orgs (admin)
-      tags: &a88
+      tags: &a90
         - billing
   /admin/cost/environments:
     get:
@@ -8545,9 +8779,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a87
+      security: *a89
       summary: List environment cost estimates (admin)
-      tags: *a88
+      tags: *a90
   /admin/cost/cloud:
     get:
       operationId: CostController_getCloudCost
@@ -8585,9 +8819,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a87
+      security: *a89
       summary: Get bill-backed cloud cost snapshot (admin)
-      tags: *a88
+      tags: *a90
   /orgs/{org_id}/cost/apps:
     get:
       operationId: OrgCostController_getAppCosts
@@ -8619,7 +8853,7 @@ paths:
         "200":
           description: ""
       summary: Issue a scoped registry token (internal only)
-      tags: &a89
+      tags: &a91
         - internal
     get:
       operationId: RegistryTokenController_issueTokenGet
@@ -8628,7 +8862,7 @@ paths:
         "200":
           description: ""
       summary: Docker v2 token auth (GET with Basic auth)
-      tags: *a89
+      tags: *a91
   /jobs/{job_id}/attachments:
     post:
       operationId: JobAttachmentsController_create
@@ -8654,10 +8888,10 @@ paths:
                 $ref: "#/components/schemas/JobAttachmentDetailResponse"
         "404":
           description: Job not found
-      security: &a90
+      security: &a92
         - bearer: []
       summary: Create a job attachment
-      tags: &a91
+      tags: &a93
         - job-attachments
     get:
       operationId: JobAttachmentsController_list
@@ -8677,9 +8911,9 @@ paths:
                 $ref: "#/components/schemas/JobAttachmentListResponse"
         "404":
           description: Job not found
-      security: *a90
+      security: *a92
       summary: List job attachments (metadata only)
-      tags: *a91
+      tags: *a93
   /jobs/{job_id}/attachments/{att_id}:
     get:
       operationId: JobAttachmentsController_findById
@@ -8705,9 +8939,9 @@ paths:
                 $ref: "#/components/schemas/JobAttachmentDetailResponse"
         "404":
           description: Job or attachment not found
-      security: *a90
+      security: *a92
       summary: Get a job attachment with content
-      tags: *a91
+      tags: *a93
     delete:
       operationId: JobAttachmentsController_delete
       parameters:
@@ -8728,9 +8962,9 @@ paths:
           description: Attachment deleted
         "404":
           description: Job or attachment not found
-      security: *a90
+      security: *a92
       summary: Delete a job attachment
-      tags: *a91
+      tags: *a93
   /orgs/{org_id}/jobs:
     get:
       operationId: OrgQueriesController_listJobs
@@ -8778,10 +9012,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgJobListResponse"
-      security: &a92
+      security: &a94
         - bearer: []
       summary: List jobs across all projects in an org (permission-filtered)
-      tags: &a93
+      tags: &a95
         - org-queries
   /orgs/{org_id}/jobs/stats:
     get:
@@ -8800,9 +9034,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgJobStatsResponse"
-      security: *a92
+      security: *a94
       summary: Get aggregate job stats for an org (by phase and project)
-      tags: *a93
+      tags: *a95
   /orgs/{org_id}/events:
     get:
       operationId: OrgQueriesController_listEvents
@@ -8844,9 +9078,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgEventListResponse"
-      security: *a92
+      security: *a94
       summary: List events across all projects in an org (permission-filtered)
-      tags: *a93
+      tags: *a95
   /orgs/{org_id}/agents/all:
     get:
       operationId: OrgQueriesController_listAgents
@@ -8864,9 +9098,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgAgentsListResponse"
-      security: *a92
+      security: *a94
       summary: List all agents across all projects in an org (permission-filtered)
-      tags: *a93
+      tags: *a95
   /orgs/{org_id}/docs:
     post:
       operationId: OrgDocumentsController_create
@@ -8890,10 +9124,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentDetailResponse"
-      security: &a94
+      security: &a96
         - bearer: []
       summary: Create an org document
-      tags: &a95
+      tags: &a97
         - org-documents
     get:
       operationId: OrgDocumentsController_list
@@ -8923,9 +9157,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentListResponse"
-      security: *a94
+      security: *a96
       summary: List org documents by path prefix (metadata only)
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/search:
     get:
       operationId: OrgDocumentsController_search
@@ -8972,9 +9206,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentSearchResult"
-      security: *a94
+      security: *a96
       summary: Full-text search org documents
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/stale:
     get:
       operationId: OrgDocumentsController_stale
@@ -9008,9 +9242,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentListResponse"
-      security: *a94
+      security: *a96
       summary: List stale org documents by review_due age
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/review:
     post:
       operationId: OrgDocumentsController_review
@@ -9046,9 +9280,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentDetailResponse"
-      security: *a94
+      security: *a96
       summary: Mark an org document reviewed and set next review date
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/by-path:
     get:
       operationId: OrgDocumentsController_getByPath
@@ -9074,9 +9308,9 @@ paths:
                 $ref: "#/components/schemas/OrgDocumentDetailResponse"
         "404":
           description: Document not found
-      security: *a94
+      security: *a96
       summary: Read an org document by path
-      tags: *a95
+      tags: *a97
     put:
       operationId: OrgDocumentsController_update
       parameters:
@@ -9107,9 +9341,9 @@ paths:
                 $ref: "#/components/schemas/OrgDocumentDetailResponse"
         "404":
           description: Document not found
-      security: *a94
+      security: *a96
       summary: Full replace of an org document
-      tags: *a95
+      tags: *a97
     patch:
       operationId: OrgDocumentsController_patch
       parameters:
@@ -9140,9 +9374,9 @@ paths:
                 $ref: "#/components/schemas/OrgDocumentDetailResponse"
         "404":
           description: Document not found
-      security: *a94
+      security: *a96
       summary: Patch an org document with search/replace operations
-      tags: *a95
+      tags: *a97
     delete:
       operationId: OrgDocumentsController_delete
       parameters:
@@ -9163,9 +9397,9 @@ paths:
           description: Document deleted
         "404":
           description: Document not found
-      security: *a94
+      security: *a96
       summary: Delete an org document
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/query:
     post:
       operationId: OrgDocumentsController_query
@@ -9189,9 +9423,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentQueryResponse"
-      security: *a94
+      security: *a96
       summary: Structured metadata query for org documents
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/{path}/versions:
     get:
       operationId: OrgDocumentsController_listVersions
@@ -9227,9 +9461,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentVersionListResponse"
-      security: *a94
+      security: *a96
       summary: List org document versions
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/docs/{path}/versions/{version}:
     get:
       operationId: OrgDocumentsController_getVersion
@@ -9259,9 +9493,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgDocumentVersionDetail"
-      security: *a94
+      security: *a96
       summary: Read a specific org document version
-      tags: *a95
+      tags: *a97
   /orgs/{org_id}/fs/devices/enroll:
     post:
       operationId: OrgFsSyncController_enrollDevice
@@ -9285,10 +9519,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsEnrollDeviceResponse"
-      security: &a96
+      security: &a98
         - bearer: []
       summary: Enroll a sync device for an org
-      tags: &a97
+      tags: &a99
         - org-fs-sync
   /orgs/{org_id}/fs/links:
     post:
@@ -9313,9 +9547,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsCreateLinkResponse"
-      security: *a96
+      security: *a98
       summary: Create or upsert an org filesystem sync link
-      tags: *a97
+      tags: *a99
     get:
       operationId: OrgFsSyncController_listLinks
       parameters:
@@ -9332,9 +9566,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsListLinksResponse"
-      security: *a96
+      security: *a98
       summary: List org filesystem sync links
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/links/{link_id}:
     patch:
       operationId: OrgFsSyncController_updateLink
@@ -9364,9 +9598,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsLink"
-      security: *a96
+      security: *a98
       summary: Update sync link mode, status, or path policies
-      tags: *a97
+      tags: *a99
     delete:
       operationId: OrgFsSyncController_deleteLink
       parameters:
@@ -9389,9 +9623,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsDeleteLinkResponse"
-      security: *a96
+      security: *a98
       summary: Delete sync link
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/links/{link_id}/token:
     post:
       operationId: OrgFsSyncController_rotateLinkToken
@@ -9415,9 +9649,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsRotateLinkTokenResponse"
-      security: *a96
+      security: *a98
       summary: Rotate per-link internal gateway token
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/status:
     get:
       operationId: OrgFsSyncController_status
@@ -9435,9 +9669,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsStatusResponse"
-      security: *a96
+      security: *a98
       summary: Get org filesystem sync status
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/events:
     get:
       operationId: OrgFsSyncController_listEvents
@@ -9467,9 +9701,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsEventListResponse"
-      security: *a96
+      security: *a98
       summary: List org fs events
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/events/stream:
     get:
       operationId: OrgFsSyncController_streamEvents
@@ -9489,9 +9723,9 @@ paths:
       responses:
         "200":
           description: Server-Sent Events stream
-      security: *a96
+      security: *a98
       summary: Stream org fs events (SSE)
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/conflicts:
     get:
       operationId: OrgFsSyncController_listConflicts
@@ -9515,9 +9749,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsListConflictsResponse"
-      security: *a96
+      security: *a98
       summary: List filesystem sync conflicts for org
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/conflicts/{conflict_id}/resolve:
     post:
       operationId: OrgFsSyncController_resolveConflict
@@ -9547,9 +9781,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsResolveConflictResponse"
-      security: *a96
+      security: *a98
       summary: Resolve filesystem sync conflict
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/upload-url:
     get:
       operationId: OrgFsSyncController_getUploadUrl
@@ -9573,9 +9807,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsUploadUrlResponse"
-      security: *a96
+      security: *a98
       summary: Get a presigned PUT URL for uploading a file to org filesystem storage
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/download-url:
     get:
       operationId: OrgFsSyncController_getDownloadUrl
@@ -9599,10 +9833,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsDownloadUrlResponse"
-      security: *a96
+      security: *a98
       summary: Get a presigned GET URL for downloading a file from org filesystem
         storage
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/objects:
     get:
       operationId: OrgFsSyncController_listObjects
@@ -9636,9 +9870,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsObjectListResponse"
-      security: *a96
+      security: *a98
       summary: List objects in org filesystem storage
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/share:
     post:
       operationId: OrgFsSyncController_createShare
@@ -9662,9 +9896,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsShare"
-      security: *a96
+      security: *a98
       summary: Create a share token for an org fs file
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/shares:
     get:
       operationId: OrgFsSyncController_listShares
@@ -9682,9 +9916,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsShareListResponse"
-      security: *a96
+      security: *a98
       summary: List active share tokens for an org
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/shares/{token}:
     delete:
       operationId: OrgFsSyncController_revokeShare
@@ -9708,9 +9942,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsShare"
-      security: *a96
+      security: *a98
       summary: Revoke a share token
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/public-paths:
     post:
       operationId: OrgFsSyncController_createPublicPath
@@ -9734,9 +9968,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsPublicPath"
-      security: *a96
+      security: *a98
       summary: Publish a path prefix for unauthenticated access
-      tags: *a97
+      tags: *a99
     get:
       operationId: OrgFsSyncController_listPublicPaths
       parameters:
@@ -9753,9 +9987,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgFsPublicPathListResponse"
-      security: *a96
+      security: *a98
       summary: List published public path prefixes
-      tags: *a97
+      tags: *a99
   /orgs/{org_id}/fs/public-paths/{id}:
     delete:
       operationId: OrgFsSyncController_deletePublicPath
@@ -9775,9 +10009,9 @@ paths:
       responses:
         "204":
           description: ""
-      security: *a96
+      security: *a98
       summary: Unpublish a public path prefix
-      tags: *a97
+      tags: *a99
   /internal/orgs/{org_id}/fs/events:
     post:
       operationId: OrgFsSyncInternalController_ingestEvent
@@ -9801,7 +10035,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrgFsEvent"
       summary: Ingest normalized org fs event (internal only)
-      tags: &a98
+      tags: &a100
         - internal
   /internal/orgs/{org_id}/fs/links/{link_id}/heartbeat:
     post:
@@ -9831,7 +10065,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrgFsLink"
       summary: Update sync link heartbeat (internal only)
-      tags: *a98
+      tags: *a100
   /internal/orgs/{org_id}/fs/links/{link_id}/metrics:
     post:
       operationId: OrgFsSyncInternalController_metrics
@@ -9860,7 +10094,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrgFsLink"
       summary: Update sync link runtime metrics (internal only)
-      tags: *a98
+      tags: *a100
   /orgs/{org_id}/fs/public/{path}:
     get:
       operationId: OrgFsPublicController_resolvePublic
@@ -9943,10 +10177,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookResponse"
-      security: &a99
+      security: &a101
         - bearer: []
       summary: Create an org-wide webhook subscription
-      tags: &a100
+      tags: &a102
         - webhooks
     get:
       operationId: WebhooksController_listWebhooks
@@ -9964,9 +10198,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookListResponse"
-      security: *a99
+      security: *a101
       summary: List webhook subscriptions for an org
-      tags: *a100
+      tags: *a102
   /projects/{project_id}/webhooks:
     post:
       operationId: WebhooksController_createProjectWebhook
@@ -9990,9 +10224,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookResponse"
-      security: *a99
+      security: *a101
       summary: Create a project-scoped webhook subscription
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}:
     get:
       operationId: WebhooksController_getWebhook
@@ -10018,9 +10252,9 @@ paths:
                 $ref: "#/components/schemas/WebhookResponse"
         "404":
           description: Webhook subscription not found
-      security: *a99
+      security: *a101
       summary: Get a webhook subscription
-      tags: *a100
+      tags: *a102
     delete:
       operationId: WebhooksController_deleteWebhook
       parameters:
@@ -10041,9 +10275,9 @@ paths:
           description: Webhook subscription deleted
         "404":
           description: Webhook subscription not found
-      security: *a99
+      security: *a101
       summary: Delete a webhook subscription
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}/enable:
     patch:
       operationId: WebhooksController_enableWebhook
@@ -10069,9 +10303,9 @@ paths:
                 $ref: "#/components/schemas/WebhookResponse"
         "404":
           description: Webhook subscription not found
-      security: *a99
+      security: *a101
       summary: Re-enable a disabled webhook subscription
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}/deliveries:
     get:
       operationId: WebhooksController_listDeliveries
@@ -10103,9 +10337,9 @@ paths:
                 $ref: "#/components/schemas/WebhookDeliveryListResponse"
         "404":
           description: Webhook subscription not found
-      security: *a99
+      security: *a101
       summary: List delivery attempts for a webhook subscription
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}/replays:
     post:
       operationId: WebhooksController_createReplay
@@ -10137,9 +10371,9 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/WebhookReplayResponse"
                   - $ref: "#/components/schemas/WebhookReplayDryRunResponse"
-      security: *a99
+      security: *a101
       summary: Replay webhook events for a subscription
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}/replays/{replay_id}:
     get:
       operationId: WebhooksController_getReplayStatus
@@ -10169,9 +10403,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookReplayStatusResponse"
-      security: *a99
+      security: *a101
       summary: Get webhook replay status
-      tags: *a100
+      tags: *a102
   /orgs/{org_id}/webhooks/{wh_id}/test:
     post:
       operationId: WebhooksController_testWebhook
@@ -10197,9 +10431,9 @@ paths:
                 $ref: "#/components/schemas/WebhookDeliveryResponse"
         "404":
           description: Webhook subscription not found
-      security: *a99
+      security: *a101
       summary: Send a test webhook event
-      tags: *a100
+      tags: *a102
   /webhooks/ses-feedback:
     post:
       operationId: SesFeedbackController_handle
@@ -10238,10 +10472,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalyticsSummary"
-      security: &a101
+      security: &a103
         - bearer: []
       summary: Get org-wide analytics summary
-      tags: &a102
+      tags: &a104
         - analytics
   /orgs/{org_id}/analytics/jobs:
     get:
@@ -10271,9 +10505,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalyticsJobStats"
-      security: *a101
+      security: *a103
       summary: Get org-wide job statistics
-      tags: *a102
+      tags: *a104
   /orgs/{org_id}/analytics/pipelines:
     get:
       operationId: AnalyticsController_pipelines
@@ -10302,9 +10536,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalyticsPipelineStats"
-      security: *a101
+      security: *a103
       summary: Get org-wide pipeline statistics
-      tags: *a102
+      tags: *a104
   /orgs/{org_id}/analytics/env-health:
     get:
       operationId: AnalyticsController_envHealth
@@ -10322,9 +10556,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalyticsEnvHealth"
-      security: *a101
+      security: *a103
       summary: Get org-wide environment health
-      tags: *a102
+      tags: *a104
   /orgs/{org_id}/analytics/cost-by-agent:
     get:
       operationId: AnalyticsController_costByAgent
@@ -10349,9 +10583,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a101
+      security: *a103
       summary: Get cost breakdown by agent
-      tags: *a102
+      tags: *a104
   /providers:
     get:
       operationId: ProvidersController_list
@@ -10360,7 +10594,7 @@ paths:
         "200":
           description: ""
       summary: List all registered providers
-      tags: &a103
+      tags: &a105
         - providers
   /providers/{name}:
     get:
@@ -10375,7 +10609,7 @@ paths:
         "200":
           description: ""
       summary: Get provider details
-      tags: *a103
+      tags: *a105
   /providers/{name}/models:
     get:
       operationId: ProvidersController_discoverModels
@@ -10401,7 +10635,7 @@ paths:
         "200":
           description: ""
       summary: Discover available models from a provider
-      tags: *a103
+      tags: *a105
   /orgs/{org_id}/agents/{agent_slug}/memory:
     post:
       operationId: AgentMemoryController_setMemory
@@ -10419,10 +10653,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a104
+      security: &a106
         - bearer: []
       summary: Create/update an agent memory entry
-      tags: &a105
+      tags: &a107
         - agent-memory
     get:
       operationId: AgentMemoryController_listMemory
@@ -10454,9 +10688,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: List memory entries for an agent/shared namespace
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/agents/{agent_slug}/memory/{key}:
     get:
       operationId: AgentMemoryController_getMemory
@@ -10483,9 +10717,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Get one memory entry by key
-      tags: *a105
+      tags: *a107
     put:
       operationId: AgentMemoryController_updateMemory
       parameters:
@@ -10507,9 +10741,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Update a memory entry by key
-      tags: *a105
+      tags: *a107
     delete:
       operationId: AgentMemoryController_deleteMemory
       parameters:
@@ -10536,9 +10770,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Delete a memory entry by key/category
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/memory/search:
     get:
       operationId: AgentMemoryController_searchMemory
@@ -10561,9 +10795,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Search memory namespaces
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/agents/{agent_slug}/kv/{namespace}/{key}:
     put:
       operationId: AgentMemoryController_kvPut
@@ -10591,9 +10825,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Set agent KV value with optional TTL
-      tags: *a105
+      tags: *a107
     get:
       operationId: AgentMemoryController_kvGet
       parameters:
@@ -10620,9 +10854,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Get agent KV value
-      tags: *a105
+      tags: *a107
     delete:
       operationId: AgentMemoryController_kvDelete
       parameters:
@@ -10649,9 +10883,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Delete agent KV value
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/agents/{agent_slug}/kv/{namespace}:
     get:
       operationId: AgentMemoryController_kvList
@@ -10679,9 +10913,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: List keys in an agent KV namespace
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/agents/{agent_slug}/kv/{namespace}/mget:
     post:
       operationId: AgentMemoryController_kvMget
@@ -10704,9 +10938,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a104
+      security: *a106
       summary: Batch get keys in an agent KV namespace
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/search:
     get:
       operationId: AgentMemoryController_unifiedSearch
@@ -10738,9 +10972,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a104
+      security: *a106
       summary: Unified org search across memory/docs/threads/attachments/events
-      tags: *a105
+      tags: *a107
   /orgs/{org_id}/threads/{thread_id}/distill:
     post:
       operationId: AgentMemoryController_distillThread
@@ -10758,9 +10992,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a104
+      security: *a106
       summary: Distill thread messages into durable docs/memory
-      tags: *a105
+      tags: *a107
   /admin/ingress-aliases:
     get:
       operationId: IngressAliasesAdminController_list
@@ -10778,10 +11012,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a106
+      security: &a108
         - bearer: []
       summary: List ingress alias claims (admin)
-      tags: &a107
+      tags: &a109
         - ingress-aliases
   /admin/ingress-aliases/{alias}/reclaim:
     post:
@@ -10795,9 +11029,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a106
+      security: *a108
       summary: Force reclaim an ingress alias (admin)
-      tags: *a107
+      tags: *a109
   /projects/{project_id}/domains:
     get:
       operationId: CustomDomainsController_list
@@ -10810,10 +11044,10 @@ paths:
       responses:
         "200":
           description: ""
-      security: &a108
+      security: &a110
         - bearer: []
       summary: List custom domains for a project
-      tags: &a109
+      tags: &a111
         - custom-domains
     post:
       operationId: CustomDomainsController_register
@@ -10826,9 +11060,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a108
+      security: *a110
       summary: Register a custom domain
-      tags: *a109
+      tags: *a111
   /projects/{project_id}/domains/{hostname}:
     get:
       operationId: CustomDomainsController_get
@@ -10846,9 +11080,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a108
+      security: *a110
       summary: Get custom domain detail
-      tags: *a109
+      tags: *a111
     delete:
       operationId: CustomDomainsController_remove
       parameters:
@@ -10865,9 +11099,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a108
+      security: *a110
       summary: Remove a custom domain
-      tags: *a109
+      tags: *a111
   /projects/{project_id}/domains/{hostname}/verify:
     post:
       operationId: CustomDomainsController_verify
@@ -10885,9 +11119,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a108
+      security: *a110
       summary: Verify DNS and get activation status
-      tags: *a109
+      tags: *a111
   /projects/{project_id}/domains/{hostname}/transfer:
     post:
       operationId: CustomDomainsController_transfer
@@ -10905,9 +11139,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a108
+      security: *a110
       summary: Transfer domain ownership to another environment
-      tags: *a109
+      tags: *a111
   /projects/{project_id}/domains/{hostname}/unbind:
     post:
       operationId: CustomDomainsController_unbind
@@ -10925,9 +11159,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a108
+      security: *a110
       summary: Clear env binding so the next deploy can claim the domain
-      tags: *a109
+      tags: *a111
   /projects/{project_id}/ingest:
     post:
       operationId: IngestController_create
@@ -10941,10 +11175,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a110
+      security: &a112
         - bearer: []
       summary: Create ingest record and get upload URL
-      tags: &a111
+      tags: &a113
         - ingest
     get:
       operationId: IngestController_list
@@ -10974,9 +11208,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a110
+      security: *a112
       summary: List ingest records for a project
-      tags: *a111
+      tags: *a113
   /projects/{project_id}/ingest/{ingest_id}/confirm:
     post:
       operationId: IngestController_confirm
@@ -11002,9 +11236,9 @@ paths:
       responses:
         "202":
           description: ""
-      security: *a110
+      security: *a112
       summary: Confirm upload and trigger processing
-      tags: *a111
+      tags: *a113
   /projects/{project_id}/ingest/{ingest_id}:
     get:
       operationId: IngestController_show
@@ -11024,9 +11258,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a110
+      security: *a112
       summary: Get ingest record details
-      tags: *a111
+      tags: *a113
   /projects/{project_id}/ingest/{ingest_id}/download:
     get:
       operationId: IngestController_download
@@ -11046,9 +11280,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a110
+      security: *a112
       summary: Redirect to presigned download URL for ingested file
-      tags: *a111
+      tags: *a113
   /users/{user_id}:
     get:
       operationId: UsersController_show
@@ -11089,10 +11323,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrivateEndpointResponse"
-      security: &a112
+      security: &a114
         - bearer: []
       summary: Register a private endpoint
-      tags: &a113
+      tags: &a115
         - private-endpoints
     get:
       operationId: PrivateEndpointsController_list
@@ -11120,9 +11354,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrivateEndpointListResponse"
-      security: *a112
+      security: *a114
       summary: List private endpoints for an org
-      tags: *a113
+      tags: *a115
   /orgs/{org_id}/endpoints/{name}:
     get:
       operationId: PrivateEndpointsController_show
@@ -11146,9 +11380,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrivateEndpointResponse"
-      security: *a112
+      security: *a114
       summary: Show a private endpoint
-      tags: *a113
+      tags: *a115
     delete:
       operationId: PrivateEndpointsController_remove
       parameters:
@@ -11167,9 +11401,9 @@ paths:
       responses:
         "204":
           description: Endpoint removed
-      security: *a112
+      security: *a114
       summary: Remove a private endpoint
-      tags: *a113
+      tags: *a115
   /orgs/{org_id}/endpoints/{name}/health:
     get:
       operationId: PrivateEndpointsController_health
@@ -11193,9 +11427,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrivateEndpointHealth"
-      security: *a112
+      security: *a114
       summary: Health check a private endpoint
-      tags: *a113
+      tags: *a115
   /orgs/{org_id}/endpoints/{name}/diagnose:
     get:
       operationId: PrivateEndpointsController_diagnose
@@ -11219,9 +11453,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrivateEndpointDiagnose"
-      security: *a112
+      security: *a114
       summary: Diagnose a private endpoint
-      tags: *a113
+      tags: *a115
   /orgs/{org_id}/cloud-fs/mounts:
     post:
       operationId: CloudFsController_createMount
@@ -11235,10 +11469,10 @@ paths:
       responses:
         "201":
           description: ""
-      security: &a114
+      security: &a116
         - bearer: []
       summary: Create a cloud FS mount
-      tags: &a115
+      tags: &a117
         - cloud-fs
     get:
       operationId: CloudFsController_listMounts
@@ -11258,9 +11492,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: List cloud FS mounts
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}:
     get:
       operationId: CloudFsController_getMount
@@ -11280,9 +11514,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Get cloud FS mount details
-      tags: *a115
+      tags: *a117
     patch:
       operationId: CloudFsController_updateMount
       parameters:
@@ -11301,9 +11535,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Update a cloud FS mount
-      tags: *a115
+      tags: *a117
     delete:
       operationId: CloudFsController_removeMount
       parameters:
@@ -11322,9 +11556,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Remove a cloud FS mount
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/browse:
     get:
       operationId: CloudFsController_browse
@@ -11373,9 +11607,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Browse files in a cloud FS mount
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}/browse:
     get:
       operationId: CloudFsController_browseMount
@@ -11430,9 +11664,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Browse files in a specific mount
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}/files/{file_id}:
     get:
       operationId: CloudFsController_getFileMeta
@@ -11458,9 +11692,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Get file metadata
-      tags: *a115
+      tags: *a117
     delete:
       operationId: CloudFsController_trashFile
       parameters:
@@ -11485,9 +11719,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Move a file to the cloud storage trash (recoverable)
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}/files/{file_id}/download:
     get:
       operationId: CloudFsController_downloadFile
@@ -11513,9 +11747,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Download a file from cloud storage
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}/upload:
     post:
       operationId: CloudFsController_uploadFile
@@ -11545,9 +11779,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a114
+      security: *a116
       summary: Upload a file to cloud storage
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/mounts/{mount_id}/folders:
     post:
       operationId: CloudFsController_createFolder
@@ -11567,9 +11801,9 @@ paths:
       responses:
         "201":
           description: ""
-      security: *a114
+      security: *a116
       summary: Create a folder in cloud storage
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/cloud-fs/search:
     get:
       operationId: CloudFsController_search
@@ -11618,9 +11852,9 @@ paths:
       responses:
         "200":
           description: ""
-      security: *a114
+      security: *a116
       summary: Search files across cloud FS mounts
-      tags: *a115
+      tags: *a117
   /orgs/{org_id}/integrations/google-drive/authorize:
     get:
       operationId: GoogleDriveOAuthController_authorize
@@ -11636,7 +11870,7 @@ paths:
           description: ""
       summary: Redirect to Google OAuth for Drive access; the state is bound to the
         caller
-      tags: &a116
+      tags: &a118
         - integrations
   /integrations/google-drive/oauth/callback:
     get:
@@ -11647,7 +11881,7 @@ paths:
           description: ""
       summary: "Handle Google OAuth callback: stores the code for the user who started
         the install to complete"
-      tags: *a116
+      tags: *a118
   /internal/platform-notify:
     post:
       operationId: PlatformNotifyController_notify
@@ -11656,7 +11890,7 @@ paths:
         "200":
           description: ""
       summary: Receive structured platform alert (internal only)
-      tags: &a117
+      tags: &a119
         - internal
   /internal/platform-respond:
     post:
@@ -11666,7 +11900,7 @@ paths:
         "200":
           description: ""
       summary: Handle inbound message from sentinel channel (internal only)
-      tags: *a117
+      tags: *a119
   /internal/sentinel-config:
     get:
       operationId: PlatformNotifyController_sentinelConfig
@@ -11675,7 +11909,7 @@ paths:
         "200":
           description: ""
       summary: Return sentinel Slack channel config (internal only)
-      tags: *a117
+      tags: *a119
   /projects/{project_id}/notifications/send:
     post:
       operationId: NotificationsController_send
@@ -11719,10 +11953,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AppLinksListResponse"
-      security: &a118
+      security: &a120
         - bearer: []
       summary: List cross-project app link exports and subscriptions
-      tags: &a119
+      tags: &a121
         - app-links
   /projects/{id}/app-links/explain:
     post:
@@ -11746,9 +11980,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AppLinksExplainResponse"
-      security: *a118
+      security: *a120
       summary: Explain why an app link is valid, missing, or revoked
-      tags: *a119
+      tags: *a121
   /projects/{id}/app-links/plan:
     post:
       operationId: AppLinksController_plan
@@ -11771,9 +12005,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AppLinksPlanResponse"
-      security: *a118
+      security: *a120
       summary: Dry-run app-link consumer manifest references against current grants
-      tags: *a119
+      tags: *a121
 info:
   title: Eve Horizon API
   description: Job orchestration API
@@ -12263,7 +12497,7 @@ components:
               type: array
               items:
                 type: string
-              default: &a120 []
+              default: &a122 []
           additionalProperties: false
           nullable: true
       required:
@@ -12328,7 +12562,7 @@ components:
               type: array
               items:
                 type: string
-              default: *a120
+              default: *a122
             org_access:
               type: object
               properties:
@@ -15634,6 +15868,8 @@ components:
           type: string
         harness:
           type: string
+        bound:
+          type: boolean
       required:
         - project_id
       additionalProperties: false
@@ -15665,6 +15901,8 @@ components:
                   - system
               scope_id:
                 type: string
+              clone_only:
+                type: boolean
             required:
               - key
               - value

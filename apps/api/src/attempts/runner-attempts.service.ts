@@ -1,0 +1,251 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import {
+  type Db,
+  eventQueries,
+  executionLogQueries,
+  jobQueries,
+  runnerResultQueries,
+  threadMessageQueries,
+  threadQueries,
+} from '@eve/db';
+import {
+  CODEX_ID_TOKEN_JWKS_URL,
+  RUNNER_EVENT_TYPES,
+  RUNNER_RUNTIME_META_KEYS,
+  RUNNER_WRITABLE_CREDENTIALS,
+  codexAccountIdOf,
+  generateEventId,
+  projectThreadId,
+  verifiedCodexAccountId,
+  type Jwks,
+  type RunnerResultReport,
+} from '@eve/shared';
+import { AuthService } from '../auth/auth.service.js';
+import type { AuthUser, JobTokenPayload } from '../auth/auth.types.js';
+import { assertJobRunning } from '../auth/job-liveness.js';
+import { SecretsService } from '../secrets/secrets.service.js';
+import { SecurityService } from '../security/security.service.js';
+
+/** Supplies the Codex token issuer's signing keys (JWKS). */
+export const CODEX_JWKS_SOURCE = 'CODEX_JWKS_SOURCE';
+export type CodexJwksSource = () => Promise<Jwks>;
+
+const JOB_ORG_WRITE_RULE = 'secrets.job_org_write';
+const MAX_LOG_ENTRIES = 500;
+const MAX_THREAD_MESSAGE = 16 * 1024;
+
+let cachedJwks: { jwks: Jwks; at: number } | null = null;
+
+/** The issuer's published keys, cached for an hour. */
+export async function fetchCodexJwks(): Promise<Jwks> {
+  if (cachedJwks && Date.now() - cachedJwks.at < 60 * 60 * 1000) return cachedJwks.jwks;
+  const url = process.env.EVE_CODEX_JWKS_URL || CODEX_ID_TOKEN_JWKS_URL;
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`Codex issuer keys unavailable [${response.status}]`);
+  const jwks = await response.json() as Jwks;
+  if (!Array.isArray(jwks?.keys)) throw new Error('Codex issuer keys are malformed');
+  cachedJwks = { jwks, at: Date.now() };
+  return jwks;
+}
+
+/**
+ * The push-only routes a runner pod reports through. Each takes the
+ * attempt's own job token: it must be bound to the attempt the path names,
+ * and stops working when that attempt ends. Nothing here returns platform
+ * data, and job code (which holds the same token) can write only its own
+ * attempt's output.
+ */
+@Injectable()
+export class RunnerAttemptsService {
+  private readonly logger = new Logger(RunnerAttemptsService.name);
+  private readonly jobs: ReturnType<typeof jobQueries>;
+
+  constructor(
+    private readonly auth: AuthService,
+    @Inject('DB') private readonly db: Db,
+    private readonly secrets: SecretsService,
+    private readonly security: SecurityService,
+    @Optional() @Inject(CODEX_JWKS_SOURCE) private readonly codexJwks: CodexJwksSource = fetchCodexJwks,
+  ) {
+    this.jobs = jobQueries(db);
+  }
+
+  /** The caller's job token, bound to this job and attempt, while the attempt runs. */
+  async authorize(jobId: string, attemptId: string, authorization: string | undefined): Promise<JobTokenPayload> {
+    const match = /^Bearer\s+(\S+)$/i.exec(authorization ?? '');
+    if (!match) throw new UnauthorizedException('A job token is required');
+    const payload = this.auth.verifyJobToken(match[1]);
+    if (!payload.attempt_id) {
+      throw new ForbiddenException('Runner routes take a job token bound to its attempt');
+    }
+    if (payload.job_id !== jobId || payload.attempt_id !== attemptId) {
+      throw new ForbiddenException("A job token reaches only its own attempt's runner routes");
+    }
+    await assertJobRunning(this.jobs, jobId, attemptId);
+    return payload;
+  }
+
+  async appendLogs(attemptId: string, entries: unknown): Promise<void> {
+    if (!Array.isArray(entries) || entries.length > MAX_LOG_ENTRIES) {
+      throw new BadRequestException(`entries must be an array of at most ${MAX_LOG_ENTRIES}`);
+    }
+    const logs = executionLogQueries(this.db);
+    for (const entry of entries as Array<{ type?: unknown; content?: unknown }>) {
+      if (typeof entry?.type !== 'string' || !entry.type || entry.type.length > 100
+        || !entry.content || typeof entry.content !== 'object' || Array.isArray(entry.content)) {
+        throw new BadRequestException('each entry needs a type and a content object');
+      }
+      await logs.appendLog(attemptId, entry.type, entry.content as Record<string, unknown>);
+    }
+  }
+
+  async emitEvent(token: JobTokenPayload, type: unknown, payload: unknown): Promise<void> {
+    if (typeof type !== 'string' || !(RUNNER_EVENT_TYPES as readonly string[]).includes(type)) {
+      throw new BadRequestException(`A runner emits only ${RUNNER_EVENT_TYPES.join(', ')}`);
+    }
+    await eventQueries(this.db).create({
+      id: generateEventId(),
+      project_id: token.project_id,
+      type,
+      source: 'system',
+      env_name: null,
+      ref_sha: null,
+      ref_branch: null,
+      actor_type: 'system',
+      actor_id: null,
+      payload_json: { ...(payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}),
+        job_id: token.job_id, attempt_id: token.attempt_id },
+      dedupe_key: `resource:${token.attempt_id}:${type}`,
+    } as never);
+  }
+
+  async updateRuntimeMeta(attemptId: string, meta: unknown): Promise<void> {
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new BadRequestException('meta must be an object');
+    const extra = Object.keys(meta).filter((key) => !(RUNNER_RUNTIME_META_KEYS as readonly string[]).includes(key));
+    if (extra.length > 0) {
+      throw new BadRequestException(`A runner reports only ${RUNNER_RUNTIME_META_KEYS.join(', ')} (got ${extra.join(', ')})`);
+    }
+    const update = { ...(meta as Record<string, unknown>) };
+    // Keep the toolchain image IDs the worker recorded at pod start.
+    if (update.toolchains && typeof update.toolchains === 'object') {
+      const [attempt] = await this.db<{ runtime_meta: { toolchains?: { image_ids?: unknown } } | null }[]>`
+        SELECT runtime_meta FROM job_attempts WHERE id = ${attemptId}::uuid
+      `;
+      const imageIds = attempt?.runtime_meta?.toolchains?.image_ids;
+      if (imageIds) update.toolchains = { ...(update.toolchains as Record<string, unknown>), image_ids: imageIds };
+    }
+    await this.jobs.updateRuntimeMeta(attemptId, update);
+  }
+
+  /** A message on the job's own chat thread or its parent's coordination thread. */
+  async createThreadMessage(token: JobTokenPayload, body: Record<string, unknown>): Promise<void> {
+    const threadId = body.thread_id;
+    const text = body.body;
+    const actorType = body.actor_type;
+    if (typeof threadId !== 'string' || typeof text !== 'string' || !text || text.length > MAX_THREAD_MESSAGE) {
+      throw new BadRequestException('thread_id and a body of at most 16 KiB are required');
+    }
+    if (actorType !== 'agent' && actorType !== 'system') throw new BadRequestException('actor_type must be agent or system');
+    if (!(await this.jobThreads(token.job_id)).has(threadId)) {
+      throw new ForbiddenException("A runner posts only to its job's own chat or coordination thread");
+    }
+    await threadMessageQueries(this.db).create({
+      id: typeof body.id === 'string' && body.id ? body.id : randomUUID(),
+      thread_id: threadId,
+      direction: 'outbound',
+      actor_type: actorType,
+      actor_id: typeof body.actor_id === 'string' && body.actor_id ? body.actor_id : token.job_id,
+      body: text,
+      job_id: token.job_id,
+    } as never);
+  }
+
+  private async jobThreads(jobId: string): Promise<Set<string>> {
+    const threads = threadQueries(this.db);
+    const reader = { findThreadProjectId: async (id: string) => (await threads.findById(id))?.project_id ?? null };
+    const job = await this.jobs.findById(jobId);
+    const allowed = new Set<string>();
+    if (!job) return allowed;
+    const own = await projectThreadId(reader, (job.hints as { thread_id?: unknown } | null)?.thread_id, job.project_id);
+    if (own) allowed.add(own);
+    if (job.parent_id) {
+      const parent = await this.jobs.findById(job.parent_id);
+      const coordination = (parent?.hints as { coordination?: { thread_id?: unknown } } | null)?.coordination;
+      const coord = await projectThreadId(reader, coordination?.thread_id, parent?.project_id);
+      if (coord) allowed.add(coord);
+    }
+    return allowed;
+  }
+
+  async recordResult(attemptId: string, result: RunnerResultReport): Promise<void> {
+    if (!result || typeof result.success !== 'boolean' || typeof result.exit_code !== 'number') {
+      throw new BadRequestException('A result needs success and exit_code');
+    }
+    if (!await runnerResultQueries(this.db).record(attemptId, result as unknown as Record<string, unknown>)) {
+      throw new ConflictException(`Attempt ${attemptId} already has a result`);
+    }
+  }
+
+  /**
+   * A refreshed Codex auth.json from the job. Accepted only when the account
+   * claim of its issuer-signed id_token names the stored credential's
+   * account. It goes to the secret's own scope, or, under the project's
+   * strict secrets.job_org_write, to project scope only.
+   */
+  async writeBackCredential(token: JobTokenPayload, key: unknown, value: unknown): Promise<void> {
+    if (typeof key !== 'string' || !(RUNNER_WRITABLE_CREDENTIALS as readonly string[]).includes(key)) {
+      throw new BadRequestException(`A runner writes back only ${RUNNER_WRITABLE_CREDENTIALS.join(', ')}`);
+    }
+    if (typeof value !== 'string' || !value) throw new BadRequestException('value is required');
+
+    const job = await this.jobs.findById(token.job_id);
+    const harness = (job as { harness?: string | null } | null)?.harness ?? 'codex';
+    const stored = (await this.secrets.resolveForJob(token.project_id, token.job_id, harness))
+      .find((secret) => secret.key === key && !secret.clone_only);
+    if (!stored?.scope_type || !stored.scope_id) throw new NotFoundException(`The job holds no ${key}`);
+    if (stored.scope_type === 'system') throw new ForbiddenException('A job cannot write a system secret');
+
+    const decode = (b64: string) => Buffer.from(b64, 'base64').toString('utf8');
+    const storedAccount = codexAccountIdOf(decode(stored.value));
+    let account: string;
+    try {
+      account = await verifiedCodexAccountId(decode(value), await this.codexJwks());
+    } catch (error) {
+      this.logger.warn(`Refused Codex write-back for job ${token.job_id}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ConflictException('The refreshed credential does not carry a verifiable account');
+    }
+    if (!storedAccount || storedAccount !== account) {
+      this.logger.warn(`Refused Codex write-back for job ${token.job_id}: its account differs from the stored credential's`);
+      throw new ConflictException('The refreshed credential belongs to another account');
+    }
+
+    if (stored.scope_type === 'project') {
+      await this.secrets.updateIfExists('project', stored.scope_id, key, value);
+      return;
+    }
+    const profile = await this.security.decide(JOB_ORG_WRITE_RULE, {
+      projectId: token.project_id,
+      governing: 'project',
+      actor: { user_id: token.user_id, is_job_token: true, job_id: token.job_id } as AuthUser,
+      detail: { key, scope_type: stored.scope_type, route: 'runner.credential' },
+    });
+    if (profile === 'strict') {
+      await this.secrets.create('project', token.project_id, { key, value, type: stored.type });
+      return;
+    }
+    if (!await this.secrets.updateIfExists(stored.scope_type, stored.scope_id, key, value)) {
+      throw new NotFoundException(`Secret ${key} not found`);
+    }
+  }
+}

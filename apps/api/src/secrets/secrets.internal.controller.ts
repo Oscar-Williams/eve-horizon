@@ -31,6 +31,10 @@ export class SecretsInternalController {
       throw new BadRequestException('project_id mismatch');
     }
 
+    // A job's bound resolve: its binding only, for the actor its token is minted for.
+    if (body.bound && body.job_id) {
+      return { data: await this.secretsService.resolveForJob(projectId, body.job_id, body.harness) };
+    }
     const resolved = await this.secretsService.resolveForProject(projectId, body.user_id, {
       jobId: body.job_id,
       harness: body.harness,

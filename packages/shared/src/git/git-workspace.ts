@@ -24,6 +24,23 @@ type ExecResult = { stdout: string; stderr: string };
 const REMOTE_GIT_COMMANDS = new Set(['clone', 'fetch', 'push', 'pull', 'ls-remote']);
 
 /**
+ * Refuse a ref from job config that git could read as an option, or that is
+ * not a well-formed ref name: one starting with "-", or failing
+ * `git check-ref-format --allow-onelevel` (SHAs, branch names, tags and
+ * `origin/<branch>` pass). Call it before the ref reaches any git command.
+ */
+export async function assertSafeGitRef(ref: string): Promise<void> {
+  if (typeof ref !== 'string' || !ref || ref.startsWith('-')) {
+    throw new GitWorkspaceError(`invalid git ref: ${JSON.stringify(ref)}`, 'check-ref-format');
+  }
+  try {
+    await execFileAsync('git', ['check-ref-format', '--allow-onelevel', ref], { env: serviceGitEnv({}) });
+  } catch {
+    throw new GitWorkspaceError(`invalid git ref: ${JSON.stringify(ref)}`, 'check-ref-format');
+  }
+}
+
+/**
  * Git authentication configuration.
  * Supports SSH keys, GitHub tokens, or URL-embedded credentials.
  */
@@ -217,6 +234,7 @@ export class GitWorkspace {
       const cloneArgs = ['clone', '--depth', '1'];
       const targetBranch = branch ?? this.gitConfig?.ref ?? this.defaultBranch;
       if (targetBranch) {
+        await assertSafeGitRef(targetBranch);
         cloneArgs.push('--branch', targetBranch);
       }
       const cloneUrl = this.gitAuth?.cloneUrl ?? this.repoUrl;
@@ -267,10 +285,11 @@ export class GitWorkspace {
     source?: 'env_release' | 'manifest' | 'project_default' | 'explicit',
   ): Promise<void> {
     this.ensureInitialized();
+    await assertSafeGitRef(ref);
 
     // Fetch to ensure we have the latest refs
     try {
-      await this.runGit(['fetch', 'origin', ref]);
+      await this.runGit(['fetch', 'origin', '--end-of-options', ref]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`Fetch of '${ref}' failed (${msg}), trying fetch --all --tags...`);
@@ -325,6 +344,8 @@ export class GitWorkspace {
     source?: 'env_release' | 'manifest' | 'project_default' | 'explicit',
   ): Promise<void> {
     this.ensureInitialized();
+    await assertSafeGitRef(name);
+    await assertSafeGitRef(baseRef);
 
     const branchExists = await this.branchExists(name);
 
@@ -476,6 +497,7 @@ export class GitWorkspace {
    */
   async resolveRef(ref: string): Promise<string> {
     this.ensureInitialized();
+    await assertSafeGitRef(ref);
 
     const { stdout } = await this.runGit(['rev-parse', ref]);
     return stdout.trim();
@@ -580,6 +602,7 @@ export class GitWorkspace {
    */
   async reset(ref: string = 'HEAD'): Promise<void> {
     this.ensureInitialized();
+    await assertSafeGitRef(ref);
 
     await this.runGit(['reset', '--hard', ref]);
     await this.runGit(['clean', '-fdx']);

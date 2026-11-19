@@ -6,6 +6,7 @@ import { OrgsModule } from './orgs/orgs.module';
 import { ProjectsModule } from './projects/projects.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AttemptsModule } from './attempts/attempts.module';
+import { RunnerAttemptsModule } from './attempts/runner-attempts.module.js';
 import { HarnessesModule } from './harnesses/harnesses.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { SystemModule } from './system/system.module';
@@ -56,6 +57,7 @@ import { AppLinksModule } from './app-links/app-links.module.js';
     ProjectsModule,
     JobsModule,
     AttemptsModule, // Re-added for internal API endpoints
+    RunnerAttemptsModule,
     HarnessesModule,
     SecretsModule,
     SystemModule,

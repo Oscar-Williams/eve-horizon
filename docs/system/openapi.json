@@ -7667,6 +7667,395 @@
         ]
       }
     },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/logs": {
+      "post": {
+        "operationId": "AttemptsRunnerController_appendLogs",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "entries"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Append a runner's execution log entries to its attempt (the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/events": {
+      "post": {
+        "operationId": "AttemptsRunnerController_emitEvent",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Emit a runner's resource hydration event for its attempt (the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/runtime-meta": {
+      "post": {
+        "operationId": "AttemptsRunnerController_updateRuntimeMeta",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "meta": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "meta"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Report a runner's runtime fields for its attempt (the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/thread-messages": {
+      "post": {
+        "operationId": "AttemptsRunnerController_createThreadMessage",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "thread_id": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "actor_type": {
+                    "type": "string",
+                    "enum": [
+                      "agent",
+                      "system"
+                    ]
+                  },
+                  "actor_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "thread_id",
+                  "body",
+                  "actor_type"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Post a runner's message to its job's chat or coordination thread (the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/credential": {
+      "post": {
+        "operationId": "AttemptsRunnerController_writeBackCredential",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "enum": [
+                      "CODEX_AUTH_JSON_B64"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "value"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Write back a refreshed Codex credential for the runner's job (same account only; the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{job_id}/attempts/{attempt_id}/runner/result": {
+      "post": {
+        "operationId": "AttemptsRunnerController_pushResult",
+        "parameters": [
+          {
+            "name": "job_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "success": {
+                    "type": "boolean"
+                  },
+                  "exit_code": {
+                    "type": "integer"
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "result_text": {
+                    "type": "string"
+                  },
+                  "result_json": {},
+                  "duration_ms": {
+                    "type": "integer"
+                  },
+                  "token_input": {
+                    "type": "integer"
+                  },
+                  "token_output": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "success",
+                  "exit_code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Report the attempt's result, once (the attempt's job token only)",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/harnesses": {
       "get": {
         "operationId": "HarnessesController_list",
@@ -25631,6 +26020,9 @@
           },
           "harness": {
             "type": "string"
+          },
+          "bound": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -25672,6 +26064,9 @@
                 },
                 "scope_id": {
                   "type": "string"
+                },
+                "clone_only": {
+                  "type": "boolean"
                 }
               },
               "required": [

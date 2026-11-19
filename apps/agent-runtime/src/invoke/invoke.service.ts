@@ -55,7 +55,7 @@ import {
   type PermissionPolicy,
   type HarnessHelpers,
 } from '@eve/shared';
-import { runInvocationInK8s } from './k8s-runner';
+import { forwardInvocationToWorker } from './k8s-runner';
 import { GitWorkspace, type GitAuth as GitWorkspaceAuth } from '@eve/shared';
 import { buildSanitizedHarnessEnv, buildAppApiEnvVars } from '@eve/shared';
 import { extractPrefixedEnv, writeEveCredentials } from '@eve/shared';
@@ -1139,42 +1139,16 @@ export class InvokeService implements OnModuleInit {
   // Inline execution phases (in execute() order)
   // ---------------------------------------------------------------------------
 
-  /** Dispatch the invocation to a dedicated k8s runner pod. */
+  /**
+   * Runner mode: hand the invocation to the worker, which prepares the job
+   * and runs it in a credential-free runner pod (one dispatch path).
+   */
   private async dispatchToRunner(effectiveInvocation: HarnessInvocation, signal?: AbortSignal): Promise<HarnessResult> {
     const localRepoPath = effectiveInvocation.repoUrl ? getLocalRepoPath(effectiveInvocation.repoUrl) : null;
     if (localRepoPath) {
       throw new Error('file:// repo URLs are not supported in k8s runtime');
     }
-
-    const runnerInvocation = await this.getInvocationWithAppClis(
-      await this.getInvocationWithJobToken(effectiveInvocation),
-    );
-
-    return await runInvocationInK8s(
-      runnerInvocation,
-      async (runtimeMeta) => {
-        try {
-          await this.jobs.updateRuntimeMeta(effectiveInvocation.attemptId, runtimeMeta);
-          console.log(`Updated runtime_meta for attempt ${effectiveInvocation.attemptId}:`, runtimeMeta);
-        } catch (error) {
-          console.error(`Failed to update runtime_meta for attempt ${effectiveInvocation.attemptId}:`, error);
-        }
-      },
-      async (phase, action, meta, opts) => {
-        await this.logLifecycleEvent(
-          effectiveInvocation.attemptId,
-          phase,
-          action,
-          meta,
-          {
-            duration_ms: opts?.duration_ms,
-            success: opts?.success,
-            error: opts?.error,
-          }
-        );
-      },
-      signal,
-    );
+    return forwardInvocationToWorker(effectiveInvocation, signal);
   }
 
   /** Preserve runner image IDs across top-level JSONB toolchains replacements. */

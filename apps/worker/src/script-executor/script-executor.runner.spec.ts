@@ -14,12 +14,13 @@ const original = {
   initMounted: process.env.EVE_TOOLCHAIN_INIT_MOUNTED,
   apiUrl: process.env.EVE_API_URL,
   coreKey: process.env.EVE_INTERNAL_CORE_KEY,
+  databaseUrl: process.env.DATABASE_URL,
 };
 afterEach(() => {
   for (const [key, value] of Object.entries({ EVE_RUNTIME: original.runtime,
     EVE_SCRIPT_K8S_RUNNER: original.enabled, EVE_RUNNER_SELF_TERMINATE: original.selfTerminate,
     EVE_TOOLCHAIN_INIT_MOUNTED: original.initMounted, EVE_API_URL: original.apiUrl,
-    EVE_INTERNAL_CORE_KEY: original.coreKey })) {
+    EVE_INTERNAL_CORE_KEY: original.coreKey, DATABASE_URL: original.databaseUrl })) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
@@ -40,6 +41,7 @@ describe('script runner dispatch', () => {
     process.env.EVE_SCRIPT_K8S_RUNNER = 'true';
     process.env.EVE_API_URL = 'http://eve-api.test';
     process.env.EVE_INTERNAL_CORE_KEY = 'core-key-for-test';
+    process.env.DATABASE_URL = 'postgres://eve@db/eve';
     delete process.env.EVE_RUNNER_SELF_TERMINATE;
     const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: { body?: string }) => {
@@ -60,7 +62,7 @@ describe('script runner dispatch', () => {
       env_overrides: { DATABASE_URL: '${secret.APP_DB_URL}' }, hints: { toolchains: ['python', 'browser'] },
     }), updateRuntimeMeta: vi.fn(), markExecutionStarted: vi.fn() };
     runner.dispatch.mockResolvedValue({ success: true, exitCode: 0,
-      resultJson: { stdout: 'done', stderr: '', exit_code: 0 } });
+      resultReport: { success: true, exit_code: 0, stdout: 'done', stderr: '' } });
 
     const result = await service.execute('job_1', 'att_1');
     expect(result).toMatchObject({ success: true, stdout: 'done' });

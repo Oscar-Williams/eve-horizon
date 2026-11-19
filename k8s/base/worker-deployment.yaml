@@ -72,8 +72,12 @@ spec:
             # Image used for spawning runner pods in the Kubernetes cluster
             - name: EVE_RUNNER_IMAGE
               value: eve-horizon/worker:local
+            # Runner pods run as eve-runner: no token, no RBAC, no cloud identity.
             - name: EVE_RUNNER_SERVICE_ACCOUNT
-              value: eve-worker
+              value: eve-runner
+            # Refuse to start if job processes could read this process's environment.
+            - name: EVE_REQUIRE_ENVIRON_PROTECTION
+              value: "true"
             - name: WORKER_PORT
               value: "4749"
             - name: EVE_ORG_FS_ROOT

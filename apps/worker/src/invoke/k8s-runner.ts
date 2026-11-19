@@ -1,138 +1,31 @@
-import { apiPath, hasInternalCredential, internalAuthHeaders, internalKeyHash } from '@eve/shared';
+/**
+ * Plain runner pods through kubectl: the backend used when no SandboxClaim
+ * backend is available. The pod comes from the one shared builder
+ * (`buildRunnerPod`), so it carries no platform credential and starts the
+ * runner entrypoint.
+ */
+
 import { setTimeout as delay } from 'node:timers/promises';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
-import { getCorrelationHeaders, loadConfig, resolveRunnerPodIsolation, runnerUsesPlatformServiceAccount } from '@eve/shared';
-import type { HarnessInvocation, HarnessResult } from '@eve/shared';
-import { serviceHelperEnv } from '@eve/shared';
+import {
+  buildRunnerPod,
+  serviceHelperEnv,
+  type RunnerResources,
+} from '@eve/shared';
+import type { RunnerPodBackend } from './runner-dispatch.js';
 
 const DEFAULT_NAMESPACE = 'eve';
 const DEFAULT_WORKSPACE_SIZE = '10Gi';
-const RUNNER_PORT = 4749;
 
-type ExecResult = {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-};
+export type RunnerResourceOverrides = RunnerResources;
 
-export type RunnerResourceOverrides = {
-  requests?: { cpu?: string; memory?: string };
-  limits?: { cpu?: string; memory?: string };
-};
+type ExecResult = { stdout: string; stderr: string; exitCode: number };
 
-interface RunnerEvent {
-  id: string;
-  type: string;
-  payload_json: {
-    attemptId: string;
-    jobId: string;
-    result?: HarnessResult;
-    error?: string;
-    exitCode?: number;
-  };
-}
-
-type RunnerResult = HarnessResult & { runnerEventObserved?: boolean };
-
-export function resultFromRunnerEvent(event: RunnerEvent, attemptId: string): RunnerResult {
-  if (event.type === 'runner.completed') {
-    return { ...event.payload_json.result!, runnerEventObserved: true };
-  }
-  return { attemptId: attemptId as HarnessResult['attemptId'], success: false,
-    exitCode: event.payload_json.exitCode ?? 1,
-    error: event.payload_json.error || 'Runner failed', runnerEventObserved: true };
-}
-
-async function pollForCompletion(
-  projectId: string,
-  attemptId: string,
-  pollIntervalMs: number = 5000,
-  timeoutMs: number = 1800000, // 30 min default
-  signal?: AbortSignal,
-): Promise<RunnerResult> {
-  const config = loadConfig();
-  const startTime = Date.now();
-  let pollCount = 0;
-  let lastLoggedStatus = 0;
-
-  // Use `since` to avoid fetching stale events from previous runs
-  const since = new Date(startTime - 60_000).toISOString(); // 1 minute buffer
-  const url =
-    `${config.EVE_API_URL}${apiPath`/internal/projects/${projectId}/events`}` +
-    `?type=runner.completed,runner.failed` +
-    `&attempt_id=${encodeURIComponent(attemptId)}` +
-    `&since=${encodeURIComponent(since)}` +
-    `&limit=50`;
-  console.log(`[k8s-poll] Starting poll for attemptId=${attemptId} projectId=${projectId}`);
-  console.log(`[k8s-poll] URL: ${url}`);
-  console.log(`[k8s-poll] Has internal key: ${hasInternalCredential()}`);
-
-  while (Date.now() - startTime < timeoutMs) {
-    signal?.throwIfAborted();
-    pollCount++;
-    try {
-      const response = await fetch(url, {
-        signal,
-        headers: {
-          ...internalAuthHeaders(),
-          ...getCorrelationHeaders(),
-        },
-      });
-
-      if (response.ok) {
-        const json = await response.json();
-        signal?.throwIfAborted();
-        const events = json.data || [];
-
-        // Find event matching our attemptId
-        const completionEvent = events.find((e: RunnerEvent) =>
-          e.payload_json?.attemptId === attemptId &&
-          (e.type === 'runner.completed' || e.type === 'runner.failed')
-        );
-
-        if (completionEvent) {
-          console.log(`[k8s-poll] Found completion event after ${pollCount} polls (${Date.now() - startTime}ms): type=${completionEvent.type}`);
-          return resultFromRunnerEvent(completionEvent, attemptId);
-        }
-
-        // Log periodically when no match found (every 30s)
-        const elapsed = Date.now() - startTime;
-        if (elapsed - lastLoggedStatus >= 30000) {
-          lastLoggedStatus = elapsed;
-          const attemptIds = events.map((e: RunnerEvent) => e.payload_json?.attemptId).filter(Boolean);
-          console.log(`[k8s-poll] Poll #${pollCount} (${Math.round(elapsed / 1000)}s): ${events.length} events returned, none match attemptId=${attemptId}. Response key: ${Object.keys(json).join(',')}. Event attemptIds: [${attemptIds.join(', ')}]`);
-        }
-      } else {
-        const body = await response.text().catch(() => '<unreadable>');
-        // Log non-ok responses every time for the first 3, then every 30s
-        if (pollCount <= 3 || Date.now() - startTime - lastLoggedStatus >= 30000) {
-          lastLoggedStatus = Date.now() - startTime;
-          console.error(`[k8s-poll] Poll #${pollCount}: HTTP ${response.status} ${response.statusText}. Body: ${body.slice(0, 500)}`);
-        }
-      }
-    } catch (err) {
-      signal?.throwIfAborted();
-      console.warn(`[k8s-poll] Poll #${pollCount} exception: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    await delay(pollIntervalMs, undefined, { signal });
-  }
-
-  // Timeout
-  console.error(`[k8s-poll] TIMEOUT after ${pollCount} polls (${timeoutMs}ms) for attemptId=${attemptId}`);
-  return {
-    attemptId: attemptId as any,
-    success: false,
-    exitCode: 1,
-    error: `Runner timed out after ${timeoutMs}ms`,
-  };
-}
-
-function execKubectl(args: string[], input?: string, signal?: AbortSignal): Promise<ExecResult> {
+export function execKubectl(args: string[], input?: string, signal?: AbortSignal): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('kubectl', ['--request-timeout=10s', ...args], {
-      // The manifest on stdin carries runner credentials; the process env does not need to.
+      // kubectl needs no service credential; the manifest on stdin carries none either.
       env: serviceHelperEnv(),
       signal,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -140,27 +33,14 @@ function execKubectl(args: string[], input?: string, signal?: AbortSignal): Prom
 
     let stdout = '';
     let stderr = '';
-
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
+    child.on('close', (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
 
-    if (input) {
-      child.stdin.write(input);
-    }
+    if (input) child.stdin.write(input);
     child.stdin.end();
   });
-}
-
-function normalizeName(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 63);
 }
 
 function normalizeNameRaw(value: string): string {
@@ -171,278 +51,91 @@ function shortHash(value: string): string {
   return createHash('sha1').update(value).digest('hex').slice(0, 8);
 }
 
-function buildK8sName(base: string, hash: string, limit = 63): string {
+export function buildK8sName(base: string, hash: string, limit = 63): string {
   const normalized = normalizeNameRaw(base);
   const suffix = `-${hash}`;
   const maxBase = Math.max(1, limit - suffix.length);
-  const trimmed = normalized.slice(0, maxBase);
-  return `${trimmed}${suffix}`.slice(0, limit);
+  return `${normalized.slice(0, maxBase)}${suffix}`.slice(0, limit);
 }
 
-function sanitizeLabelValue(value: string): string {
+export function sanitizeLabelValue(value: string): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9-_.]/g, '-');
   const trimmed = normalized.replace(/^[^a-z0-9]+/, '').replace(/[^a-z0-9]+$/, '');
-  const safe = trimmed.slice(0, 63);
-  return safe || 'unknown';
+  return trimmed.slice(0, 63) || 'unknown';
+}
+
+export function runnerResourceNames(attemptId: string): { podName: string; pvcName: string } {
+  const raw = normalizeNameRaw(attemptId);
+  const hash = shortHash(attemptId);
+  return { podName: buildK8sName(`eve-runner-${raw}`, hash), pvcName: buildK8sName(`eve-ws-${raw}`, hash) };
 }
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required env: ${name}`);
-  }
+  if (!value) throw new Error(`Missing required env: ${name}`);
   return value;
 }
 
-function optionalEnv(name: string, fallback: string): string {
-  return process.env[name] ?? fallback;
+/** What a runner pod needs from its job, apart from the job itself (which arrives by POST). */
+export interface RunnerPodPlan {
+  toolchains?: string[];
+  appClis?: Array<{ name: string; image: string }>;
+  resources?: RunnerResourceOverrides;
+  /** The org filesystem, only when the job's mount spec asks for one. */
+  orgFs?: { readOnly: boolean } | null;
+  /** Extra pod labels (allow-listed domain), set by the dispatcher. */
+  labels?: Record<string, string>;
 }
 
-function pushOptionalEnv(entries: { name: string; value: string }[], name: string): void {
-  const value = process.env[name];
-  if (!value) return;
-  entries.push({ name, value });
-}
-
-let warnedPlatformServiceAccount = false;
-
-function warnIfPlatformServiceAccount(isolation: ReturnType<typeof resolveRunnerPodIsolation>): void {
-  if (warnedPlatformServiceAccount || !runnerUsesPlatformServiceAccount(isolation)) return;
-  warnedPlatformServiceAccount = true;
-  console.warn(`[k8s-runner] EVE_RUNNER_SERVICE_ACCOUNT=${isolation.serviceAccountName} gives job code a platform `
-    + 'service account and any cloud identity bound to it. Use a dedicated account with no RBAC, such as eve-runner.');
-}
-
+/**
+ * The runner pod and its workspace claim, as a kubectl List. Kept as a
+ * separate function so the pod's contents can be checked without a cluster.
+ */
 export function buildRunnerManifests(
-  invocation: HarnessInvocation,
+  invocation: { jobId: string; attemptId: string; toolchains?: string[]; appClis?: Array<{ name: string; image: string }> },
   namespace: string,
   pvcName: string,
   podName: string,
   resources?: RunnerResourceOverrides,
+  inboundKeySha256?: string,
+  plan: Pick<RunnerPodPlan, 'orgFs' | 'labels'> = {},
 ): string {
-  const runnerImage = requiredEnv('EVE_RUNNER_IMAGE');
-  const workspaceSize = optionalEnv('EVE_K8S_WORKSPACE_SIZE', DEFAULT_WORKSPACE_SIZE);
-  const isolation = resolveRunnerPodIsolation();
-  warnIfPlatformServiceAccount(isolation);
-  const dbUrl = requiredEnv('DATABASE_URL');
-  const jobLabel = sanitizeLabelValue(invocation.jobId);
-  const attemptLabel = sanitizeLabelValue(invocation.attemptId);
-  // TODO: DATABASE_URL should be provided via a K8s Secret (e.g. eve-app) rather than
-  // injected from the worker process env. The runner pod is a bare Pod with no overlay,
-  // so this is currently its only source.
-  const envEntries: Array<{ name: string; value: string }> = [
-    { name: 'DATABASE_URL', value: dbUrl },
-    { name: 'WORKER_PORT', value: String(RUNNER_PORT) },
-    { name: 'EVE_RUNNER_SELF_TERMINATE', value: '1' },
-    { name: 'EVE_K8S_NAMESPACE', value: namespace },
-    { name: 'EVE_RUN_AS_UID', value: '1000' },
-    { name: 'EVE_RUN_AS_GID', value: '1000' },
-    { name: 'EVE_WORKSPACE_ROOT', value: '/opt/eve/workspaces' },
-    { name: 'EVE_CACHE_ROOT', value: '/opt/eve/cache' },
-    { name: 'EVE_STATE_ROOT', value: '/opt/eve/state' },
-    { name: 'EVE_TOOLCHAIN_ROOT', value: '/opt/eve/toolchains' },
-    { name: 'EVE_TOOLCHAIN_INIT_MOUNTED', value: 'true' },
-    { name: 'EVE_ORG_FS_ROOT', value: '/org' },
-  ];
-
-  pushOptionalEnv(envEntries, 'EVE_API_URL');
-  pushOptionalEnv(envEntries, 'EVE_INTERNAL_API_KEY');
-  // The runner serves the worker app: it verifies the core key the platform
-  // submits with by its hash, and never holds the key itself.
-  if (process.env.EVE_INTERNAL_CORE_KEY) {
-    envEntries.push({ name: 'EVE_INTERNAL_CALLER_HASHES', value: `core:${internalKeyHash(process.env.EVE_INTERNAL_CORE_KEY)}` });
-  }
-  pushOptionalEnv(envEntries, 'EVE_K8S_SERVICE_READY_TIMEOUT');
-
-  // Build init containers for toolchain injection
-  const toolchains = invocation.toolchains ?? [];
-  const toolchainImagePrefix = process.env.EVE_TOOLCHAIN_IMAGE_PREFIX ?? 'eve-horizon/toolchain-';
-  const toolchainImageTag = process.env.EVE_TOOLCHAIN_IMAGE_TAG ?? 'local';
-
-  const initContainers = toolchains.map(tc => ({
-    name: `tc-${tc}`,
-    image: `${toolchainImagePrefix}${tc}:${toolchainImageTag}`,
-    imagePullPolicy: (process.env.EVE_K8S_IMAGE_PULL_POLICY as 'Always' | 'IfNotPresent' | 'Never') || 'IfNotPresent',
-    command: ['sh', '-ec', `cp -R /toolchain/. /opt/eve/toolchains/${tc}/`],
-    securityContext: { runAsNonRoot: true, allowPrivilegeEscalation: false },
-    volumeMounts: [{
-      name: 'toolchains',
-      mountPath: `/opt/eve/toolchains/${tc}`,
-      subPath: tc,
-    }],
-  }));
-
-  // Extend PATH with toolchain bin directories
-  if (toolchains.length > 0) {
-    const toolchainPaths = [...new Set(toolchains)].map(tc => `/opt/eve/toolchains/${tc}/bin`).join(':');
-    envEntries.push({
-      name: 'EVE_TOOLCHAIN_PATHS',
-      value: toolchainPaths,
-    });
-  }
-
-  // Build init containers for image-based app CLIs
-  const appClis = invocation.appClis ?? [];
-  for (const cli of appClis) {
-    initContainers.push({
-      name: `cli-${cli.name}`,
-      image: cli.image,
-      imagePullPolicy: (process.env.EVE_K8S_IMAGE_PULL_POLICY as 'Always' | 'IfNotPresent' | 'Never') || 'IfNotPresent',
-      command: ['sh', '-ec', `cp -R /cli/. /opt/eve/app-cli/${cli.name}/`],
-      securityContext: { runAsNonRoot: true, allowPrivilegeEscalation: false },
-      volumeMounts: [{
-        name: 'app-cli',
-        mountPath: `/opt/eve/app-cli/${cli.name}`,
-        subPath: cli.name,
-      }],
-    });
-  }
-
-  if (appClis.length > 0) {
-    envEntries.push({
-      name: 'EVE_APP_CLI_PATHS',
-      value: appClis.map((cli) => `/opt/eve/app-cli/${cli.name}/bin`).join(':'),
-    });
-  }
-
-  const manifest = {
-    apiVersion: 'v1',
-    kind: 'List',
-    items: [
-      {
-        apiVersion: 'v1',
-        kind: 'PersistentVolumeClaim',
-        metadata: {
-          name: pvcName,
-          namespace,
-          labels: {
-            'eve.type': 'runner',
-            'eve.job_id': jobLabel,
-            'eve.attempt_id': attemptLabel,
-          },
-          annotations: {
-            'eve.job_id': invocation.jobId,
-            'eve.attempt_id': invocation.attemptId,
-          },
-        },
-        spec: {
-          accessModes: ['ReadWriteOnce'],
-          resources: {
-            requests: {
-              storage: workspaceSize,
-            },
-          },
-        },
-      },
-      {
-        apiVersion: 'v1',
-        kind: 'Pod',
-        metadata: {
-          name: podName,
-          namespace,
-          labels: {
-            'eve.type': 'runner',
-            'eve.job_id': jobLabel,
-            'eve.attempt_id': attemptLabel,
-          },
-          annotations: {
-            'eve.job_id': invocation.jobId,
-            'eve.attempt_id': invocation.attemptId,
-          },
-        },
-        spec: {
-          activeDeadlineSeconds: parseInt(process.env.EVE_K8S_ACTIVE_DEADLINE_SECONDS ?? '7200', 10),
-          restartPolicy: 'Never',
-          // Job code needs no Kubernetes API: no token, no platform service account,
-          // and placement on the job pool rather than the platform's nodes.
-          ...isolation,
-          securityContext: {
-            runAsUser: 1000,
-            runAsGroup: 1000,
-            runAsNonRoot: true,
-            fsGroup: 1000,
-            fsGroupChangePolicy: 'OnRootMismatch',
-            seccompProfile: { type: 'RuntimeDefault' },
-          },
-          ...(initContainers.length > 0 ? { initContainers } : {}),
-          containers: [
-            {
-              name: 'runner',
-              image: runnerImage,
-              imagePullPolicy: (process.env.EVE_K8S_IMAGE_PULL_POLICY as 'Always' | 'IfNotPresent' | 'Never') || 'IfNotPresent',
-              env: envEntries,
-              securityContext: {
-                runAsUser: 1000,
-                runAsGroup: 1000,
-                runAsNonRoot: true,
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
-              },
-              resources: {
-                requests: {
-                  cpu: resources?.requests?.cpu ?? process.env.EVE_K8S_RUNNER_CPU_REQUEST ?? '100m',
-                  memory: resources?.requests?.memory ?? process.env.EVE_K8S_RUNNER_MEMORY_REQUEST ?? '256Mi',
-                },
-                limits: {
-                  cpu: resources?.limits?.cpu ?? process.env.EVE_K8S_RUNNER_CPU_LIMIT ?? '2000m',
-                  memory: resources?.limits?.memory ?? process.env.EVE_K8S_RUNNER_MEMORY_LIMIT ?? '2Gi',
-                },
-              },
-              readinessProbe: {
-                httpGet: {
-                  path: '/health',
-                  port: RUNNER_PORT,
-                },
-                initialDelaySeconds: 5,
-                periodSeconds: 2,
-                failureThreshold: 15,
-              },
-              ports: [{ containerPort: RUNNER_PORT }],
-              volumeMounts: [
-                {
-                  name: 'workspace',
-                  mountPath: '/opt/eve/workspaces',
-                },
-                {
-                  name: 'org-fs',
-                  mountPath: '/org',
-                  readOnly: false,
-                },
-                ...(toolchains.length > 0 ? [{
-                  name: 'toolchains',
-                  mountPath: '/opt/eve/toolchains',
-                }] : []),
-                ...(appClis.length > 0 ? [{
-                  name: 'app-cli',
-                  mountPath: '/opt/eve/app-cli',
-                }] : []),
-              ],
-            },
-          ],
-          volumes: [
-            {
-              name: 'workspace',
-              persistentVolumeClaim: { claimName: pvcName },
-            },
-            {
-              name: 'org-fs',
-              persistentVolumeClaim: { claimName: 'eve-org-fs-org-default' },
-            },
-            ...(toolchains.length > 0 ? [{ name: 'toolchains', emptyDir: {} }] : []),
-            ...(appClis.length > 0 ? [{ name: 'app-cli', emptyDir: {} }] : []),
-          ],
-        },
-      },
-    ],
+  const labels = {
+    'eve.type': 'runner',
+    'eve.job_id': sanitizeLabelValue(invocation.jobId),
+    'eve.attempt_id': sanitizeLabelValue(invocation.attemptId),
+    ...(plan.labels ?? {}),
   };
-
-  return JSON.stringify(manifest);
+  const annotations = { 'eve.job_id': invocation.jobId, 'eve.attempt_id': invocation.attemptId };
+  const pvc = {
+    apiVersion: 'v1',
+    kind: 'PersistentVolumeClaim',
+    metadata: { name: pvcName, namespace, labels: { 'eve.type': 'runner', 'eve.job_id': labels['eve.job_id'], 'eve.attempt_id': labels['eve.attempt_id'] }, annotations },
+    spec: {
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: process.env.EVE_K8S_WORKSPACE_SIZE ?? DEFAULT_WORKSPACE_SIZE } },
+    },
+  };
+  const pod = buildRunnerPod({
+    name: podName,
+    namespace,
+    image: requiredEnv('EVE_RUNNER_IMAGE'),
+    labels,
+    annotations,
+    inboundKeySha256,
+    workspace: { kind: 'pvc', claimName: pvcName },
+    orgFs: plan.orgFs ?? null,
+    toolchains: invocation.toolchains ?? [],
+    appClis: invocation.appClis ?? [],
+    resources,
+    activeDeadlineSeconds: parseInt(process.env.EVE_K8S_ACTIVE_DEADLINE_SECONDS ?? '7200', 10),
+  });
+  return JSON.stringify({ apiVersion: 'v1', kind: 'List', items: [pvc, pod] });
 }
 
-export function readToolchainInitStatuses(
-  statuses: { name: string; imageID?: string; state?: { waiting?: { reason?: string; message?: string }; terminated?: { exitCode?: number; message?: string } } }[],
-  toolchains: readonly string[],
-): Record<string, string> {
+type InitStatus = { name: string; imageID?: string; state?: { waiting?: { reason?: string; message?: string }; terminated?: { exitCode?: number; message?: string } } };
+
+export function readToolchainInitStatuses(statuses: InitStatus[], toolchains: readonly string[]): Record<string, string> {
   const imageIds: Record<string, string> = {};
   for (const tc of toolchains) {
     const status = statuses.find((entry) => entry.name === `tc-${tc}`);
@@ -457,214 +150,85 @@ export function readToolchainInitStatuses(
   return imageIds;
 }
 
-async function waitForPodReady(namespace: string, podName: string, toolchains: readonly string[], signal?: AbortSignal): Promise<Record<string, string>> {
-  const timeout = optionalEnv('EVE_K8S_POD_READY_TIMEOUT', '60s');
-  const duration = /^(\d+)(ms|s|m)$/.exec(timeout);
-  if (!duration) throw new Error(`Invalid EVE_K8S_POD_READY_TIMEOUT: ${timeout}`);
-  const timeoutMs = Number(duration[1]) * (duration[2] === 'm' ? 60_000 : duration[2] === 's' ? 1_000 : 1);
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const result = await execKubectl(['get', 'pod', podName, `--namespace=${namespace}`, '-o', 'json'], undefined, signal);
-    if (result.exitCode !== 0) throw new Error(`Failed to inspect runner pod: ${result.stderr || result.stdout}`);
-    const pod = JSON.parse(result.stdout) as {
-      status?: {
-        conditions?: { type: string; status: string }[];
-        initContainerStatuses?: { name: string; imageID?: string; state?: { waiting?: { reason?: string; message?: string }; terminated?: { exitCode?: number; message?: string } } }[];
-      };
-    };
-    const imageIds = readToolchainInitStatuses(pod.status?.initContainerStatuses ?? [], toolchains);
-    if (pod.status?.conditions?.some((condition) => condition.type === 'Ready' && condition.status === 'True')) {
-      const missingImageId = toolchains.find((toolchain) => !imageIds[toolchain]);
-      if (missingImageId) throw new Error(`toolchain_unavailable: ${missingImageId} init imageID is missing from ready pod ${podName}`);
-      return imageIds;
-    }
-    await delay(1000, undefined, { signal });
-  }
-  throw new Error(`Runner pod ${podName} did not become ready within ${timeoutMs}ms`);
+export function parseDurationMs(value: string, name: string): number {
+  const duration = /^(\d+)(ms|s|m)$/.exec(value);
+  if (!duration) throw new Error(`Invalid ${name}: ${value}`);
+  return Number(duration[1]) * (duration[2] === 'm' ? 60_000 : duration[2] === 's' ? 1_000 : 1);
 }
 
-async function getPodIp(namespace: string, podName: string, signal?: AbortSignal): Promise<string> {
-  const result = await execKubectl([
-    'get',
-    'pod',
-    podName,
-    `--namespace=${namespace}`,
-    '-o',
-    'jsonpath={.status.podIP}',
-  ], undefined, signal);
-  if (result.exitCode !== 0) {
-    throw new Error(`Failed to get runner pod IP: ${result.stderr || result.stdout}`);
-  }
-  const ip = result.stdout.trim();
-  if (!ip) {
-    throw new Error('Runner pod has no IP yet');
-  }
-  return ip;
-}
-
-async function waitForRunner(port: number, ip: string, signal?: AbortSignal): Promise<void> {
-  const attempts = parseInt(optionalEnv('EVE_K8S_RUNNER_RETRIES', '20'), 10);
-  const delayMs = parseInt(optionalEnv('EVE_K8S_RUNNER_RETRY_DELAY_MS', '1000'), 10);
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const response = await fetch(`http://${ip}:${port}/health`, { method: 'GET', signal });
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // ignore and retry
-    }
-
-    await delay(delayMs, undefined, { signal });
-  }
-
-  throw new Error(`Runner not ready after ${attempts} attempts`);
-}
-
-async function deleteResources(namespace: string, pvcName: string, podName: string, cancelled = false): Promise<void> {
-  try {
-    const result = await execKubectl(['delete', 'pod', podName, `--namespace=${namespace}`, '--ignore-not-found=true', '--wait=false',
-      ...(cancelled ? ['--grace-period=5'] : [])]);
-    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout);
-  } catch (err) {
-    console.error(`Failed to delete pod ${podName}: ${err instanceof Error ? err.message : err}`);
-  }
-  try {
-    await execKubectl(['delete', 'pvc', pvcName, `--namespace=${namespace}`, '--ignore-not-found=true', '--wait=false']);
-  } catch (err) {
-    console.error(`Failed to delete PVC ${pvcName}: ${err instanceof Error ? err.message : err}`);
-  }
-}
-
-type LifecycleLogger = (
-  phase: 'runner',
-  action: 'start' | 'end' | 'log',
-  meta: Record<string, unknown>,
-  opts?: { duration_ms?: number; success?: boolean; error?: string; [key: string]: unknown }
-) => Promise<void>;
-
-export async function runInvocationInK8s(
-  invocation: HarnessInvocation,
-  onPodCreated?: (runtimeMeta: { runtime: string; pod_name: string; namespace: string; toolchains?: Record<string, unknown> }) => Promise<void>,
-  logLifecycle?: LifecycleLogger,
-  opts?: { resources?: RunnerResourceOverrides; submitPath?: 'invoke' | 'scripts/execute'; signal?: AbortSignal },
-): Promise<RunnerResult> {
-  const signal = opts?.signal;
-  signal?.throwIfAborted();
-  const namespace = optionalEnv('EVE_K8S_NAMESPACE', DEFAULT_NAMESPACE);
-  const rawAttempt = normalizeNameRaw(invocation.attemptId);
-  const attemptHash = shortHash(invocation.attemptId);
-  const pvcName = buildK8sName(`eve-ws-${rawAttempt}`, attemptHash);
-  const podName = buildK8sName(`eve-runner-${rawAttempt}`, attemptHash);
-
-  const workspacePath = `/opt/eve/workspaces/${invocation.attemptId}`;
-  const k8sInvocation: HarnessInvocation = {
-    ...invocation,
-    workspacePath,
+type PodStatus = {
+  status?: {
+    phase?: string;
+    podIP?: string;
+    conditions?: { type: string; status: string }[];
+    initContainerStatuses?: InitStatus[];
   };
+};
 
-  const toolchains = [...new Set(k8sInvocation.toolchains ?? [])];
-  const manifest = buildRunnerManifests(k8sInvocation, namespace, pvcName, podName, opts?.resources);
+export type PodCreatedMeta = { runtime: string; pod_name: string; namespace: string; backend?: string; toolchains?: Record<string, unknown> };
 
-  const startTime = Date.now();
-  if (logLifecycle) {
-    await logLifecycle('runner', 'start', { pod_name: podName, namespace });
-  }
+/** A plain runner pod (with its workspace claim), managed through kubectl. */
+export function createPlainPodBackend(opts: {
+  submit: { job_id: string; attempt_id: string };
+  plan: RunnerPodPlan;
+  inboundKeySha256: string;
+  namespace?: string;
+  onPodCreated?: (meta: PodCreatedMeta) => Promise<void>;
+}): RunnerPodBackend {
+  const namespace = opts.namespace ?? process.env.EVE_K8S_NAMESPACE ?? DEFAULT_NAMESPACE;
+  const { podName, pvcName } = runnerResourceNames(opts.submit.attempt_id);
+  const toolchains = [...new Set(opts.plan.toolchains ?? [])];
+  const invocation = { jobId: opts.submit.job_id, attemptId: opts.submit.attempt_id, toolchains, appClis: opts.plan.appClis };
 
-  try {
-    const applyResult = await execKubectl(['apply', '-f', '-'], manifest, signal);
-    if (applyResult.exitCode !== 0) {
-      throw new Error(`Failed to apply runner manifests: ${applyResult.stderr || applyResult.stdout}`);
-    }
-    // Notify caller about pod creation with runtime metadata
-    if (onPodCreated) {
-      await onPodCreated({
-        runtime: 'k8s',
-        pod_name: podName,
-        namespace,
-      });
-    }
+  return {
+    async start(signal) {
+      signal?.throwIfAborted();
+      const manifest = buildRunnerManifests(invocation, namespace, pvcName, podName, opts.plan.resources, opts.inboundKeySha256, opts.plan);
+      const applied = await execKubectl(['apply', '-f', '-'], manifest, signal);
+      if (applied.exitCode !== 0) throw new Error(`Failed to create runner pod: ${applied.stderr || applied.stdout}`);
+      await opts.onPodCreated?.({ runtime: 'k8s', backend: 'pod', pod_name: podName, namespace });
 
-    const pulledToolchainImages = await waitForPodReady(namespace, podName, toolchains, signal);
-    if (onPodCreated && toolchains.length > 0) {
-      await onPodCreated({ runtime: 'k8s', pod_name: podName, namespace,
-        toolchains: { requested: toolchains, resolved: toolchains, image_ids: pulledToolchainImages },
-      });
-    }
-
-    if (logLifecycle) {
-      await logLifecycle('runner', 'end', { pod_name: podName, namespace }, {
-        duration_ms: Date.now() - startTime,
-        success: true,
-      });
-    }
-
-    const podIp = await getPodIp(namespace, podName, signal);
-    await waitForRunner(RUNNER_PORT, podIp, signal);
-
-    // Submit job (returns 202 immediately)
-    const submitPath = opts?.submitPath ?? 'invoke';
-    const submitResponse = await fetch(`http://${podIp}:${RUNNER_PORT}/${submitPath}`, {
-      method: 'POST',
-      signal,
-      headers: {
-        'Content-Type': 'application/json',
-        // The runner pod serves the worker app, which requires the internal key.
-        ...internalAuthHeaders(),
-        ...getCorrelationHeaders(),
-      },
-      body: JSON.stringify(submitPath === 'scripts/execute'
-        ? { jobId: invocation.jobId, attemptId: invocation.attemptId, projectId: invocation.projectId }
-        : k8sInvocation),
-    });
-
-    if (!submitResponse.ok) {
-      const body = await submitResponse.text();
-      throw new Error(`Runner invoke submit failed: ${submitResponse.status} ${body}`);
-    }
-
-    const submitResult = await submitResponse.json();
-    if (!submitResult.accepted) {
-      throw new Error(`Runner rejected job: ${submitResult.error || 'unknown'}`);
-    }
-
-    // Poll for completion
-    const pollTimeout = parseInt(optionalEnv('EVE_K8S_POLL_TIMEOUT_MS', '1800000'), 10);
-    const pollInterval = parseInt(optionalEnv('EVE_K8S_POLL_INTERVAL_MS', '5000'), 10);
-    return await pollForCompletion(
-      invocation.projectId,
-      invocation.attemptId,
-      pollInterval,
-      pollTimeout,
-      signal,
-    );
-  } catch (err) {
-    if (signal?.aborted) err = signal.reason;
-    if (logLifecycle) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      await logLifecycle('runner', 'end', { pod_name: podName, namespace }, {
-        duration_ms: Date.now() - startTime,
-        success: false,
-        error: errorMessage,
-      });
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.startsWith('toolchain_unavailable:')) {
-      const failedToolchain = toolchains.find((tc) => message.includes(` ${tc} `)) ?? 'browser';
-      if (onPodCreated) {
-        await onPodCreated({ runtime: 'k8s', pod_name: podName, namespace,
-          toolchains: { requested: toolchains, resolved: [], missing: toolchains,
-            source: 'unavailable', error_code: 'toolchain_unavailable', error: message,
-            toolchain: failedToolchain,
-            image: `${process.env.EVE_TOOLCHAIN_IMAGE_PREFIX ?? 'eve-horizon/toolchain-'}${failedToolchain}:${process.env.EVE_TOOLCHAIN_IMAGE_TAG ?? 'local'}`,
-          },
-        });
+      const timeoutMs = parseDurationMs(process.env.EVE_K8S_POD_READY_TIMEOUT ?? '60s', 'EVE_K8S_POD_READY_TIMEOUT');
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const result = await execKubectl(['get', 'pod', podName, `--namespace=${namespace}`, '-o', 'json'], undefined, signal);
+        if (result.exitCode !== 0) throw new Error(`Failed to inspect runner pod: ${result.stderr || result.stdout}`);
+        const pod = JSON.parse(result.stdout) as PodStatus;
+        const imageIds = readToolchainInitStatuses(pod.status?.initContainerStatuses ?? [], toolchains);
+        if (pod.status?.conditions?.some((c) => c.type === 'Ready' && c.status === 'True') && pod.status.podIP) {
+          if (toolchains.length > 0) {
+            const missing = toolchains.find((tc) => !imageIds[tc]);
+            if (missing) throw new Error(`toolchain_unavailable: ${missing} init imageID is missing from ready pod ${podName}`);
+            await opts.onPodCreated?.({ runtime: 'k8s', backend: 'pod', pod_name: podName, namespace,
+              toolchains: { requested: toolchains, resolved: toolchains, image_ids: imageIds } });
+          }
+          return { ip: pod.status.podIP, podName, namespace };
+        }
+        await delay(1000, undefined, { signal });
       }
-      return { attemptId: invocation.attemptId, success: false, exitCode: 1, error: message };
-    }
-    throw err;
-  } finally {
-    await deleteResources(namespace, pvcName, podName, signal?.aborted);
-  }
+      throw new Error(`Runner pod ${podName} did not become ready within ${timeoutMs}ms`);
+    },
+
+    async podEnded() {
+      const result = await execKubectl(['get', 'pod', podName, `--namespace=${namespace}`, '-o', 'json']);
+      if (result.exitCode !== 0) return /not ?found/i.test(result.stderr);
+      const phase = (JSON.parse(result.stdout) as PodStatus).status?.phase;
+      return phase === 'Succeeded' || phase === 'Failed';
+    },
+
+    async stop(cancelled) {
+      try {
+        const result = await execKubectl(['delete', 'pod', podName, `--namespace=${namespace}`, '--ignore-not-found=true', '--wait=false',
+          ...(cancelled ? ['--grace-period=5'] : [])]);
+        if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout);
+      } catch (err) {
+        console.error(`Failed to delete pod ${podName}: ${err instanceof Error ? err.message : err}`);
+      }
+      try {
+        await execKubectl(['delete', 'pvc', pvcName, `--namespace=${namespace}`, '--ignore-not-found=true', '--wait=false']);
+      } catch (err) {
+        console.error(`Failed to delete PVC ${pvcName}: ${err instanceof Error ? err.message : err}`);
+      }
+    },
+  };
 }

@@ -12,7 +12,7 @@ import { createRunnerApp } from './runner.app.js';
 const PLATFORM = ['DATABASE_URL', 'EVE_INTERNAL_API_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_RUNNER_SELF_TERMINATE'];
 const saved = Object.fromEntries([...PLATFORM, 'EVE_RUNNER_INBOUND_KEY_SHA256'].map((k) => [k, process.env[k]]));
 const inbound = createRunnerInboundKey();
-const executor = { run: vi.fn(async () => ({ success: true, exit_code: 0, result_text: 'done' })) };
+const executor = { run: vi.fn(async (_submit: unknown, _client: unknown) => ({ success: true, exit_code: 0, result_text: 'done' })) };
 const fetchMock = vi.fn(async () => new Response(null, { status: 201 }));
 let app: NestFastifyApplication;
 

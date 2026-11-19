@@ -73,6 +73,9 @@ spec:
               value: eve
             - name: EVE_RUNTIME
               value: k8s
+            # Refuse to start if inline job processes could read this process's environment.
+            - name: EVE_REQUIRE_ENVIRON_PROTECTION
+              value: "true"
             - name: WORKSPACE_ROOT
               value: /opt/eve/workspaces
             - name: EVE_TOOLCHAIN_ROOT
