@@ -2,16 +2,13 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { hasUserActor } from '@eve/shared';
 import type { AuthUser } from './auth.service.js';
 import { AuthService } from './auth.service.js';
-import { AccessService, isOrgDataPermission } from './access.service.js';
+import { AccessService, isOrgDataPermission, ORG_DATA_NO_USER_RULE, ORG_DATA_UNSCOPED_RULE } from './access.service.js';
 import { RbacService } from './rbac.service.js';
 import { tokenMayAddressOrg, tokenMayAddressProject } from './token-scope.js';
 import { buildApiError } from '../system/api-errors.js';
 import { SecurityService } from '../security/security.service.js';
 
-/** A job token with no `scope` used org files, docs or cloud-fs (P1-6). */
-export const ORG_DATA_UNSCOPED_RULE = 'access.org_data_unscoped';
-/** A job token for work no user started used org files, docs or cloud-fs (P1-6). */
-export const ORG_DATA_NO_USER_RULE = 'access.org_data_no_user';
+export { ORG_DATA_UNSCOPED_RULE, ORG_DATA_NO_USER_RULE };
 /** A route that names no resource reached org data outside what the caller's grants or scope reach (P1-6). */
 export const ORG_DATA_ROUTE_SCOPE_RULE = 'access.org_data_route_scope';
 

@@ -29,6 +29,10 @@ import { SecurityService } from '../security/security.service.js';
 export const ORG_DATA_ROLE_WILDCARD_RULE = 'access.org_data_role_wildcard';
 /** A job scope a user declared reaches org files, docs or cloud-fs outside their role bindings (P1-6). */
 export const ORG_DATA_SCOPE_WIDE_RULE = 'access.org_data_scope_wide';
+/** A job token with no `scope` used org files, docs or cloud-fs (P1-6). */
+export const ORG_DATA_UNSCOPED_RULE = 'access.org_data_unscoped';
+/** Work no user started used, or declared a scope over, org files, docs or cloud-fs (P1-6). */
+export const ORG_DATA_NO_USER_RULE = 'access.org_data_no_user';
 
 /** Org data (P1-6): what the org owns, as opposed to a project's env-db. */
 export function isOrgDataPermission(permission: string): boolean {
@@ -235,26 +239,27 @@ export class AccessService {
 
   /**
    * Judge the org files, docs and cloud-fs entries of a job scope a user
-   * declares (P1-6), under the profile of the org that owns them. Under
-   * `legacy` nothing is judged. Otherwise each entry, `*` included, must sit
-   * inside the user's role bindings (direct or through a group, org-wide or on
-   * the project); built-in roles do not count. Entries outside them are
-   * recorded (`access.org_data_scope_wide`) and, under `strict`, returned as
-   * refused.
+   * declares (P1-6), under the profile of the org that owns them. Each entry,
+   * `*` included, must sit inside the user's role bindings (direct or through
+   * a group, org-wide or on the project); built-in roles do not count, except
+   * an org owner's or admin's, who can grant themselves any binding. Entries
+   * outside them are recorded (`access.org_data_scope_wide`) under `audit` and
+   * `strict`, and returned as `refused` under `strict`. `inside` says whether
+   * the scope sits inside what `strict` allows, whatever the profile.
    */
-  async jobScopeOutsideBindings(params: {
+  async judgeJobScopeBindings(params: {
     orgId: string;
     projectId: string;
     userId: string;
     entries: Array<{ permission: string; resource: AccessResourceContext }>;
-  }): Promise<string[]> {
+  }): Promise<{ refused: string[]; inside: boolean }> {
     const entries = params.entries.filter((entry) => isOrgDataPermission(entry.permission));
-    if (!this.security || entries.length === 0) {
-      return [];
+    if (entries.length === 0) {
+      return { refused: [], inside: true };
     }
-    const scope = { orgId: params.orgId, projectId: params.projectId };
-    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
-      return [];
+    const orgMembership = await this.membershipStore.findOrgMembership(params.userId, params.orgId);
+    if (orgMembership?.role === 'owner' || orgMembership?.role === 'admin') {
+      return { refused: [], inside: true };
     }
     const project = await this.resolveProject(params.projectId);
     const bindings = await this.accessRoles.listApplicableBindings({
@@ -272,7 +277,11 @@ export class AccessService {
       .filter((entry) => !this.evaluatePermission(entry.permission, grants, entry.resource).allowed)
       .map((entry) => `${entry.permission} ${entry.resource.id}`);
     if (outside.length === 0) {
-      return [];
+      return { refused: [], inside: true };
+    }
+    const scope = { orgId: params.orgId, projectId: params.projectId };
+    if (!this.security || (await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return { refused: [], inside: false };
     }
     const profile = await this.security.decide(ORG_DATA_SCOPE_WIDE_RULE, {
       ...scope,
@@ -280,7 +289,36 @@ export class AccessService {
       actor: { user_id: params.userId },
       detail: { entries: outside.join(', ') },
     });
-    return profile === 'strict' ? outside : [];
+    return { refused: profile === 'strict' ? outside : [], inside: false };
+  }
+
+  /**
+   * Judge the org files, docs and cloud-fs entries of a job scope declared
+   * for work no user started (an event, a schedule, the system), under the
+   * org's profile (`access.org_data_no_user`): `strict` refuses them (they
+   * are returned), `audit` records them, `legacy` does not look.
+   */
+  async judgeNoUserJobScope(params: {
+    orgId: string;
+    projectId: string;
+    entries: Array<{ permission: string; resource: AccessResourceContext }>;
+  }): Promise<string[]> {
+    const entries = params.entries.filter((entry) => isOrgDataPermission(entry.permission));
+    if (!this.security || entries.length === 0) {
+      return [];
+    }
+    const scope = { orgId: params.orgId, projectId: params.projectId };
+    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return [];
+    }
+    const described = entries.map((entry) => `${entry.permission} ${entry.resource.id}`);
+    const profile = await this.security.decide(ORG_DATA_NO_USER_RULE, {
+      ...scope,
+      governing: 'org',
+      actor: null,
+      detail: { entries: described.join(', '), stage: 'declared' },
+    });
+    return profile === 'strict' ? described : [];
   }
 
   // ── User resolution ──────────────────────────────────────────────────

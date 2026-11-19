@@ -227,16 +227,71 @@ export async function assertCanGrantJobPermissions(
  * mounted into the job's workspace. The user a job runs as must hold each
  * resource the scope names, otherwise 400. Under the org's strict profile
  * the org-fs, org-docs and cloud-fs entries (a `*` included) must also sit
- * inside the user's role bindings (P1-6). Work no user started is not judged
- * here; its callers refuse scopes that did not come from the manifest.
+ * inside the user's role bindings (org owners and admins excepted), and work
+ * no user started may declare none (P1-6); audit records both.
  */
 export async function assertCanUseJobScope(
-  access: Pick<AccessService, 'can' | 'jobScopeOutsideBindings'>,
+  access: Pick<AccessService, 'can' | 'judgeJobScopeBindings' | 'judgeNoUserJobScope'>,
   params: { orgId: string; projectId: string; userId: string | undefined; scope: AccessBindingScope | null; context: string },
 ): Promise<void> {
+  await judgeJobScope(access, params);
+}
+
+/**
+ * {@link assertCanUseJobScope}, saying whether the scope was judged for a
+ * user and sits inside what the org's strict profile allows. Jobs record it
+ * (`token_scope_judged_at`) so the orchestrator can tell a judged scope from
+ * one that never was.
+ */
+export async function judgeJobScope(
+  access: Pick<AccessService, 'can' | 'judgeJobScopeBindings' | 'judgeNoUserJobScope'>,
+  params: { orgId: string; projectId: string; userId: string | undefined; scope: AccessBindingScope | null; context: string },
+): Promise<{ judged: boolean }> {
   const { orgId, projectId, userId, scope, context } = params;
-  if (!hasUserActor(userId) || !scope) return;
-  const checks: Array<{ permission: string; resource: { type: 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs'; id: string; action: 'read' | 'write' | 'admin' } }> = [];
+  if (!scope) return { judged: false };
+  const checks = scopeChecks(scope);
+  if (!hasUserActor(userId)) {
+    const refused = await access.judgeNoUserJobScope({ orgId, projectId, entries: checks });
+    if (refused.length > 0) {
+      throw new BadRequestException(
+        `${context} reaches org data, which work no user started may not declare: ${refused.join('; ')}`,
+      );
+    }
+    return { judged: false };
+  }
+
+  for (const check of checks) {
+    if (check.resource.id === '*') continue;
+    const result = await access.can({
+      org_id: orgId,
+      principal_type: 'user',
+      principal_id: userId,
+      project_id: projectId,
+      permission: check.permission,
+      resource: check.resource,
+    });
+    if (!result.allowed) {
+      throw new BadRequestException(`${context} is outside the invoking actor's access scope: ${check.permission} ${check.resource.id}`);
+    }
+  }
+
+  const { refused, inside } = await access.judgeJobScopeBindings({ orgId, projectId, userId, entries: checks });
+  if (refused.length > 0) {
+    throw new BadRequestException(
+      `${context} reaches org data outside the invoking actor's role bindings: ${refused.join('; ')}`,
+    );
+  }
+  return { judged: inside };
+}
+
+type ScopeCheck = {
+  permission: string;
+  resource: { type: 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs'; id: string; action: 'read' | 'write' | 'admin' };
+};
+
+/** Each resource a scope names, as the permission and resource a check needs. */
+function scopeChecks(scope: AccessBindingScope): ScopeCheck[] {
+  const checks: ScopeCheck[] = [];
   for (const prefix of scope.orgfs?.allow_prefixes ?? []) {
     checks.push({ permission: 'orgfs:write', resource: { type: 'orgfs', id: pathPatternBase(prefix), action: 'write' } });
   }
@@ -258,26 +313,5 @@ export async function assertCanUseJobScope(
   for (const table of scope.envdb?.tables ?? []) {
     checks.push({ permission: 'envdb:read', resource: { type: 'envdb', id: table, action: 'read' } });
   }
-
-  for (const check of checks) {
-    if (check.resource.id === '*') continue;
-    const result = await access.can({
-      org_id: orgId,
-      principal_type: 'user',
-      principal_id: userId,
-      project_id: projectId,
-      permission: check.permission,
-      resource: check.resource,
-    });
-    if (!result.allowed) {
-      throw new BadRequestException(`${context} is outside the invoking actor's access scope: ${check.permission} ${check.resource.id}`);
-    }
-  }
-
-  const outsideBindings = await access.jobScopeOutsideBindings({ orgId, projectId, userId, entries: checks });
-  if (outsideBindings.length > 0) {
-    throw new BadRequestException(
-      `${context} reaches org data outside the invoking actor's role bindings: ${outsideBindings.join('; ')}`,
-    );
-  }
+  return checks;
 }

@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WorkflowsService, validateStepGraph, parseStepCondition } from './workflows.service.js';
 
 /** The step-permission ceiling is covered elsewhere; these tests let every check pass. */
-const allowAllAccess = { can: async () => ({ allowed: true, source: 'test' }), jobScopeOutsideBindings: async () => [] } as never;
+const allowAllAccess = {
+  can: async () => ({ allowed: true, source: 'test' }),
+  judgeJobScopeBindings: async () => ({ refused: [], inside: true }),
+  judgeNoUserJobScope: async () => [],
+} as never;
 
 // Capture what jobs.create receives. `capturedJobCreate` is the *last* job
 // created (most commonly the last step). `allCreatedJobs` holds every call in

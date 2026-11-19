@@ -105,6 +105,8 @@ export interface Job {
   harness_profile_override: InlineProfileBundle | null;
   env_overrides: Record<string, string> | null;
   token_scope: AccessBindingScope | null;
+  /** When the token scope was judged for the starting user and found inside the org's strict profile (null: not judged). */
+  token_scope_judged_at?: Date | null;
   token_permissions: string[] | null;
   harness_profile_source: HarnessProfileSource | null;
   harness_profile_hash: string | null;

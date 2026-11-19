@@ -3,7 +3,7 @@ import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
 import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
-import { assertCanUseJobScope, type WorkStartOptions } from '../auth/token-scope.js';
+import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
 import { intersectScopes } from './scope-algebra.js';
 import { SecurityService } from '../security/security.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -1086,7 +1086,7 @@ export class WorkflowsService {
         stepTokenScope,
         invocationTokenScope,
       );
-      await assertCanUseJobScope(this.accessService, {
+      const { judged: stepScopeJudged } = await judgeJobScope(this.accessService, {
         orgId: project.org_id,
         projectId,
         userId,
@@ -1170,6 +1170,7 @@ export class WorkflowsService {
         harness_profile_override: agentConfig.harnessProfileOverride,
         env_overrides: stepJobEnvOverrides,
         token_scope: stepJobTokenScope,
+        token_scope_judged_at: stepScopeJudged ? new Date() : null,
         token_permissions: stepJobTokenPermissions,
         harness_profile_source: agentConfig.harnessProfileSource,
         harness_profile_hash: agentConfig.harnessProfileHash,
@@ -1377,7 +1378,7 @@ export class WorkflowsService {
         // A retry runs as the retrier, never as whoever ran the step before:
         // the copied permissions and scope are judged again for the retrier.
         const retryContext = `Workflow retry of step "${source.step_name ?? source.id}"`;
-        await assertCanUseJobScope(this.accessService, {
+        const { judged: retryScopeJudged } = await judgeJobScope(this.accessService, {
           orgId: project.org_id,
           projectId,
           userId,
@@ -1431,6 +1432,7 @@ export class WorkflowsService {
           harness_profile_override: source.harness_profile_override,
           env_overrides: source.env_overrides,
           token_scope: source.token_scope,
+          token_scope_judged_at: retryScopeJudged ? new Date() : null,
           token_permissions: retryTokenPermissions,
           harness_profile_source: source.harness_profile_source,
           harness_profile_hash: source.harness_profile_hash,

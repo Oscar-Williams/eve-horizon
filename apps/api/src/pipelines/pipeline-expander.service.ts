@@ -31,8 +31,9 @@ import {
   type EnvOverrides,
 } from '@eve/shared';
 import * as yaml from 'yaml';
-import { AccessService } from '../auth/access.service.js';
-import type { WorkStartOptions } from '../auth/token-scope.js';
+import { AccessService, ORG_DATA_SCOPE_WIDE_RULE } from '../auth/access.service.js';
+import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
+import { SecurityService } from '../security/security.service.js';
 
 const VALID_TOOLCHAIN_SET = new Set<string>(VALID_TOOLCHAINS);
 
@@ -187,6 +188,7 @@ export class PipelineExpanderService {
   constructor(
     @Inject('DB') private readonly db: Db,
     private readonly accessService: AccessService,
+    @Inject(SecurityService) private readonly security?: SecurityService,
   ) {
     this.jobs = jobQueries(db);
     this.runs = pipelineRunQueries(db);
@@ -321,6 +323,40 @@ export class PipelineExpanderService {
     stepScope: AccessBindingScope | undefined,
   ): AccessBindingScope | null {
     return stepScope ?? pipelineScope ?? null;
+  }
+
+  /**
+   * A step's declared scope is judged as a workflow step's is (see
+   * judgeJobScope): against the user who started the run, and for a run no
+   * user started, for org data at all. Pipelines gained the check after
+   * runs relied on it being absent, so it follows the org's profile:
+   * `legacy` does not look, `audit` records a scope it would refuse
+   * (access.org_data_scope_wide) and creates the job, `strict` refuses
+   * (400). Returns whether the scope was judged inside what strict allows.
+   */
+  private async judgeStepScope(
+    orgId: string,
+    projectId: string,
+    userId: string | undefined,
+    scope: AccessBindingScope | null,
+    context: string,
+  ): Promise<boolean> {
+    if (!scope || !this.security) return false;
+    const governing = { orgId, projectId };
+    const profile = await this.security.effectiveProfile(governing, 'org');
+    if (profile === 'legacy') return false;
+    try {
+      return (await judgeJobScope(this.accessService, { orgId, projectId, userId, scope, context })).judged;
+    } catch (error) {
+      if (!(error instanceof BadRequestException) || profile === 'strict') throw error;
+      await this.security.decide(ORG_DATA_SCOPE_WIDE_RULE, {
+        ...governing,
+        governing: 'org',
+        actor: hasUserActor(userId) ? { user_id: userId } : null,
+        detail: { stage: 'pipeline_step', reason: error.message.slice(0, 200) },
+      });
+      return false;
+    }
   }
 
   private mergeStepTokenPermissions(
@@ -582,6 +618,13 @@ export class PipelineExpanderService {
         `Pipeline "${request.pipeline_name}" step "${stepName}".scope`,
       );
       const stepJobTokenScope = this.mergeStepTokenScope(pipelineTokenScope, stepTokenScope);
+      const scopeJudged = await this.judgeStepScope(
+        projectForSlug.org_id,
+        projectId,
+        userId,
+        stepJobTokenScope,
+        `Pipeline "${request.pipeline_name}" step "${stepName}" scope`,
+      );
       const stepTokenPermissions = this.parseTokenPermissions(
         (step as { permissions?: unknown }).permissions,
         `Pipeline "${request.pipeline_name}" step "${stepName}".permissions`,
@@ -644,6 +687,7 @@ export class PipelineExpanderService {
         harness_profile_override: null,
         env_overrides: stepJobEnvOverrides,
         token_scope: stepJobTokenScope,
+        token_scope_judged_at: scopeJudged ? new Date() : null,
         token_permissions: stepJobTokenPermissions,
         harness_profile_source: null,
         harness_profile_hash: null,
