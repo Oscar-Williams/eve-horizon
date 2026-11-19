@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { hasUserActor } from '@eve/shared';
+import { hasUserActor, scopeReachesOrgData, ORG_DATA_SCOPE_UNJUDGED_RULE } from '@eve/shared';
 import type { AuthUser } from './auth.service.js';
 import { AuthService } from './auth.service.js';
 import { AccessService, isOrgDataPermission, ORG_DATA_NO_USER_RULE, ORG_DATA_UNSCOPED_RULE } from './access.service.js';
@@ -23,8 +23,13 @@ type AccessPrincipal = {
   principal_id: string;
 };
 
+/** How long a job's judged mark is cached; an actor change clears the mark (P1-6). */
+const JUDGED_CACHE_MS = 30_000;
+
 @Injectable()
 export class ScopedAccessService {
+  private readonly judgedJobs = new Map<string, { judged: boolean; at: number }>();
+
   constructor(
     private readonly authService: AuthService,
     private readonly accessService: AccessService,
@@ -357,12 +362,23 @@ export class ScopedAccessService {
    * may only address its own org (checked before this), so that org governs.
    */
   private async jobMayUseOrgData(user: AuthUser, permission: string): Promise<boolean> {
-    const rule = !hasUserActor(user.user_id)
+    if (!this.security) {
+      return true;
+    }
+    let rule = !hasUserActor(user.user_id)
       ? ORG_DATA_NO_USER_RULE
       : !user.scope
         ? ORG_DATA_UNSCOPED_RULE
         : null;
-    if (!rule || !this.security) {
+    // A scope reaching org data stands only when the API judged it for the
+    // user who started the job (jobs.token_scope_judged_at).
+    if (!rule && user.job_id && scopeReachesOrgData(user.scope)) {
+      const governing = { orgId: user.org_id, projectId: user.project_id };
+      if ((await this.security.effectiveProfile(governing, 'org')) !== 'legacy' && !(await this.jobScopeJudged(user.job_id))) {
+        rule = ORG_DATA_SCOPE_UNJUDGED_RULE;
+      }
+    }
+    if (!rule) {
       return true;
     }
     const profile = await this.security.decide(rule, {
@@ -373,6 +389,16 @@ export class ScopedAccessService {
       detail: { permission },
     });
     return profile !== 'strict';
+  }
+
+  /** Whether a job's declared scope was judged, cached briefly per process. */
+  private async jobScopeJudged(jobId: string): Promise<boolean> {
+    const cached = this.judgedJobs.get(jobId);
+    if (cached && Date.now() - cached.at < JUDGED_CACHE_MS) return cached.judged;
+    const judged = await this.accessService.jobScopeJudged(jobId);
+    if (this.judgedJobs.size >= 10_000) this.judgedJobs.clear();
+    this.judgedJobs.set(jobId, { judged, at: Date.now() });
+    return judged;
   }
 
   /** A lookup that fails (unknown or ambiguous org or project) counts as outside the token's scope. */

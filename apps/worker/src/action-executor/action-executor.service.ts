@@ -18,6 +18,7 @@ import {
   releaseQueries,
   threadMessageQueries,
   governingSecurityProfile,
+  decideSecurityRule,
 } from '@eve/db';
 import {
   applyEnvOverrides,
@@ -33,7 +34,6 @@ import {
   generateBuildArtifactId,
   generateManifestId,
   buildAuthenticatedHttpsUrl,
-  type AccessBindingScope,
   type Manifest,
   getBuildableServicesWithDefaults,
   getRegistryConfig,
@@ -54,6 +54,7 @@ import {
 } from '@eve/shared';
 import { serviceGitEnv } from '@eve/shared';
 import * as yaml from 'yaml';
+import { tokenScopeForJob } from '../execution/job-token-scope.js';
 import { DeployerService } from '../deployer/deployer.service';
 import { ImageBuilderService } from '../builder/image-builder.service.js';
 import { classifyBuildError } from './error-classifier.js';
@@ -1163,8 +1164,10 @@ export class ActionExecutorService {
         (((job as { token_permissions?: string[] } | null)?.token_permissions?.length ?? 0) > 0)
           ? (job as { token_permissions: string[] }).token_permissions
           : [...DEFAULT_ACTION_RUN_JOB_PERMISSIONS];
-      const tokenScope =
-        ((job as { token_scope?: AccessBindingScope | null } | null)?.token_scope) ?? undefined;
+      // Org data in the scope follows the orchestrator's decision (P1-6).
+      const tokenScope = job
+        ? await tokenScopeForJob(job, (rule, ctx) => decideSecurityRule(this.db, rule, ctx))
+        : undefined;
 
       const runHome = join(workspace, '.eve-run-home');
       let jobToken: string | undefined;

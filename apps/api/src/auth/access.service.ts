@@ -29,10 +29,10 @@ import { SecurityService } from '../security/security.service.js';
 export const ORG_DATA_ROLE_WILDCARD_RULE = 'access.org_data_role_wildcard';
 /** A job scope a user declared reaches org files, docs or cloud-fs outside their role bindings (P1-6). */
 export const ORG_DATA_SCOPE_WIDE_RULE = 'access.org_data_scope_wide';
-/** A job token with no `scope` used org files, docs or cloud-fs (P1-6). */
-export const ORG_DATA_UNSCOPED_RULE = 'access.org_data_unscoped';
-/** Work no user started used, or declared a scope over, org files, docs or cloud-fs (P1-6). */
-export const ORG_DATA_NO_USER_RULE = 'access.org_data_no_user';
+// A job token with no `scope`, or for work no user started, or whose job's
+// scope was never judged, reaching org files, docs or cloud-fs (P1-6).
+export { ORG_DATA_UNSCOPED_RULE, ORG_DATA_NO_USER_RULE, ORG_DATA_SCOPE_UNJUDGED_RULE } from '@eve/shared';
+import { ORG_DATA_NO_USER_RULE } from '@eve/shared';
 
 /** Org data (P1-6): what the org owns, as opposed to a project's env-db. */
 export function isOrgDataPermission(permission: string): boolean {
@@ -241,6 +241,14 @@ export class AccessService {
     }
 
     return this.membershipsForUser(params.org_id, params.principal_id);
+  }
+
+  /** Whether the API judged a job's declared token scope (jobs.token_scope_judged_at). */
+  async jobScopeJudged(jobId: string): Promise<boolean> {
+    const [row] = await this.db<{ token_scope_judged_at: Date | null }[]>`
+      SELECT token_scope_judged_at FROM jobs WHERE id = ${jobId}
+    `;
+    return Boolean(row?.token_scope_judged_at);
   }
 
   /**

@@ -6,7 +6,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { Db } from '@eve/db';
-import { executionLogQueries, jobQueries, threadMessageQueries } from '@eve/db';
+import { decideSecurityRule, executionLogQueries, jobQueries, threadMessageQueries } from '@eve/db';
 import {
   applyEnvOverrides,
   buildAppApiEnvVars,
@@ -25,7 +25,6 @@ import {
   mintAppLinkToken,
   mintJobToken,
   resolveProjectSecrets,
-  type AccessBindingScope,
   type AppApiCliInfo,
   type AppApiInfo,
   type GitAuth,
@@ -41,6 +40,7 @@ import {
 } from '@eve/shared';
 import { runStreamingCommand } from '../execution/streaming-command.js';
 import { buildJobCommandEnv } from '../execution/job-command-env.js';
+import { tokenScopeForJob } from '../execution/job-token-scope.js';
 import { runInvocationInK8s } from '../invoke/k8s-runner.js';
 
 const execFileAsync = promisify(execFile);
@@ -323,8 +323,8 @@ export class ScriptExecutorService {
         ((job as unknown as { token_permissions?: string[] }).token_permissions?.length ?? 0) > 0
           ? (job as unknown as { token_permissions: string[] }).token_permissions
           : [...DEFAULT_SCRIPT_JOB_PERMISSIONS];
-      const tokenScope =
-        ((job as unknown as { token_scope?: AccessBindingScope | null }).token_scope) ?? undefined;
+      // Org data in the scope follows the orchestrator's decision (P1-6).
+      const tokenScope = await tokenScopeForJob(job, (rule, ctx) => decideSecurityRule(this.db, rule, ctx));
 
       let jobToken: string | undefined;
       try {
