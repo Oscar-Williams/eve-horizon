@@ -901,10 +901,8 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     if (candidates.length === 0) return null;
 
     for (const job of candidates) {
-      // Evaluate step condition before claiming — skip the job if condition is false
-      const conditionResult = await this.evaluateStepCondition(jobs, job);
-      if (conditionResult && !conditionResult.shouldRun) {
-        await this.skipConditionalJob(jobs, job, conditionResult.reason!);
+      // Decide the step's condition before claiming: run, skip, fail or wait.
+      if (!await this.conditionAllowsClaim(jobs, job)) {
         continue;
       }
 
@@ -941,10 +939,8 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     if (candidates.length === 0) return null;
 
     for (const job of candidates) {
-      // Evaluate step condition before claiming — skip the job if condition is false
-      const conditionResult = await this.evaluateStepCondition(jobs, job);
-      if (conditionResult && !conditionResult.shouldRun) {
-        await this.skipConditionalJob(jobs, job, conditionResult.reason!);
+      // Decide the step's condition before claiming: run, skip, fail or wait.
+      if (!await this.conditionAllowsClaim(jobs, job)) {
         continue;
       }
 
@@ -1083,16 +1079,19 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
    * Evaluate a workflow step's condition (if any) against the referenced step's result.
    * Returns null if the job has no condition (i.e., unconditional execution).
    * Returns { shouldRun: true } if the condition evaluates to true.
-   * Returns { shouldRun: false, reason } if the condition evaluates to false,
-   * and also whenever it cannot be evaluated: the condition is evaluated only
-   * against a source step of the same run that is done with a completed latest
-   * attempt. A step is never left waiting on its condition, since it would
-   * keep its place in the ready scan.
+   * Otherwise returns { shouldRun: false, reason, action }:
+   * - `skip`: the condition was read against a source step of the same run
+   *   that is done with a completed latest attempt, and is not met;
+   * - `wait`: the source step has not finished yet;
+   * - `fail`: the condition cannot be decided: the source finished without a
+   *   completed attempt (cancelled, failed, or closed as done without one),
+   *   runs as someone other than this step's actor or the run's, cannot be
+   *   found in the run, or the condition cannot be read.
    */
   private async evaluateStepCondition(
     jobs: ReturnType<typeof jobQueries>,
     job: Job,
-  ): Promise<{ shouldRun: boolean; reason?: string } | null> {
+  ): Promise<{ shouldRun: boolean; reason?: string; action?: 'skip' | 'fail' | 'wait' } | null> {
     const condition = (job.hints as Record<string, unknown> | null)?.condition;
     if (typeof condition !== 'string') return null;
 
@@ -1102,10 +1101,10 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const notMet = (why: string) => {
-      const reason = `Condition "${condition}" not met: ${why}`;
-      this.logger.warn(`[workflow] Step "${job.step_name}" (${job.id}): ${reason} — skipping`);
-      return { shouldRun: false, reason };
+    const undecided = (why: string) => {
+      const reason = `Condition "${condition}" cannot be decided: ${why}`;
+      this.logger.warn(`[workflow] Step "${job.step_name}" (${job.id}): ${reason} — failing the step`);
+      return { shouldRun: false, reason, action: 'fail' as const };
     };
 
     // Parse the condition: step_name.status == 'value' or step_name.status != 'value'
@@ -1114,7 +1113,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       /^(\w[\w-]*)\s*\.\s*status\s*(==|!=)\s*['"]([^'"]*)['"]\s*$/,
     );
     if (!match) {
-      return notMet('it cannot be read');
+      return undecided('it cannot be read');
     }
 
     const [, refStepName, operator, expectedValue] = match;
@@ -1128,25 +1127,29 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       dependencies.find((dep) => dep.step_name === refStepName)
       ?? await jobs.findSiblingByStepName(job.parent_id, refStepName);
     if (!siblingJob) {
-      return notMet(`step "${refStepName}" was not found in this run`);
+      return undecided(`step "${refStepName}" was not found in this run`);
     }
 
     // A step that now runs as someone other than this step's actor or the
     // run's does not decide whether this step runs.
     const run = await jobs.findById(job.parent_id);
     if (!mayFeedStep(job, run, siblingJob)) {
-      return notMet(`step "${refStepName}" (${siblingJob.id}) runs as someone other than this step's actor or the run's`);
+      return undecided(`step "${refStepName}" (${siblingJob.id}) runs as someone other than this step's actor or the run's`);
     }
 
     // Only a source step that finished its work decides: done, with a
-    // completed latest attempt. A cancelled step, or one closed as done
-    // without completing an attempt, reports nothing.
+    // completed latest attempt. Until the source finishes, this step waits.
+    if (siblingJob.phase !== 'done' && siblingJob.phase !== 'cancelled') {
+      const reason = `Condition "${condition}" waits for step "${refStepName}" (${siblingJob.id}), which is ${siblingJob.phase}`;
+      this.logger.debug(`[workflow] Step "${job.step_name}" (${job.id}): ${reason}`);
+      return { shouldRun: false, reason, action: 'wait' };
+    }
     if (siblingJob.phase !== 'done') {
-      return notMet(`step "${refStepName}" (${siblingJob.id}) is ${siblingJob.phase}, not done`);
+      return undecided(`step "${refStepName}" (${siblingJob.id}) finished as ${siblingJob.phase}, with no result to read`);
     }
     const latestAttempt = await jobs.getLatestAttempt(siblingJob.id);
     if (latestAttempt?.status !== 'succeeded') {
-      return notMet(`step "${refStepName}" (${siblingJob.id}) has no completed attempt`);
+      return undecided(`step "${refStepName}" (${siblingJob.id}) finished with no completed attempt to read`);
     }
 
     // Extract the status from the referenced step's latest attempt result_json.eve.status
@@ -1181,10 +1184,28 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`[workflow] Step "${job.step_name}" (${job.id}): condition "${condition}" not met (actual: ${statusDisplay}) — skipping`);
     }
 
-    return {
-      shouldRun,
-      reason: shouldRun ? undefined : `Condition "${condition}" not met (actual status: ${statusDisplay})`,
-    };
+    if (shouldRun) {
+      return { shouldRun, reason: undefined };
+    }
+    return { shouldRun, reason: `Condition "${condition}" not met (actual status: ${statusDisplay})`, action: 'skip' };
+  }
+
+  /**
+   * Decide a ready step's condition before it is claimed. True when it may be
+   * claimed now. A condition read and not met closes the step as skipped; a
+   * condition that cannot be decided fails the step, which cancels the steps
+   * after it as any failure does; a source still running leaves it waiting.
+   */
+  private async conditionAllowsClaim(jobs: ReturnType<typeof jobQueries>, job: Job): Promise<boolean> {
+    const outcome = await this.evaluateStepCondition(jobs, job);
+    if (!outcome || outcome.shouldRun) return true;
+    if (outcome.action === 'wait') return false;
+    if (outcome.action === 'fail') {
+      await jobs.markJobFailed(job.id, outcome.reason);
+      return false;
+    }
+    await this.skipConditionalJob(jobs, job, outcome.reason!);
+    return false;
   }
 
   /**

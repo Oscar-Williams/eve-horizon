@@ -124,16 +124,17 @@ input only from steps the workflow compiled for the same run: children of the
 same root that carry a step name set by the workflow (jobs created through the
 jobs API never carry one, even under a run root), and that run as the step's
 own actor or as the user who invoked the run (the root's actor; steps no user
-started count as one actor, whether recorded with no actor or as `system`). A
-condition that names a step it may not read this way is not met, and the step
-is skipped with a reason saying so.
+started count as one actor, whether recorded with no actor or as `system`).
 
 A condition is evaluated only when the step it names is `done` and that step's
-latest attempt completed (`succeeded`). In every other case the condition is not
-met and the step is skipped (`close_reason: condition_not_met`), never run and
-never left waiting: the named step was cancelled or failed, was closed as done
-without completing an attempt (for example skipped by its own condition), has
-not finished, cannot be found in the run, or the condition cannot be read.
+latest attempt completed (`succeeded`). When it is read and not met, the step is
+skipped (`close_reason: condition_not_met`) and the steps after it go on. While
+the named step has not finished, the step waits. When the condition cannot be
+decided, the step fails with a reason saying why, and the steps after it are
+cancelled as after any failure: the named step was cancelled or failed, was
+closed as done without completing an attempt (for example skipped by its own
+condition), runs as someone it may not read, cannot be found in the run, or the
+condition cannot be read.
 
 The root and compiled steps of a run keep the actor they were created with:
 only that actor can change what they run or their attachments, and anyone else
