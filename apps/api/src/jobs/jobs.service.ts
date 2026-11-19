@@ -15,7 +15,7 @@ import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
 import { holdReservedEnvOverrides } from '../security/reserved-env.js';
-import { APPROVE_TOKEN_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
+import { APPROVE_TOKEN_RULE, DEPENDENCY_CHANGE_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
 // Request/Response Types (inline - the new model)
@@ -1267,6 +1267,34 @@ export class JobsService {
   }
 
   /**
+   * The dependencies of a job outside any run change only for those who may
+   * change the job: its actor (with their own token or their agents'), its
+   * own job token, or a project admin (jobs:admin). Under the project's
+   * security profile (rule jobs.dependency_change) anyone else is allowed
+   * under `legacy`, recorded under `audit` and refused (403) under `strict`.
+   * A run's jobs are held to the run instead (guardRunJob).
+   */
+  private async guardDependencyChange(job: Job, caller: AuthUser | undefined): Promise<void> {
+    if (!caller || await this.runOf(job)) {
+      return;
+    }
+    if (hasUserActor(caller.user_id) && caller.user_id === job.actor_user_id) {
+      return;
+    }
+    if (caller.is_job_token && caller.job_id === job.id) {
+      return;
+    }
+    if (await this.holdsJobsAdmin(caller, job.project_id)) {
+      return;
+    }
+    await this.security!.gate(
+      DEPENDENCY_CHANGE_RULE,
+      { governing: 'project', projectId: job.project_id, actor: caller, detail: { job_id: job.id } },
+      `Job ${job.id} belongs to someone else: only its actor, its own job or a project admin (jobs:admin) can change its dependencies`,
+    );
+  }
+
+  /**
    * Under the project's `strict` profile, cancelling a compiled run step also
    * cancels the steps after it, as a failure does.
    */
@@ -1840,6 +1868,7 @@ export class JobsService {
     }
     this.assertEdgesFromDefinition(job);
     await this.guardRunJob(job, caller, 'add a dependency to');
+    await this.guardDependencyChange(job, caller);
     await this.requireJobInProject(data.related_job_id, job.project_id);
     await this.jobs.addDependency(jobId, data.related_job_id, data.relation_type ?? 'blocks');
     return { success: true, message: `Added dependency: ${jobId} depends on ${data.related_job_id}` };
@@ -1855,6 +1884,7 @@ export class JobsService {
     }
     this.assertEdgesFromDefinition(job);
     await this.guardRunJob(job, caller, 'remove a dependency of');
+    await this.guardDependencyChange(job, caller);
     const removed = await this.jobs.removeDependency(jobId, relatedJobId);
     if (!removed) {
       throw new NotFoundException(`Dependency from ${jobId} to ${relatedJobId} not found`);

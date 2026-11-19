@@ -5,6 +5,9 @@ import { describeActor } from '../security/security.service.js';
 /** Security rule: a run's jobs change only through their run (governed by the project). */
 export const RUN_STEP_CHANGE_RULE = 'jobs.run_step_change';
 
+/** Security rule: a job outside any run changes its dependencies only for those who may change it (governed by the project). */
+export const DEPENDENCY_CHANGE_RULE = 'jobs.dependency_change';
+
 /**
  * The workflow or pipeline run a job belongs to, read from its record, never
  * from its id. `key` names the run; `rootId` is the workflow run's root job

@@ -434,8 +434,10 @@ its compiled steps, judged from the job records); or a project admin
 The dependencies of a compiled workflow or pipeline step (`step_name` set) come
 from its definition: adding or removing one through the dependency routes is
 refused with 409. Adding or removing a dependency of a run root is held to rule
-`jobs.run_step_change` like any other change to it. Edges between other jobs,
-including a job that depends on a run step, are unaffected.
+`jobs.run_step_change` like any other change to it. For a job outside any run,
+rule `jobs.dependency_change` holds it to the job's actor (or their agents), the
+job's own token, or a project admin. Under `strict`, a compiled step's failure
+cancels only the steps of its own run that depend on it.
 
 Workflow invocation creates every step in `backlog`, wires all blocking
 relations, then releases the complete graph to `ready`. A wiring failure does

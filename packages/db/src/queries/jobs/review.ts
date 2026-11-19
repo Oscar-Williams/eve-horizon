@@ -1,4 +1,5 @@
 import type { Db } from '../../client.js';
+import { governingSecurityProfile } from '../security.js';
 import type { Job, JobAttempt, UpdatePhaseResult } from './types.js';
 
 /**
@@ -383,7 +384,7 @@ export function jobReviewQueries(db: Db) {
       `;
 
       if (updatedJob && options.cascade) {
-        await cancelDownstreamInRun(db, job, `Upstream job ${jobId} cancelled`);
+        await cancelDownstreamInRun(db, job, `Upstream job ${jobId} cancelled`, 'cancelled');
       }
 
       // Cancel backlog children (staged dispatch members that were never promoted)
@@ -461,9 +462,16 @@ export function jobReviewQueries(db: Db) {
       `;
 
       // Cascade-cancel downstream jobs that transitively depend on this one,
-      // so they are never left orphaned in 'ready' phase.
+      // so they are never left orphaned in 'ready' phase. Under the project's
+      // strict profile a compiled step's failure reaches only its own run.
       if (updatedJob) {
-        await cancelDownstream(db, jobId, `Upstream job ${jobId} failed`, 'upstream_failed');
+        const withinRun = Boolean(job.step_name)
+          && (await governingSecurityProfile(db, { projectId: job.project_id, governing: 'project' })) === 'strict';
+        if (withinRun) {
+          await cancelDownstreamInRun(db, job, `Upstream job ${jobId} failed`, 'upstream_failed');
+        } else {
+          await cancelDownstream(db, jobId, `Upstream job ${jobId} failed`, 'upstream_failed');
+        }
       }
 
       // Cancel backlog children (staged dispatch members that were never promoted)
@@ -550,7 +558,12 @@ export function jobReviewQueries(db: Db) {
  * transitively: steps with the same parent and pipeline run. Edges to jobs
  * outside the run are not followed.
  */
-async function cancelDownstreamInRun(db: Db, job: Job, reason: string): Promise<void> {
+async function cancelDownstreamInRun(
+  db: Db,
+  job: Job,
+  reason: string,
+  disposition: 'cancelled' | 'upstream_failed',
+): Promise<void> {
   const parentId = job.parent_id ?? null;
   const runId = job.run_id ?? null;
   const cancelled = await db<{ id: string }[]>`
@@ -578,7 +591,7 @@ async function cancelDownstreamInRun(db: Db, job: Job, reason: string): Promise<
       phase = 'cancelled',
       closed_at = NOW(),
       close_reason = ${reason},
-      failure_disposition = 'cancelled',
+      failure_disposition = ${disposition},
       updated_at = NOW()
     WHERE id IN (SELECT id FROM downstream)
       AND phase NOT IN ('done', 'cancelled')
