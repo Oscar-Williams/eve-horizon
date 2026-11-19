@@ -57,7 +57,8 @@ and which carries no `orgs` claim. The middleware accepts such a token only
 for the app's own audience, reads the person's orgs from Eve
 `/auth/app-access`, and sends `X-Eve-Audience` whenever it asks Eve about the
 token. To call Eve yourself, add `eveAudienceHeaders(token)` to the request
-headers.
+headers. App-link tokens (`type: app_link`, `aud: project:<producer>`) skip
+this check and are verified as before.
 
 ## Docs
 

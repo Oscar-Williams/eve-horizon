@@ -67,9 +67,24 @@ export function eveAppAudiences(options?: { projectId?: string; envName?: string
   return envName ? [`eve-app:${projectId}:${envName}`, `eve-app:${projectId}`] : [`eve-app:${projectId}`];
 }
 
-/** A token's `aud`, when it is one this app accepts; throws for any other audience. */
-function ownAudience(aud: unknown, options?: EveTokenVerifyOptions): string | undefined {
-  if (aud === undefined) return undefined;
+/**
+ * App-link tokens (`type: app_link`, `aud: project:<producer>`) are not app
+ * audience tokens: they skip the `eve-app:` check and are verified as before
+ * app audiences (Eve checks the grant on the remote path).
+ */
+function isAppLinkToken(payload: { aud?: unknown; type?: unknown }): boolean {
+  if (payload.type === 'app_link') return true;
+  // A user token is never an app-link token, whatever its audience.
+  return payload.type !== 'user' && typeof payload.aud === 'string' && payload.aud.startsWith('project:');
+}
+
+/**
+ * A token's app audience, when it is one this app accepts; throws for any
+ * other audience. App-link tokens have none here.
+ */
+function ownAudience(payload: { aud?: unknown; type?: unknown }, options?: EveTokenVerifyOptions): string | undefined {
+  const { aud } = payload;
+  if (aud === undefined || isAppLinkToken(payload)) return undefined;
   const allowed = options?.audiences ?? eveAppAudiences();
   if (typeof aud !== 'string' || !allowed.includes(aud)) {
     throw new Error('Token audience is not this app');
@@ -82,14 +97,16 @@ function ownAudience(aud: unknown, options?: EveTokenVerifyOptions): string | un
  * audience token for this app. Throws for a token meant for another app.
  */
 export function eveAudienceHeaders(token: string, options?: EveTokenVerifyOptions): Record<string, string> {
-  let aud: unknown;
+  let payload: { aud?: unknown; type?: unknown };
   try {
     const payloadB64 = token.split('.')[1] ?? '';
-    aud = (JSON.parse(base64UrlDecode(payloadB64).toString()) as { aud?: unknown }).aud;
+    const parsed = JSON.parse(base64UrlDecode(payloadB64).toString()) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    payload = parsed as { aud?: unknown; type?: unknown };
   } catch {
     return {};
   }
-  const own = ownAudience(aud, options);
+  const own = ownAudience(payload, options);
   return own ? { [EVE_AUDIENCE_HEADER]: own } : {};
 }
 
@@ -285,7 +302,7 @@ export async function verifyEveToken(
   if (payload.nbf && payload.nbf > now + 60) {
     throw new Error('Token not yet valid');
   }
-  const aud = ownAudience(payload.aud, options);
+  const aud = ownAudience(payload, options);
 
   return {
     valid: true,

@@ -37,7 +37,8 @@ export async function verifyWebChatToken(
   expectedOrgId: string,
 ): Promise<WebChatTokenVerification> {
   try {
-    // No audience is accepted: verification fails for any token with an aud.
+    // No app audience is accepted: verification fails for a user token with
+    // an aud, and an app-link token is not a user token.
     const claims: EveTokenClaims = await verifyEveToken(token, eveApiUrl, { audiences: [] });
     const inOrg = claims.org_id
       ? claims.org_id === expectedOrgId

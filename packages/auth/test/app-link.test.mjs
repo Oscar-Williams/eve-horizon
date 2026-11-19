@@ -85,9 +85,14 @@ describe('app-link tokens in a producer app', () => {
     assert.equal(claims.aud, undefined);
   });
 
-  it('a project: audience is skipped the same way whatever the type says', async () => {
+  it('a project: audience with no type is skipped the same way', async () => {
     const token = sign({ ...APP_LINK_CLAIMS, type: undefined });
     await assert.doesNotReject(verifyEveToken(token, API));
+  });
+
+  it('a user token with a project: audience is still refused', async () => {
+    const token = sign({ sub: 'user_1', type: 'user', aud: 'project:proj_producer' });
+    await assert.rejects(verifyEveToken(token, API), /audience is not this app/);
   });
 
   it('eveAuthMe asks Eve /auth/me with no X-Eve-Audience and answers with its reply', async () => {

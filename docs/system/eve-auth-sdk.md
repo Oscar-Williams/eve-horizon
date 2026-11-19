@@ -115,6 +115,12 @@ and `eveAuth()` read the person's orgs from Eve `/auth/app-access`, and
 `eveAuthMe()` asks Eve `/auth/me`, sending `X-Eve-Audience` each time. See
 [App SSO Integration](./app-sso-integration.md#app-audience-tokens-strict-instance-profile).
 
+App-link tokens (`type: app_link`, `aud: project:<producer>`) are not app
+audience tokens: `verifyEveToken()`, `verifyEveTokenRemote()` and
+`eveAuthMe()` skip the `eve-app:` check for them, send no `X-Eve-Audience`,
+and verify them as before (remotely, Eve also checks the grant). See
+[Cross-Project App Links](./cross-project-app-links.md).
+
 This lets you mix public and protected routes:
 
 ```typescript
