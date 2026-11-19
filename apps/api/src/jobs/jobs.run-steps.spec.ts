@@ -486,3 +486,64 @@ describe('creating a job with env overrides the project profile holds', () => {
   });
 });
 
+describe("a failure's cascade", () => {
+  async function failWithProfile(profile: string) {
+    const { jobQueries } = await vi.importActual<typeof import('@eve/db')>('@eve/db');
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        calls.push({ text, values });
+        if (/FROM system_settings/.test(text)) return [{ value: profile }];
+        if (/FROM projects p JOIN orgs/.test(text)) return [{ org_id: 'org_a', org_profile: null, project_profile: null }];
+        if (/SELECT \* FROM jobs WHERE id/.test(text) || /RETURNING \*/.test(text)) return [{ ...m.state.jobs.get('a-run.1') }];
+        return [];
+      },
+      { json: (v: unknown) => v },
+    );
+    const queries = jobQueries(sql as never) as unknown as { markJobFailed(id: string, reason?: string): Promise<unknown> };
+    await queries.markJobFailed('a-run.1', 'Exited 1');
+    return calls.find((call) => /WITH RECURSIVE downstream/.test(call.text));
+  }
+
+  it("stays inside the failed step's own run under strict", async () => {
+    const downstream = await failWithProfile('strict');
+
+    expect(downstream?.text).toMatch(/step_name IS NOT NULL/);
+    expect(downstream?.values).toContain('a-run');
+  });
+
+  it('follows every edge, as before, under audit', async () => {
+    const downstream = await failWithProfile('audit');
+
+    expect(downstream?.text).not.toMatch(/step_name IS NOT NULL/);
+  });
+});
+
+describe('dependency edges of a job outside any run', () => {
+  it("are held under strict to the job's actor, its own token and a project admin", async () => {
+    m.state.projectProfile = 'strict';
+    const c = controller();
+
+    await expect(route(c, 'addDependency', 'solo-1', { related_job_id: 'solo-2' }, TEAMMATE)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'removeDependency', 'solo-1', 'solo-2', TEAMMATE)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(m.jobQ.addDependency).not.toHaveBeenCalled();
+
+    await route(c, 'addDependency', 'solo-1', { related_job_id: 'solo-2' }, OWNER);
+    await route(c, 'addDependency', 'solo-1', { related_job_id: 'solo-2' }, OWNER_AGENT);
+    await route(c, 'addDependency', 'solo-1', { related_job_id: 'solo-2' }, ADMIN);
+    expect(m.jobQ.addDependency).toHaveBeenCalledTimes(3);
+  });
+
+  it("are allowed and recorded under audit for someone else", async () => {
+    m.state.projectProfile = 'audit';
+
+    await route(controller(), 'addDependency', 'solo-1', { related_job_id: 'solo-2' }, TEAMMATE);
+
+    expect(m.jobQ.addDependency).toHaveBeenCalledWith('solo-1', 'solo-2', 'blocks');
+    expect(findingsFor('jobs.dependency_change')).toEqual([
+      expect.objectContaining({ actor_type: 'user', actor_id: 'user_mate', detail: expect.objectContaining({ job_id: 'solo-1' }) }),
+    ]);
+  });
+});
+
