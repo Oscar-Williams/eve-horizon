@@ -59,9 +59,11 @@ export function securityQueries(db: Db) {
         if (row) return row;
       }
       if (scope.orgId) {
+        // Org routes may name the org by slug; slugs are unique.
         const [row] = await db<SecurityProfileRow[]>`
           SELECT id AS org_id, security_profile AS org_profile, NULL::text AS project_profile
-          FROM orgs WHERE id = ${scope.orgId}
+          FROM orgs WHERE id = ${scope.orgId} OR slug = ${scope.orgId}
+          LIMIT 1
         `;
         if (row) return row;
       }

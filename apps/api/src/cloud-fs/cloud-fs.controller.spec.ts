@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { CloudFsController } from './cloud-fs.controller.js';
+import { mountsInTokenScope } from '../auth/scoped-access.service.js';
 
 describe('CloudFsController scoped access', () => {
   function createController() {
@@ -18,6 +19,9 @@ describe('CloudFsController scoped access', () => {
     const scopedAccess = {
       assert: vi.fn().mockResolvedValue(undefined),
       assertJobMayUseOrgData: vi.fn().mockResolvedValue(undefined),
+      // Today's view, as under a legacy org; the profiles are covered in
+      // cloud-fs.org-data.spec.ts and auth/org-member-data.spec.ts.
+      readableMounts: vi.fn(async ({ mounts, user }: { mounts: Array<{ id: string }>; user?: never }) => mountsInTokenScope(mounts, user)),
     };
     const controller = new CloudFsController(cloudFsService as never, scopedAccess as never);
     return { controller, cloudFsService, scopedAccess };

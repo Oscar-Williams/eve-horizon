@@ -12,6 +12,8 @@ import { SecurityService } from '../security/security.service.js';
 export const ORG_DATA_UNSCOPED_RULE = 'access.org_data_unscoped';
 /** A job token for work no user started used org files, docs or cloud-fs (P1-6). */
 export const ORG_DATA_NO_USER_RULE = 'access.org_data_no_user';
+/** A route that names no resource reached org data outside what the caller's grants or scope reach (P1-6). */
+export const ORG_DATA_ROUTE_SCOPE_RULE = 'access.org_data_route_scope';
 
 export type ScopedResourceContext = {
   type: 'orgfs' | 'orgdocs' | 'envdb' | 'cloud_fs';
@@ -132,6 +134,55 @@ export class ScopedAccessService {
   }
 
   /**
+   * The cloud-fs mounts a route that names no mount (listing, default-mount
+   * reads) may show this caller, under the org's profile. `legacy` keeps
+   * today's view: every mount, or the mounts a job token's scope lists.
+   * Otherwise each mount must be one the caller reaches: a person or service
+   * principal through their grants, a job token through its scope. `audit`
+   * keeps today's view and records when some mount would be held back;
+   * `strict` holds them back.
+   */
+  async readableMounts<T extends { id: string }>(params: { org_id: string; user?: AuthUser; mounts: T[] }): Promise<T[]> {
+    const { org_id, user, mounts } = params;
+    const listed = mountsInTokenScope(mounts, user);
+    if (!this.security || !user || user.is_admin || listed.length === 0) {
+      return listed;
+    }
+    const scope = { orgId: user.is_job_token ? user.org_id ?? org_id : org_id, projectId: user.is_job_token ? user.project_id : undefined };
+    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return listed;
+    }
+    const reachable: T[] = [];
+    for (const mount of listed) {
+      if (await this.mountReachable(org_id, user, mount.id)) reachable.push(mount);
+    }
+    if (reachable.length === listed.length) {
+      return listed;
+    }
+    const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+      ...scope,
+      governing: 'org',
+      actor: user,
+      detail: { permission: 'cloud_fs:read', held_back: listed.length - reachable.length },
+    });
+    return profile === 'strict' ? reachable : listed;
+  }
+
+  /** Whether the caller reaches this mount, judged as a route naming it would judge it. */
+  private async mountReachable(orgId: string, user: AuthUser, mountId: string): Promise<boolean> {
+    if (user.is_job_token) {
+      // Judged by the scope alone; a token with no scope was judged before.
+      return !user.scope || mountsInTokenScope([{ id: mountId }], user).length > 0;
+    }
+    return this.can({
+      org_id: orgId,
+      permission: 'cloud_fs:read',
+      user,
+      resource: { type: 'cloud_fs', id: mountId, action: 'read' },
+    });
+  }
+
+  /**
    * Org files, docs and cloud-fs belong to the org, whose profile decides
    * whether a job reaches them without a scope or without a user who started
    * the work: `strict` refuses, `audit` records, `legacy` allows. The token
@@ -180,4 +231,15 @@ export class ScopedAccessService {
       principal_id: user.user_id,
     };
   }
+}
+
+/**
+ * The mounts a job token's scope lists (all of them for `*`, or for a token
+ * with no cloud-fs entry); every mount for any other caller.
+ */
+export function mountsInTokenScope<T extends { id: string }>(mounts: T[], user?: AuthUser): T[] {
+  const allowed = user?.scope?.cloud_fs?.allow_mount_ids;
+  if (!user?.is_job_token || !user.scope || !allowed || allowed.includes('*')) return mounts;
+  const allowedSet = new Set(allowed);
+  return mounts.filter((mount) => allowedSet.has(mount.id));
 }

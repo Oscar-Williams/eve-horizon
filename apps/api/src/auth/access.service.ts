@@ -51,12 +51,15 @@ type RawGrant = {
   permissions: string[];
   scope_json?: AccessBindingScope | null;
   /**
-   * Set on a grant that a stricter security profile withholds: the rule that
-   * judges it, whose profile governs, and what is left of it under `strict`
-   * (null: nothing).
+   * What a stricter security profile withholds from this grant: for each
+   * rule, whose profile governs it and what is left of the grant under
+   * `strict` (the grant with only `leaves` as its scope, or nothing when
+   * `leaves` is null).
    */
-  withheld?: { rule: string; governing: 'project' | 'org'; strict: RawGrant | null };
+  withheld?: Withhold[];
 };
+
+type Withhold = { rule: string; governing: 'project' | 'org'; leaves: AccessBindingScope | null };
 
 /** Who is being judged, where: the context a withheld grant's rule is decided in. */
 type GrantContext = { orgId: string; projectId?: string; userId: string };
@@ -349,11 +352,7 @@ export class AccessService {
       // A project role's wildcard over the org's files, docs and mounts is
       // withheld by the org's strict profile; its env-db scope stands.
       if (grant.scope_json) {
-        grant.withheld = {
-          rule: ORG_DATA_ROLE_WILDCARD_RULE,
-          governing: 'org',
-          strict: { ...grant, scope_json: AccessService.BUILT_IN_PROJECT_ROLE_STRICT_SCOPE },
-        };
+        grant.withheld = [AccessService.ROLE_WILDCARD_WITHHOLD];
       }
       grants.push(grant);
     }
@@ -368,11 +367,20 @@ export class AccessService {
           ? AccessService.BUILT_IN_ROLE_SCOPE
           : undefined,
       };
+      const withheld: Withhold[] = [];
+      // The org member role's wildcard over org files, docs and mounts is
+      // withheld by the org's strict profile: members reach org data only
+      // through bindings. Owners and admins keep theirs, since they can grant
+      // themselves any binding.
+      if (orgMembership.role === 'member' && grant.scope_json) {
+        withheld.push(AccessService.ROLE_WILDCARD_WITHHOLD);
+      }
       // In a project the user holds no membership on, the org member role is
       // an implicit grant, which a strict project withholds.
       if (projectInput && !projectMembership && orgMembership.role === 'member') {
-        grant.withheld = { rule: IMPLICIT_PROJECT_RULE, governing: 'project', strict: null };
+        withheld.push({ rule: IMPLICIT_PROJECT_RULE, governing: 'project', leaves: null });
       }
+      if (withheld.length > 0) grant.withheld = withheld;
       grants.push(grant);
     }
 
@@ -762,9 +770,16 @@ export class AccessService {
     cloud_fs: { allow_mount_ids: ['*'] },
   };
 
-  /** A built-in project role's scope under the org's strict profile: its project's env-db only. */
+  /** A built-in role's scope under the org's strict profile: env-db only (project data, not org data). */
   private static readonly BUILT_IN_PROJECT_ROLE_STRICT_SCOPE: AccessBindingScope = {
     envdb: { schemas: ['*'], tables: ['*'] },
+  };
+
+  /** The org's strict profile withholds a built-in role's wildcard over org files, docs and mounts. */
+  private static readonly ROLE_WILDCARD_WITHHOLD: Withhold = {
+    rule: ORG_DATA_ROLE_WILDCARD_RULE,
+    governing: 'org',
+    leaves: AccessService.BUILT_IN_PROJECT_ROLE_STRICT_SCOPE,
   };
 
   private static readonly BUILT_IN_ROLES = new Set(['owner', 'admin', 'member']);
@@ -772,12 +787,14 @@ export class AccessService {
   // ── Evaluator helpers ────────────────────────────────────────────────
 
   /**
-   * Evaluate a permission as {@link evaluatePermission} does, then hold any
-   * grant marked `withheld` to its rule. When a stricter view (every such
-   * grant withheld) would still allow, nothing is judged or recorded. When
-   * only withheld grants allow, each rule is decided under its governing
-   * profile: `decide` records a finding (audit and strict), `peek` only reads
-   * the profile. The permission stands if any rule's profile is not strict.
+   * Evaluate a permission as {@link evaluatePermission} does, then hold each
+   * grant to the rules in its `withheld` list. When the strictest view (every
+   * rule withholding) would still allow, nothing is judged or recorded.
+   * Otherwise each rule that, on its own, takes away a grant that allowed on
+   * its own is decided under its governing profile: `decide` records a
+   * finding (audit and strict), `peek` only reads the profile. The rules
+   * whose profile is strict then withhold, and the permission stands if what
+   * is left still allows it.
    */
   private async evaluateUnderProfiles(
     permission: string,
@@ -787,22 +804,28 @@ export class AccessService {
     mode: 'decide' | 'peek',
   ): Promise<PermissionEvaluation & { withheldBy?: string[] }> {
     const evaluation = this.evaluatePermission(permission, grants, resource);
-    if (!evaluation.allowed || !this.security || !grants.some((grant) => grant.withheld)) {
+    if (!evaluation.allowed || !this.security || !grants.some((grant) => grant.withheld?.length)) {
       return evaluation;
     }
-    const strictGrants = grants.flatMap((grant) => (grant.withheld ? (grant.withheld.strict ? [grant.withheld.strict] : []) : [grant]));
-    const strictEvaluation = this.evaluatePermission(permission, strictGrants, resource);
-    if (strictEvaluation.allowed) {
+    const withholding = (strictRules: (rule: string) => boolean) => grants.flatMap((grant) => {
+      const left = this.applyWithholds(grant, (grant.withheld ?? []).filter((w) => strictRules(w.rule)));
+      return left ? [left] : [];
+    });
+    if (this.evaluatePermission(permission, withholding(() => true), resource).allowed) {
       return evaluation;
     }
 
     const rules = new Map<string, 'project' | 'org'>();
     for (const grant of grants) {
-      if (grant.withheld && this.evaluatePermission(permission, [grant], resource).allowed) {
-        rules.set(grant.withheld.rule, grant.withheld.governing);
+      if (!grant.withheld?.length || !this.evaluatePermission(permission, [grant], resource).allowed) continue;
+      for (const withhold of grant.withheld) {
+        const left = this.applyWithholds(grant, [withhold]);
+        if (!left || !this.evaluatePermission(permission, [left], resource).allowed) {
+          rules.set(withhold.rule, withhold.governing);
+        }
       }
     }
-    let allowed = false;
+    const strictRules = new Set<string>();
     for (const [rule, governing] of rules) {
       const scope = { orgId: context.orgId, projectId: context.projectId };
       const profile = mode === 'decide'
@@ -816,15 +839,26 @@ export class AccessService {
             },
           })
         : await this.security.effectiveProfile(scope, governing);
-      if (profile !== 'strict') {
-        allowed = true;
+      if (profile === 'strict') {
+        strictRules.add(rule);
       }
     }
-    if (allowed) {
+    const held = this.evaluatePermission(permission, withholding((rule) => strictRules.has(rule)), resource);
+    if (held.allowed) {
       return evaluation;
     }
-    const withheldBy = [...rules.keys()];
-    return { ...strictEvaluation, source: `withheld by the security profile (${withheldBy.join(', ')})`, withheldBy };
+    const withheldBy = [...strictRules];
+    return { ...held, source: `withheld by the security profile (${withheldBy.join(', ')})`, withheldBy };
+  }
+
+  /** What is left of a grant once these rules withhold: nothing, or the grant with a narrower scope. */
+  private applyWithholds(grant: RawGrant, withholds: Withhold[]): RawGrant | null {
+    let left: RawGrant = { ...grant, withheld: undefined };
+    for (const withhold of withholds) {
+      if (withhold.leaves === null) return null;
+      left = { ...left, scope_json: withhold.leaves };
+    }
+    return left;
   }
 
   private evaluatePermission(

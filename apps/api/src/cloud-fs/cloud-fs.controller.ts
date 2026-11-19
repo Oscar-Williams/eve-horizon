@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Headers, NotFoundEx
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ZodError } from 'zod';
 import { RequirePermission } from '../auth/permission.decorator.js';
+import { buildApiError } from '../system/api-errors.js';
 import { CloudFsService } from './cloud-fs.service.js';
 import {
   CloudFsBrowseRequestSchema,
@@ -59,7 +60,7 @@ export class CloudFsController {
   ): Promise<CloudFsMountListResponse> {
     await this.scopedAccess.assertJobMayUseOrgData({ org_id: orgId, permission: 'cloud_fs:read', user: caller });
     const mounts = await this.cloudFsService.listMounts(orgId, projectId);
-    return { mounts: this.filterMountsForUser(mounts, caller) };
+    return { mounts: await this.scopedAccess.readableMounts({ org_id: orgId, user: caller, mounts }) };
   }
 
   @RequirePermission('cloud_fs:read')
@@ -352,17 +353,6 @@ export class CloudFsController {
     });
   }
 
-  private filterMountsForUser(
-    mounts: CloudFsMountResponse[],
-    user?: AuthUser,
-  ): CloudFsMountResponse[] {
-    const allowed = user?.scope?.cloud_fs?.allow_mount_ids;
-    if (!user?.is_job_token || !user.scope || !allowed) return mounts;
-    if (allowed.includes('*')) return mounts;
-    const allowedSet = new Set(allowed);
-    return mounts.filter((mount) => allowedSet.has(mount.id));
-  }
-
   private async resolveReadableMountId(
     orgId: string,
     requestedMountId: string | undefined,
@@ -374,15 +364,23 @@ export class CloudFsController {
     }
     // The default mount is still org data.
     await this.scopedAccess.assertJobMayUseOrgData({ org_id: orgId, permission: 'cloud_fs:read', user });
+    const mounts = await this.cloudFsService.listMounts(orgId);
+    const readable = await this.scopedAccess.readableMounts({ org_id: orgId, user, mounts });
     const allowed = user?.scope?.cloud_fs?.allow_mount_ids;
-    if (!user?.is_job_token || !user.scope || !allowed || allowed.includes('*')) {
-      return undefined;
+    if (user?.is_job_token && user.scope && allowed && !allowed.includes('*')) {
+      const mount = readable[0];
+      if (!mount) {
+        throw new NotFoundException('No cloud FS mount is available in this job token scope');
+      }
+      return mount.id;
     }
-    const mounts = this.filterMountsForUser(await this.cloudFsService.listMounts(orgId), user);
-    const mount = mounts[0];
-    if (!mount) {
-      throw new NotFoundException('No cloud FS mount is available in this job token scope');
+    // The org's default mount, as the service picks it: its first org-level mount.
+    const fallback = mounts.find((mount) => !mount.project_id);
+    if (fallback && !readable.some((mount) => mount.id === fallback.id)) {
+      throw buildApiError(403, 'resource_access_denied', `Access denied for resource: cloud_fs:${fallback.id}`, {
+        details: { permission: 'cloud_fs:read', resource: { type: 'cloud_fs', id: fallback.id, action: 'read' } },
+      });
     }
-    return mount.id;
+    return undefined;
   }
 }
