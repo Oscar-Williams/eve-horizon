@@ -72,13 +72,24 @@ export function isSupabaseEmailProven(claims: JwtPayload): boolean {
   });
 }
 
-/** The audience and role GoTrue gives a signed-in user's access token. */
-const GOTRUE_USER_AUDIENCE = 'authenticated';
-const GOTRUE_USER_ROLE = 'authenticated';
+/**
+ * The audience and role GoTrue gives a signed-in user's access token:
+ * "authenticated", or the empty string when GoTrue runs with no
+ * GOTRUE_JWT_AUD and no GOTRUE_JWT_DEFAULT_GROUP_NAME (the Eve base). GoTrue
+ * stores both on the user row when it creates the user, so tokens keep the
+ * empty values even if those settings are added later.
+ */
+const GOTRUE_USER_VALUES = new Set(['authenticated', '']);
 
-/** True when a JWT `aud` claim (a string or a list) names `audience`. */
-function hasAudience(aud: unknown, audience: string): boolean {
-  return aud === audience || (Array.isArray(aud) && aud.includes(audience));
+/** True when a JWT `aud` claim (a string or a list) is a GoTrue user audience. */
+function isGoTrueUserAudience(aud: unknown): boolean {
+  if (typeof aud === 'string') return GOTRUE_USER_VALUES.has(aud);
+  return Array.isArray(aud) && aud.length > 0 && aud.every((value) => typeof value === 'string' && GOTRUE_USER_VALUES.has(value));
+}
+
+/** True when a JWT `role` claim is a GoTrue signed-in user's role (never anon or service_role). */
+function isGoTrueUserRole(role: unknown): boolean {
+  return typeof role === 'string' && GOTRUE_USER_VALUES.has(role);
 }
 
 /** The `alg` a JWT's header names, read without verifying anything. */
@@ -708,15 +719,21 @@ export class TokenVerifierService {
 
   /**
    * Verify a GoTrue access token. Only a signed-in user's token is accepted:
-   * GoTrue gives those `aud` and `role` "authenticated"; its anon and
-   * service keys, and tokens for other roles, are refused.
+   * a subject, with `aud` and `role` each "authenticated" or empty (see
+   * GOTRUE_USER_VALUES). The anon and service keys (role anon, service_role;
+   * no subject), and tokens for any other role or audience, are refused.
    */
   private verifySupabaseToken(token: string): JwtPayload {
     if (!this.supabaseSecret) {
       throw new UnauthorizedException('Supabase JWT secret not configured');
     }
     const claims = verifyJwtHs256(token, this.supabaseSecret);
-    if (!hasAudience(claims.aud, GOTRUE_USER_AUDIENCE) || claims.role !== GOTRUE_USER_ROLE) {
+    if (
+      typeof claims.sub !== 'string' ||
+      !claims.sub ||
+      !isGoTrueUserAudience(claims.aud) ||
+      !isGoTrueUserRole(claims.role)
+    ) {
       throw new UnauthorizedException('Not a signed-in user token');
     }
     return claims;

@@ -1299,9 +1299,17 @@ export SUPABASE_JWT_SECRET="your-supabase-jwt-secret"
 ```
 
 In this configuration:
-- Only a signed-in user's token is accepted: it must carry `aud` and `role`
-  `authenticated`, as GoTrue user tokens do. GoTrue's anon and service keys,
-  and tokens for any other role, are refused.
+- Only a signed-in user's token is accepted: it must carry a `sub`, and its
+  `aud` and `role` must each be `authenticated` or the empty string. GoTrue's
+  anon and service keys (role `anon`, `service_role`; no `sub`), and tokens
+  for any other role or audience, are refused.
+- Empty values are accepted because a GoTrue with no `GOTRUE_JWT_AUD` and no
+  `GOTRUE_JWT_DEFAULT_GROUP_NAME` (the Eve `k8s/base` ships neither) creates
+  users with an empty `aud` and `role` and puts those values in their access
+  tokens. GoTrue stores both on the user row, so setting the variables later
+  does not change existing users' tokens (and GoTrue then no longer finds
+  those users by email for admin links); leave them unset on a running
+  instance.
 - Supabase users are auto-created on first login (identity-linked by Supabase UUID,
   or by email match on an email-proven sign-in; see Token Exchange above)
 - RS256 flows (SSH/Nostr, job tokens, service principals) continue to work
