@@ -35,6 +35,31 @@ instance profile leaves no instance profile, which means `legacy`; set
 (entity type `security_profile`) with the system admin who made it and the
 old and new profile; the change and its record commit together.
 
+## Rule sets and stamps
+
+Each rule belongs to the rule set of the release step that brought it: the
+P1 rules (0.1.326) are rule set 1, the P2 rules (0.1.327) rule set 2. A
+`strict` profile is stamped with the rule set current when it was set
+(`security_profile_ruleset` on orgs and projects, the system setting
+`security.profile_ruleset` for the instance). A rule newer than the stamp
+runs under `audit` there: it is recorded, not enforced. So a release never
+starts enforcing new rules on a profile already `strict`; nothing changes
+until someone moves that profile on.
+
+- Profiles that were `strict` before stamps existed are stamped 1. A `strict`
+  with no stamp reads as 1.
+- Setting `strict` again stamps the current rule set, which takes the new
+  rules: `eve system security profile strict --project proj_xxx`.
+- A project created under `security.new_project_profile = strict` is stamped
+  with the current rule set.
+- `legacy` and `audit` carry no stamp.
+- The API, and the worker and orchestrator (`decideSecurityRule`), resolve
+  stamps the same way. New behaviour always gets a new rule id, never a wider
+  meaning for an old one, so a stamp keeps what it covered.
+
+`eve doctor security` shows what each `strict` covers, for example
+`strict (P1 rules); P2 rules on audit`.
+
 Each rule is governed by the profile of the side it protects:
 - **Identity rules** follow the instance, because the app calling them is
   the party they guard against.
@@ -61,7 +86,9 @@ again.
 ## Rules
 
 Each hardening rule lists its id, its governing profile and what `strict`
-changes. Rules are added release by release.
+changes. Rules are added release by release, one rule set per release step.
+
+### Rule set 1 (0.1.326)
 
 | Rule | Governs | Under `strict` |
 |---|---|---|
@@ -89,3 +116,17 @@ changes. Rules are added release by release.
 | `sso.session_origin` | Instance | The SSO's `/session` and `/logout` serve only the Eve dashboard (no `project_id`), the SSO itself for `/logout`, and an https host of the named project with `x-eve.auth` (default environment hosts, ingress aliases, verified custom domains, manifest `allowed_redirect_origins`). Any other origin, or none, gets 403. |
 | `sso.app_access` | Instance | `/session` gives an app a token only for a person its app-access policy admits; anyone else gets 403. |
 | `sso.audience_token` | Instance | An app gets a one-hour audience token (`aud` `eve-app:<project>[:<env>]`, no `orgs` claim) instead of the platform token. Under `audit` each app session that would get one is recorded. |
+
+### Rule set 2 (0.1.327)
+
+A profile stamped 1 runs these under `audit` until `strict` is set again.
+
+| Rule | Governs | Under `strict` |
+|---|---|---|
+| `secrets.value_read` | Project | Secret values are write-only through the API: `POST /projects/:id/secrets/export` gets 403. `ensure` returns a value it generates once, in its own response, and `eve github setup` returns the webhook secret only when it creates it (`secret` is `null` otherwise; `--regenerate` makes a new one). Under `audit`, each export is recorded. |
+| `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token or OAuth client secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. Set the instance `strict` only after `eve system secrets reencrypt` has left no `v1` or plain rows (`--dry-run` shows the count). See [secrets](secrets.md#storage-at-rest). |
+
+Always on in 0.1.327, whatever the profile: reads of both ciphertext formats
+and of sealed or plain OAuth columns; masks that show no character of a
+value; and OAuth state stored with its expiry and bound to the user (or
+signed-link install cookie) that started the install.

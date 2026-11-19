@@ -2624,7 +2624,9 @@ paths:
   /projects/{id}/github/setup:
     post:
       description: Ensures GITHUB_WEBHOOK_SECRET exists, returns webhook URL and
-        secret for configuring GitHub.
+        secret for configuring GitHub. Under a strict project
+        (secrets.value_read) the secret is returned only when this call creates
+        it; otherwise it is null, and regenerate makes a new one.
       operationId: ProjectGithubController_setup
       parameters:
         - name: id
@@ -2847,7 +2849,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/SecretEnsureResponse"
       security: *a28
-      summary: Ensure safe secrets exist for a project
+      summary: Ensure safe secrets exist for a project (a generated value is returned
+        once, here)
       tags: *a29
   /projects/{project_id}/secrets/export:
     post:
@@ -2872,7 +2875,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/SecretExportResponse"
       security: *a28
-      summary: Export safe secrets for external configuration
+      summary: "Export safe secrets for external configuration (refused under a strict
+        project: secrets.value_read)"
       tags: *a29
   /orgs/{org_id}/secrets:
     post:
@@ -3128,6 +3132,29 @@ paths:
       security: *a32
       summary: Delete user secret
       tags: *a33
+  /system/secrets/reencrypt:
+    post:
+      operationId: SystemSecretsController_reencrypt
+      parameters: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretsReencryptRequest"
+      responses:
+        "200":
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretsReencryptResponse"
+      security: &a34
+        - bearer: []
+      summary: Move stored credentials to the v2 format (system_admin only; after it,
+        older releases cannot read them)
+      tags: &a35
+        - secrets
   /system/secrets:
     post:
       operationId: SystemSecretsController_create
@@ -3145,11 +3172,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SecretResponse"
-      security: &a34
-        - bearer: []
+      security: *a34
       summary: Create system secret
-      tags: &a35
-        - secrets
+      tags: *a35
     get:
       operationId: SystemSecretsController_list
       parameters:
@@ -6825,7 +6850,8 @@ paths:
       responses:
         "200":
           description: ""
-      summary: Redirect to Slack OAuth for workspace install
+      summary: Redirect to Slack OAuth for workspace install; the state is bound to
+        the caller
       tags: &a66
         - integrations
   /integrations/slack/install:
@@ -6835,7 +6861,8 @@ paths:
       responses:
         "200":
           description: ""
-      summary: Public Slack install via signed token (no Eve auth required)
+      summary: Public Slack install via signed token (no Eve auth required); bound to
+        this browser by a cookie
       tags: *a66
   /integrations/slack/oauth/callback:
     get:
@@ -6844,7 +6871,9 @@ paths:
       responses:
         "200":
           description: ""
-      summary: Handle Slack OAuth callback
+      summary: "Handle Slack OAuth callback: stores the code for the user who started
+        the install to complete; a signed-link install completes here with its
+        cookie"
       tags: *a66
   /orgs/{org_id}/integrations/providers/{provider}/config:
     post:
@@ -6928,6 +6957,34 @@ paths:
           description: ""
       summary: Get setup instructions and URLs for configuring an OAuth app
       tags: *a67
+  /integrations/{provider}/oauth/complete:
+    post:
+      operationId: OAuthCompleteController_complete
+      parameters:
+        - name: provider
+          required: true
+          in: path
+          description: slack or google-drive
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthCompleteRequest"
+      responses:
+        "200":
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthCompleteResponse"
+      security:
+        - bearer: []
+      summary: Complete an OAuth install (slack, google-drive) the caller started
+      tags:
+        - integrations
   /projects/{project_id}/builds:
     post:
       operationId: BuildsController_createSpec
@@ -11563,7 +11620,8 @@ paths:
       responses:
         "200":
           description: ""
-      summary: Redirect to Google OAuth for Drive access
+      summary: Redirect to Google OAuth for Drive access; the state is bound to the
+        caller
       tags: &a116
         - integrations
   /integrations/google-drive/oauth/callback:
@@ -11573,7 +11631,8 @@ paths:
       responses:
         "200":
           description: ""
-      summary: Handle Google OAuth callback
+      summary: "Handle Google OAuth callback: stores the code for the user who started
+        the install to complete"
       tags: *a116
   /internal/platform-notify:
     post:
@@ -15314,6 +15373,11 @@ components:
           type: string
         masked_value:
           type: string
+        length:
+          type: integer
+          minimum: 0
+        fingerprint:
+          type: string
       required:
         - id
         - scope_type
@@ -15323,6 +15387,8 @@ components:
         - created_at
         - updated_at
         - masked_value
+        - length
+        - fingerprint
       additionalProperties: false
     UpdateSecretRequest:
       type: object
@@ -15395,9 +15461,23 @@ components:
           type: array
           items:
             type: string
+        values:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+            required:
+              - key
+              - value
+            additionalProperties: false
       required:
         - created
         - existing
+        - values
       additionalProperties: false
     SecretExportRequest:
       type: object
@@ -15428,6 +15508,104 @@ components:
             additionalProperties: false
       required:
         - data
+      additionalProperties: false
+    SecretsReencryptRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+      additionalProperties: false
+    SecretsReencryptResponse:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+        write_format:
+          type: string
+          enum:
+            - v1
+            - v2
+        before:
+          type: object
+          properties:
+            secrets:
+              type: object
+              properties:
+                v1:
+                  type: number
+                v2:
+                  type: number
+                other:
+                  type: number
+              required:
+                - v1
+                - v2
+                - other
+              additionalProperties: false
+            integration_tokens:
+              type: object
+              properties:
+                plain:
+                  type: number
+                sealed:
+                  type: number
+              required:
+                - plain
+                - sealed
+              additionalProperties: false
+            oauth_client_secrets:
+              type: object
+              properties:
+                plain:
+                  type: number
+                sealed:
+                  type: number
+              required:
+                - plain
+                - sealed
+              additionalProperties: false
+          required:
+            - secrets
+            - integration_tokens
+            - oauth_client_secrets
+          additionalProperties: false
+        after:
+          $ref: "#/definitions/SecretsReencryptResponse/properties/before"
+        reencrypted:
+          type: object
+          properties:
+            secrets:
+              type: number
+            integration_tokens:
+              type: number
+            oauth_client_secrets:
+              type: number
+          required:
+            - secrets
+            - integration_tokens
+            - oauth_client_secrets
+          additionalProperties: false
+        skipped:
+          type: object
+          properties:
+            changed:
+              type: number
+            unreadable:
+              type: number
+          required:
+            - changed
+            - unreadable
+          additionalProperties: false
+        remaining:
+          type: number
+      required:
+        - dry_run
+        - write_format
+        - before
+        - after
+        - reencrypted
+        - skipped
+        - remaining
       additionalProperties: false
     SecretResolveRequest:
       type: object
@@ -25053,6 +25231,32 @@ components:
         - token
         - expires_in
         - instructions
+      additionalProperties: false
+    OAuthCompleteRequest:
+      type: object
+      properties:
+        state:
+          type: string
+          minLength: 1
+      required:
+        - state
+      additionalProperties: false
+    OAuthCompleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        provider:
+          type: string
+        integration_id:
+          type: string
+        account_id:
+          type: string
+      required:
+        - ok
+        - provider
+        - integration_id
+        - account_id
       additionalProperties: false
     CreateBuildSpecRequest:
       type: object

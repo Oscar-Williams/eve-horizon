@@ -28,6 +28,28 @@ eve integrations connect google-drive --org <org_id>
 eve cloud-fs mount --provider google-drive --folder-id <drive-folder-id> --label "Shared Drive" --org <org_id>
 ```
 
+### OAuth installs (Google Drive, Slack)
+
+An install started by an Eve user is bound to that user:
+
+1. `GET /orgs/:org_id/integrations/{google-drive,slack}/authorize`
+   (`integrations:write`) stores a state, with a ten-minute expiry, against
+   the caller, and redirects to the provider. The state is kept in the
+   `oauth_states` table (by its SHA-256), so any API replica can finish it.
+2. The provider sends the browser back to the public
+   `GET /integrations/{google-drive,slack}/oauth/callback`, which records the
+   code against the state and exchanges nothing (`{ "pending": true }`).
+3. The user who started it completes with
+   `POST /integrations/{google-drive,slack}/oauth/complete` (`{ "state" }`)
+   and their own token: the API exchanges the code with the org's OAuth app
+   and stores the integration. Another user gets 403; a call before the
+   browser has come back gets 409; a state works once.
+
+`eve integrations connect <provider>` does all three: it starts the install
+as you, prints the provider URL to open, and completes once the browser has
+approved it. With `--no-wait` it prints the URL and the
+`eve integrations complete <provider> --state <state>` command instead.
+
 Cloud FS browse and search expose provider-neutral pagination:
 
 ```bash
@@ -113,14 +135,21 @@ eve integrations slack install-url --org <org_id> --ttl 7d
 
 The link redirects to Slack's OAuth consent screen. On approval, Eve exchanges the OAuth code for a bot token and creates the integration automatically. No manual token copying needed.
 
+The link has no Eve user behind it, so its state is bound to the browser that
+opened it: `install` sets a `__Host-eve_slack_install` cookie (Secure,
+HttpOnly, `SameSite=Lax` so it comes back on Slack's redirect, ten minutes),
+and the callback completes the install only with that cookie. Finish the
+install in the same browser that opened the link.
+
 **Gateway hot-loading**: The gateway detects and initializes new integrations within ~30 seconds (no restart required). It polls the API for active integrations on a 30-second interval.
 
 **Install token format**: `eve-slack-install-<base64url(payload)>.<base64url(hmac)>`. Tokens are HMAC-signed with `EVE_INTERNAL_API_KEY`, single-use (JTI tracked), and expire after the configured TTL.
 
 **API endpoints**:
 - `POST /orgs/:org_id/integrations/slack/install-token` — generate signed install token (requires `integrations:write`)
-- `GET /integrations/slack/install?token=...` — public endpoint; validates token, redirects to Slack OAuth
-- `GET /integrations/slack/oauth/callback` — handles OAuth code exchange and creates integration
+- `GET /integrations/slack/install?token=...` — public endpoint; validates token, sets the install cookie, redirects to Slack OAuth
+- `GET /integrations/slack/oauth/callback` — for a signed-link install with its cookie, exchanges the code and creates the integration; for an install a user started, records the code for that user to complete
+- `POST /integrations/slack/oauth/complete` — the user who started an install completes it
 
 ### Connect (Manual — Fallback)
 
@@ -256,7 +285,11 @@ Each integration row stores two JSONB columns that serve distinct purposes:
 
 ### `tokens_json` (Auth Credentials)
 
-Sensitive authentication material. Never exposed in list responses.
+Sensitive authentication material. Never exposed in list responses. Stored
+as the object until `eve system secrets reencrypt`, and as a sealed `v2`
+envelope (a JSON string) after it; the internal routes the gateway calls open
+it before replying. OAuth app client secrets are stored the same way. See
+[secrets](secrets.md#storage-at-rest).
 
 | Key | Example | Purpose |
 |-----|---------|---------|

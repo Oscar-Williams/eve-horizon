@@ -150,6 +150,21 @@ Send the URL to whoever has admin access to the Slack workspace. When they open 
 3. Slack redirects back to Eve, which exchanges the OAuth code for a bot token
 4. The integration is created automatically -- no manual token copying needed
 
+The install must finish in the same browser that opened the link: Eve binds it
+to that browser with a short-lived cookie.
+
+### Install as an Eve user
+
+An org admin can also install from the CLI:
+
+```bash
+eve integrations connect slack --org <org_id>
+```
+
+Open the printed URL and approve. Slack sends the browser back to Eve, which
+holds the code until the CLI that started the install completes it with your
+token; nobody else can complete it.
+
 ### Gateway hot-loading
 
 After installation, the gateway automatically detects the new integration within **30 seconds** (no restart required). The gateway polls for new integrations periodically and initializes them on the fly.

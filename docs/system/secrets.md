@@ -1,7 +1,7 @@
 # Secrets
 
 > Status: Current
-> Last Updated: 2026-01-28
+> Last Updated: 2026-11-19
 
 ## Overview
 
@@ -38,7 +38,47 @@ Resolution order (highest wins): **project → user → org → system**.
 
 System secrets are loaded from `system-secrets.env.local` on API startup; restart the API to pick up changes.
 
-Values are never returned in plaintext. The `show` endpoint returns a masked value (first/last characters only).
+Values are never returned in plaintext. The `show` endpoint returns a fixed
+mask (`••••••••`, never a character of the value), the value's `length`, and a
+`fingerprint`: 12 hex of an HMAC over the scope, key and value, under a key
+derived from the master key. Two secrets with the same fingerprint at the same
+scope and key hold the same value; the fingerprint says nothing across scopes,
+keys or instances.
+
+## Storage at rest
+
+Secret values are encrypted with AES-256-GCM under `EVE_SECRETS_MASTER_KEY`.
+Integration tokens (`integrations.tokens_json`) and OAuth app client secrets
+(`oauth_app_configs.client_secret`) are covered too.
+
+| Format | What it is |
+|---|---|
+| `v1:iv:tag:data` | A secret encrypted with no associated data. |
+| `v2:iv:tag:data` | A secret encrypted with associated data `scope_type\|scope_id\|key`: it opens only in its own row. Integration tokens and client secrets use the same envelope with `table\|id\|field`. |
+| plain | Integration tokens and client secrets before re-encryption. |
+
+Every release from 0.1.327 reads all three. New writes stay `v1` (and plain
+for the OAuth columns) until a system admin runs the re-encryption command,
+so a rollback to a release that reads only `v1` stays possible until then:
+
+```bash
+eve system secrets reencrypt --dry-run   # count rows by format; change nothing
+eve system secrets reencrypt             # attended; cannot be rolled back
+```
+
+The command sets the instance setting `secrets.ciphertext_format` to `v2`
+(new writes use `v2`: at once on the API that ran it, within half a minute on
+the others), then re-encrypts `v1` secrets and plain OAuth columns in batches.
+Each row is swapped by compare-and-set on the value read: a row written while
+the pass runs keeps its new value, and the report counts it; run the command
+again to take it. Rows the master key cannot open are counted and left; set
+them again. **After the command, a release below 0.1.327 cannot read the
+re-encrypted rows.** Run it only once the release has soaked.
+
+The instance rule `secrets.legacy_ciphertext` records each read of a `v1`
+secret or a plain OAuth column under `audit`, and refuses it under `strict`
+(where writes also use `v2`). Move the instance to `strict` only after the
+command has left no `v1` or plain rows (`--dry-run` shows the count).
 
 ## Import secrets from a file (CLI)
 
@@ -90,7 +130,15 @@ eve secrets ensure --project proj_xxx --keys GITHUB_WEBHOOK_SECRET
 eve secrets export --project proj_xxx --keys GITHUB_WEBHOOK_SECRET
 ```
 
-Export returns the plaintext value (for webhook setup). Treat it as sensitive.
+`ensure` returns each value it generates once, in its own response
+(`values`); the CLI prints it. Export returns the plaintext value (for webhook
+setup). Treat both as sensitive.
+
+Under a project's `strict` profile, rule `secrets.value_read`, secret values
+are write-only through the API: export gets 403, and the value of a safe
+secret is seen only in the `ensure` that creates it. `eve github setup`
+returns the webhook secret only when it creates it (or with `--regenerate`);
+otherwise `secret` is `null`. Under `audit`, each export is recorded.
 
 ## Manifest Secrets Interpolation
 
@@ -329,7 +377,7 @@ If a job fails during clone or secret resolution:
 
 ## Required Config
 
-- `EVE_SECRETS_MASTER_KEY` (API): encryption key for secrets at rest (required to store API secrets).
+- `EVE_SECRETS_MASTER_KEY` (API): encryption key for secrets, integration tokens and OAuth client secrets at rest (required to store API secrets). It also keys the mask fingerprint.
 - `EVE_INTERNAL_API_KEY` (worker + API): internal token for resolve endpoint (required for API secret resolution).
 
 ## Incident Response (Secrets)
