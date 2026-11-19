@@ -56,6 +56,6 @@ export class SecurityController {
     @CurrentUser() caller: AuthUser | undefined,
   ) {
     const actor = requireSystemAdmin(caller);
-    return this.security.setProfile({ scope: body.scope, id: body.id } as never, body.profile, actor);
+    return this.security.setProfile({ scope: body.scope, id: body.id } as never, body.profile, actor, { force: body.force });
   }
 }

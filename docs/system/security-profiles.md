@@ -124,7 +124,7 @@ A profile stamped 1 runs these under `audit` until `strict` is set again.
 | Rule | Governs | Under `strict` |
 |---|---|---|
 | `secrets.value_read` | Project | Secret values are write-only through the API: `POST /projects/:id/secrets/export` gets 403. `ensure` returns a value it generates once, in its own response, and `eve github setup` returns the webhook secret only when it creates it (`secret` is `null` otherwise; `--regenerate` makes a new one). Under `audit`, each export is recorded. |
-| `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token or OAuth client secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. Set the instance `strict` only after `eve system secrets reencrypt` has left no `v1` or plain rows (`--dry-run` shows the count). See [secrets](secrets.md#storage-at-rest). |
+| `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token or OAuth client secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. `eve system security profile strict` on the instance gets 409, naming the count, while any `v1` or plain rows remain: run `eve system secrets reencrypt` first (`--dry-run` shows the count), or override with `--force` (recorded in the audit log). Org and project flips are not checked. See [secrets](secrets.md#storage-at-rest). |
 
 Always on in 0.1.327, whatever the profile: reads of both ciphertext formats
 and of sealed or plain OAuth columns; masks that show no character of a

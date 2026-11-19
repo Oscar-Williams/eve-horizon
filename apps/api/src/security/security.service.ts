@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -23,6 +24,7 @@ import {
   type SecurityProfileLevels,
 } from '@eve/shared';
 import type { AuthUser } from '../auth/auth.types.js';
+import { countStoredCredentials, legacyCredentialRows } from '../secrets/credential-storage.js';
 
 export interface SecurityScope {
   orgId?: string | null;
@@ -106,10 +108,16 @@ export class SecurityService {
     return 'recorded';
   }
 
+  /**
+   * Set a profile. The instance goes `strict` only once no v1 secret or
+   * plain OAuth column is left (its `secrets.legacy_ciphertext` would refuse
+   * them): 409 otherwise, unless `force`.
+   */
   async setProfile(
     target: SecurityProfileTarget,
     profile: SecurityProfile | null,
     actorUserId: string,
+    options: { force?: boolean } = {},
   ): Promise<{ scope: string; id: string | null; profile: SecurityProfile | null; ruleset: number | null }> {
     if (profile !== null && !isSecurityProfile(profile)) {
       throw new BadRequestException(`Security profile must be legacy, audit or strict, not "${String(profile)}"`);
@@ -129,6 +137,17 @@ export class SecurityService {
       const audit = auditQueries(tx);
 
       if (target.scope === 'instance' || target.scope === 'new_projects') {
+        let forcedWithLegacy = 0;
+        if (target.scope === 'instance' && profile === 'strict') {
+          const legacy = legacyCredentialRows(await countStoredCredentials(tx));
+          if (legacy > 0 && !options.force) {
+            throw new ConflictException(
+              `${legacy} credential(s) are still stored as v1 secrets or plain OAuth columns, which a strict instance refuses. ` +
+              'Run eve system secrets reencrypt first (--dry-run shows them), or set the instance strict with --force.',
+            );
+          }
+          forcedWithLegacy = legacy;
+        }
         const key = target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING;
         const previous = (await settings.get(key))?.value ?? null;
         // Clearing the instance profile leaves it unset, which resolves to legacy.
@@ -145,7 +164,9 @@ export class SecurityService {
             await settings.set(SECURITY_PROFILE_RULESET_SETTING, String(ruleset), actorUserId);
           }
         }
-        await recordProfileChange(audit, target.scope, previous, profile, actorUserId, target.scope === 'instance' ? ruleset : null);
+        await recordProfileChange(audit, target.scope, previous, profile, actorUserId, target.scope === 'instance' ? ruleset : null, {
+          ...(forcedWithLegacy > 0 ? { forced_with_legacy_credentials: forcedWithLegacy } : {}),
+        });
         return { scope: target.scope, id: null, profile, ruleset: target.scope === 'instance' ? ruleset : null };
       }
 
@@ -364,6 +385,7 @@ async function recordProfileChange(
   profile: string | null,
   actorUserId: string,
   ruleset: number | null,
+  extra: Record<string, number> = {},
 ): Promise<void> {
   await audit.log({
     entity_type: 'security_profile',
@@ -372,6 +394,6 @@ async function recordProfileChange(
     actor: actorUserId,
     actor_type: 'user',
     changes: { profile: { old: previous, new: profile } },
-    context: ruleset === null ? {} : { ruleset },
+    context: { ...(ruleset === null ? {} : { ruleset }), ...extra },
   });
 }

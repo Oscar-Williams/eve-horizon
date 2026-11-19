@@ -12,6 +12,8 @@ export const SetSecurityProfileRequestSchema = z
     scope: z.enum(['instance', 'new_projects', 'org', 'project']),
     id: z.string().trim().min(1).optional(),
     profile: z.enum(SECURITY_PROFILES).nullable(),
+    /** Set the instance strict although v1 secrets or plain OAuth columns remain (otherwise 409). */
+    force: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

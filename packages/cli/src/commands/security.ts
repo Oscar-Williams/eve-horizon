@@ -119,7 +119,7 @@ export async function handleSystemSecurity(
 ): Promise<void> {
   const [action, value] = positionals;
   const usage =
-    'Usage: eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects]';
+    'Usage: eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects] [--force]';
   if (action !== 'profile' || !value) throw new Error(usage);
   if (value !== 'clear' && !PROFILES.includes(value)) throw new Error(usage);
 
@@ -130,7 +130,13 @@ export async function handleSystemSecurity(
     throw new Error('Give at most one of --org, --project and --new-projects');
   }
   const scope = org ? 'org' : project ? 'project' : newProjects ? 'new_projects' : 'instance';
-  const body = { scope, ...(org || project ? { id: org ?? project } : {}), profile: value === 'clear' ? null : value };
+  const force = getBooleanFlag(flags, ['force']) ?? false;
+  const body = {
+    scope,
+    ...(org || project ? { id: org ?? project } : {}),
+    profile: value === 'clear' ? null : value,
+    ...(force ? { force: true } : {}),
+  };
 
   const result = await requestJson<{ scope: string; id: string | null; profile: string | null; ruleset?: number | null }>(
     context,

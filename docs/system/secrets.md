@@ -77,8 +77,9 @@ re-encrypted rows.** Run it only once the release has soaked.
 
 The instance rule `secrets.legacy_ciphertext` records each read of a `v1`
 secret or a plain OAuth column under `audit`, and refuses it under `strict`
-(where writes also use `v2`). Move the instance to `strict` only after the
-command has left no `v1` or plain rows (`--dry-run` shows the count).
+(where writes also use `v2`). Setting the instance `strict` is refused (409,
+with the count) while any `v1` or plain rows remain; `--force` overrides, and
+the audit log records the count it was forced with.
 
 ## Import secrets from a file (CLI)
 

@@ -2255,7 +2255,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
       },
       security: {
         description: 'Set the security profile of the instance, new projects, an org or a project (system admins only)',
-        usage: 'eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects]',
+        usage: 'eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects] [--force]',
         options: [
           'legacy        Today\'s behaviour; hardening rules are not checked',
           'audit         Today\'s behaviour, plus a finding for what strict would refuse',
@@ -2264,6 +2264,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
           '--org <id>    Set an org (overrides the instance)',
           '--project <id> Set a project (overrides its org)',
           '--new-projects Set the profile written onto each new project',
+          '--force       Set the instance strict although v1 secrets or plain OAuth columns remain (see eve system secrets reencrypt)',
         ],
         examples: [
           'eve system security profile audit',

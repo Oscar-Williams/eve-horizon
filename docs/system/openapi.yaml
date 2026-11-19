@@ -13501,6 +13501,8 @@ components:
             - audit
             - strict
           nullable: true
+        force:
+          type: boolean
       required:
         - scope
         - profile
