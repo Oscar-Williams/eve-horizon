@@ -5,7 +5,7 @@ type Row = Record<string, unknown>;
 
 type LoopInternals = {
   enrichWorkflowStep(job: Row, jobs: unknown): Promise<string>;
-  evaluateStepCondition(jobs: unknown, job: Row): Promise<{ shouldRun: boolean; reason?: string } | null>;
+  evaluateStepCondition(jobs: unknown, job: Row): Promise<{ shouldRun: boolean; reason?: string; action?: string } | null>;
 };
 
 function loop(): LoopInternals {
@@ -167,7 +167,7 @@ describe('workflow step conditions', () => {
     expect(outcome?.shouldRun).toBe(false);
   });
 
-  it('is not met when the named step now runs as someone other than the step or the run', async () => {
+  it('fails the step when the named step now runs as someone other than the step or the run', async () => {
     const jobs = jobsWith(
       [done('run1.1', 'run1', 'research', 'user_mate')],
       { 'run1.1': { status: 'succeeded', result_json: { eve: { status: 'ok' } } } },
@@ -175,7 +175,7 @@ describe('workflow step conditions', () => {
 
     const outcome = await loop().evaluateStepCondition(jobs, CONDITIONAL_STEP);
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
     expect(outcome?.reason).toMatch(/research/);
   });
 

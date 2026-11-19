@@ -3,13 +3,18 @@ import { LoopService } from './loop.service';
 
 type Row = Record<string, unknown>;
 
+type Outcome = { shouldRun: boolean; reason?: string; action?: 'skip' | 'fail' | 'wait' };
+
 type LoopInternals = {
-  evaluateStepCondition(jobs: unknown, job: Row): Promise<{ shouldRun: boolean; reason?: string } | null>;
+  evaluateStepCondition(jobs: unknown, job: Row): Promise<Outcome | null>;
+  conditionAllowsClaim(jobs: unknown, job: Row): Promise<boolean>;
+  db: ReturnType<typeof vi.fn>;
 };
 
 function loop(): LoopInternals {
   const service = Object.create(LoopService.prototype) as Row;
-  service.logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  service.logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  service.db = vi.fn(async () => []);
   return service as unknown as LoopInternals;
 }
 
@@ -37,6 +42,7 @@ function jobsWith(source: Row | null, latestAttempt: Row | null) {
     getDependencies: vi.fn(async () => (source ? [source] : [])),
     getLatestAttempt: vi.fn(async () => latestAttempt),
     findSiblingByStepName: vi.fn(async () => null),
+    markJobFailed: vi.fn(async () => null),
   };
 }
 
@@ -49,46 +55,88 @@ describe('a workflow step condition', () => {
     expect(outcome).toEqual({ shouldRun: true, reason: undefined });
   });
 
-  it('is not met when its source step was cancelled, whatever that step last reported', async () => {
+  it('skips the step when the condition is read and not met', async () => {
+    const outcome = await loop().evaluateStepCondition(jobsWith(research('done'), SAID_OK), writeStep("research.status != 'ok'"));
+
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
+  });
+
+  it('fails the step when its source step was cancelled, whatever that step last reported', async () => {
     const outcome = await loop().evaluateStepCondition(
       jobsWith(research('cancelled'), { status: 'cancelled', result_json: { eve: { status: 'ok' } } }),
       writeStep("research.status == 'ok'"),
     );
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
     expect(outcome?.reason).toMatch(/research/);
   });
 
-  it('is not met when its source step was closed as done with no attempt', async () => {
+  it('fails the step when its source step was closed as done with no attempt', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(research('done'), null), writeStep("research.status != 'skip'"));
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
   });
 
-  it("is not met when its source step's latest attempt did not complete", async () => {
+  it("fails the step when its source step's latest attempt did not complete", async () => {
     const outcome = await loop().evaluateStepCondition(
       jobsWith(research('done'), { status: 'running', result_json: null }),
       writeStep("research.status != 'skip'"),
     );
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
   });
 
-  it('is not met, rather than left waiting, when its source step has not finished', async () => {
+  it('keeps the step waiting while its source step has not finished', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(research('active'), null), writeStep("research.status != 'skip'"));
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'wait' });
   });
 
-  it('is not met when its source step cannot be found', async () => {
+  it('fails the step when its source step cannot be found', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(null, null), writeStep("research.status != 'skip'"));
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
   });
 
-  it('is not met when it cannot be read', async () => {
+  it('fails the step when it cannot be read', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(research('done'), SAID_OK), writeStep('research is fine'));
 
-    expect(outcome?.shouldRun).toBe(false);
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
+  });
+});
+
+describe('a step whose condition decides it before it is claimed', () => {
+  it('is failed, never closed as done, when its source finished with no readable result', async () => {
+    const service = loop();
+    const jobs = jobsWith(research('done'), null);
+
+    await expect(service.conditionAllowsClaim(jobs, writeStep("research.status != 'pass'"))).resolves.toBe(false);
+
+    expect(jobs.markJobFailed).toHaveBeenCalledWith('run1.2', expect.stringMatching(/research/));
+    expect(service.db).not.toHaveBeenCalled();
+  });
+
+  it('is left waiting, neither failed nor closed, while its source has not finished', async () => {
+    const service = loop();
+    const jobs = jobsWith(research('active'), null);
+
+    await expect(service.conditionAllowsClaim(jobs, writeStep("research.status != 'pass'"))).resolves.toBe(false);
+
+    expect(jobs.markJobFailed).not.toHaveBeenCalled();
+    expect(service.db).not.toHaveBeenCalled();
+  });
+
+  it('is closed as done when its condition is read and not met', async () => {
+    const service = loop();
+    const jobs = jobsWith(research('done'), SAID_OK);
+
+    await expect(service.conditionAllowsClaim(jobs, writeStep("research.status != 'ok'"))).resolves.toBe(false);
+
+    expect(service.db).toHaveBeenCalledTimes(1);
+    expect(jobs.markJobFailed).not.toHaveBeenCalled();
+  });
+
+  it('may be claimed when its condition is met', async () => {
+    await expect(loop().conditionAllowsClaim(jobsWith(research('done'), SAID_OK), writeStep("research.status == 'ok'"))).resolves.toBe(true);
   });
 });
