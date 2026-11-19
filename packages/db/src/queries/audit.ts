@@ -1,6 +1,6 @@
 import type { Db } from '../client.js';
 
-export type EntityType = 'job' | 'job_relation' | 'job_attempt' | 'external_map' | 'ingress_alias';
+export type EntityType = 'job' | 'job_relation' | 'job_attempt' | 'external_map' | 'ingress_alias' | 'security_profile';
 export type AuditAction = 'created' | 'updated' | 'deleted';
 export type ActorType = 'user' | 'agent' | 'system' | 'sync';
 
