@@ -25,6 +25,8 @@ const DASHBOARD = 'https://dashboard.eve.example';
 const state = vi.hoisted(() => ({
   settings: new Map<string, string>(),
   findings: [] as Array<{ rule: string; profile: string; project_id: string | null; actor_type: string; actor_id: string; detail: Record<string, unknown> }>,
+  /** Finding rows as the table keeps them: one per rule, scope and actor (one day). */
+  findingRows: new Map<string, { count: number; detail: Record<string, unknown> }>(),
   orgs: [] as Array<{ id: string; slug: string; name: string }>,
   projects: [] as Array<{ id: string; org_id: string; slug: string; name: string; auth_config: Record<string, unknown> | null; branding: null; deleted_at: null }>,
   environments: [] as Array<{ id: string; project_id: string; name: string }>,
@@ -33,6 +35,18 @@ const state = vi.hoisted(() => ({
   users: [] as Array<{ id: string; email: string; is_admin: boolean; display_name: null }>,
   memberships: [] as Array<{ org_id: string; user_id: string; role: 'owner' | 'admin' | 'member'; created_at: Date }>,
 }));
+
+/** The table's upsert: a repeat adds to the count and, unless kept, replaces the detail. */
+function upsertFindingRow(finding: (typeof state.findings)[number], keepDetail: boolean): void {
+  const key = [finding.rule, finding.project_id ?? '', finding.actor_type, finding.actor_id].join('|');
+  const row = state.findingRows.get(key);
+  if (!row) {
+    state.findingRows.set(key, { count: 1, detail: finding.detail });
+    return;
+  }
+  row.count += 1;
+  if (!keepDetail) row.detail = finding.detail;
+}
 
 vi.mock('@eve/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@eve/db')>();
@@ -47,6 +61,11 @@ vi.mock('@eve/db', async (importOriginal) => {
       getProfiles: vi.fn(async () => ({ org_id: null, org_profile: null, project_profile: null })),
       recordFinding: vi.fn(async (finding: (typeof state.findings)[number]) => {
         state.findings.push(finding);
+        upsertFindingRow(finding, false);
+      }),
+      recordFindingKeepingDetail: vi.fn(async (finding: (typeof state.findings)[number]) => {
+        state.findings.push(finding);
+        upsertFindingRow(finding, true);
       }),
     })),
     orgQueries: vi.fn(() => ({
@@ -139,6 +158,7 @@ beforeEach(() => {
 
   state.settings = new Map();
   state.findings = [];
+  state.findingRows = new Map();
   state.orgs = [
     { id: 'org_acme', slug: 'acme', name: 'ACME' },
     { id: 'org_b', slug: 'borg', name: 'B' },
@@ -225,6 +245,29 @@ describe('SsoSessionService.checkOrigin under the strict instance profile', () =
     expect(state.findings).toEqual([
       expect.objectContaining({ rule: 'sso.session_origin', profile: 'strict', project_id: SHOP }),
     ]);
+  });
+});
+
+describe('findings from the public origin check', () => {
+  const rowFor = (projectId: string | null) =>
+    state.findingRows.get(['sso.session_origin', projectId ?? '', 'none', 'none'].join('|'));
+
+  it('records an origin only for a project that exists', async () => {
+    await build('audit').service.checkOrigin({ origin: 'https://made-up.example', project_id: 'proj_missing', purpose: 'session' });
+    await build('audit').service.checkOrigin({ origin: 'https://other.example', project_id: null, purpose: 'session' });
+    expect(state.findings.length).toBeGreaterThan(0);
+    for (const finding of state.findings) expect(finding.detail).not.toHaveProperty('origin');
+
+    await build('audit').service.checkOrigin({ origin: 'https://evil.example', project_id: SHOP, purpose: 'session' });
+    expect(rowFor(SHOP)?.detail).toMatchObject({ origin: 'https://evil.example' });
+  });
+
+  it("never replaces the detail of the day's row for that rule", async () => {
+    // Each build is a new API process, so the in-process dedupe does not hide the write.
+    await build('audit').service.checkOrigin({ origin: 'https://first.example', project_id: SHOP, purpose: 'session' });
+    await build('audit').service.checkOrigin({ origin: 'https://second.example', project_id: SHOP, purpose: 'logout' });
+    expect(rowFor(SHOP)?.count).toBe(2);
+    expect(rowFor(SHOP)?.detail).toMatchObject({ origin: 'https://first.example', purpose: 'session' });
   });
 });
 
