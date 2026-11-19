@@ -25,6 +25,7 @@ import {
   type Manifest,
   type Service,
   getServicesFromManifest,
+  mergeEnvironmentServices,
   ManifestSchema,
   redactLogData,
   resolveProjectSecrets,
@@ -722,10 +723,13 @@ export class DeployerService {
     const services = getServicesFromManifest(manifest) ?? {};
 
     const envConfig = this.getEnvConfig(manifest as Record<string, unknown>, params.envName);
-    const envOverrides = this.getEnvOverrides(envConfig);
     const envWorkers = this.getEnvWorkers(envConfig);
-    const dbOverrides = this.getDbOverrides(environment.overrides_json ?? undefined);
-    const mergedServices = this.applyServiceOverrides(services, [envOverrides, dbOverrides]);
+    const mergedServices = mergeEnvironmentServices(
+      manifest as Record<string, unknown>,
+      services,
+      params.envName,
+      environment.overrides_json ?? null,
+    );
 
     const service = mergedServices[params.serviceName];
     if (!service) {
@@ -1033,9 +1037,7 @@ export class DeployerService {
     }
 
     const envConfig = this.getEnvConfig(manifest as Record<string, unknown>, params.envName);
-    const envOverrides = this.getEnvOverrides(envConfig);
-    const dbOverrides = this.getDbOverrides(params.envOverrides);
-    const mergedServices = this.applyServiceOverrides(services, [envOverrides, dbOverrides]);
+    const mergedServices = mergeEnvironmentServices(manifest as Record<string, unknown>, services, params.envName, params.envOverrides);
     const envWorkers = this.getEnvWorkers(envConfig);
 
     // Resolve managed DB tenants before filtering (managed_db services get filtered out)
@@ -2012,69 +2014,6 @@ export class DeployerService {
     if (!environments || typeof environments !== 'object') return null;
     const envConfig = (environments as Record<string, unknown>)[envName];
     return envConfig && typeof envConfig === 'object' ? envConfig as Record<string, unknown> : null;
-  }
-
-  private getEnvOverrides(envConfig: Record<string, unknown> | null): Record<string, unknown> | null {
-    if (!envConfig) return null;
-    const overrides = envConfig.overrides;
-    if (!overrides || typeof overrides !== 'object') return null;
-    const services = (overrides as Record<string, unknown>).services;
-    return services && typeof services === 'object' ? services as Record<string, unknown> : null;
-  }
-
-  private getDbOverrides(overrides: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
-    if (!overrides || typeof overrides !== 'object') return null;
-    const overrideObj = overrides as Record<string, unknown>;
-    const services = overrideObj.services;
-    if (services && typeof services === 'object') return services as Record<string, unknown>;
-    return overrideObj;
-  }
-
-  private applyServiceOverrides(
-    base: Record<string, Service>,
-    overrides: Array<Record<string, unknown> | null>,
-  ): Record<string, Service> {
-    const merged: Record<string, Service> = { ...base };
-
-    for (const override of overrides) {
-      if (!override) continue;
-      for (const [name, value] of Object.entries(override)) {
-        if (!value || typeof value !== 'object') continue;
-        const current = merged[name] as Record<string, unknown> | undefined;
-        const next = current
-          ? this.deepMerge(current, value as Record<string, unknown>)
-          : (value as Record<string, unknown>);
-        merged[name] = next as Service;
-      }
-    }
-
-    return merged;
-  }
-
-  private deepMerge(
-    base: Record<string, unknown>,
-    override: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const result: Record<string, unknown> = { ...base };
-    for (const [key, value] of Object.entries(override)) {
-      if (Array.isArray(value)) {
-        result[key] = value.slice();
-        continue;
-      }
-
-      const baseValue = result[key];
-      if (this.isPlainObject(baseValue) && this.isPlainObject(value)) {
-        result[key] = this.deepMerge(baseValue as Record<string, unknown>, value as Record<string, unknown>);
-        continue;
-      }
-
-      result[key] = value;
-    }
-    return result;
-  }
-
-  private isPlainObject(value: unknown): value is Record<string, unknown> {
-    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
   }
 
   private getEnvWorkers(envConfig: Record<string, unknown> | null): Array<Record<string, unknown>> {

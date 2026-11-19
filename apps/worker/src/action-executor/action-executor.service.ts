@@ -24,6 +24,7 @@ import {
   applyEnvOverrides,
   isImplicitPublicIngress,
   isPublicIngress,
+  mergeEnvironmentServices,
   type SecurityProfile,
   DEFAULT_ACTION_RUN_JOB_PERMISSIONS,
   deliverProvisioningError,
@@ -1594,12 +1595,15 @@ export class ActionExecutorService {
       return null;
     }
 
-    // Parse the manifest to find services with public ingress
+    // Parse the manifest to find services with public ingress, with the
+    // environment's overrides applied as the deployer applies them.
     const parsed = yaml.parse(manifest.manifest_yaml);
-    const services = parsed?.services as Record<string, any> | undefined;
-    if (!services) {
+    const baseServices = parsed?.services as Record<string, any> | undefined;
+    if (!baseServices) {
       return null;
     }
+    const environment = await this.envs.findByProjectAndName(projectId, envName);
+    const services = mergeEnvironmentServices(parsed, baseServices, envName, environment?.overrides_json ?? null) as Record<string, any>;
 
     // Look for the first service with public ingress (usually 'web' or 'api'),
     // by the deployer's own rule. Priority order: web > api > first public service.

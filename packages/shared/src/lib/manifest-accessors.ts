@@ -63,6 +63,57 @@ export function getServicesFromManifest(manifest: Manifest): Record<string, Serv
   return manifest.services ?? null;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function deepMergeRecords(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (Array.isArray(value)) {
+      result[key] = value.slice();
+      continue;
+    }
+    const baseValue = result[key];
+    result[key] = isPlainRecord(baseValue) && isPlainRecord(value) ? deepMergeRecords(baseValue, value) : value;
+  }
+  return result;
+}
+
+/**
+ * The services an environment deploys: the manifest's services with the
+ * environment's `overrides.services` from the manifest, then the overrides
+ * stored on the environment (either `{ services: {...} }` or the services map
+ * itself), deep-merged in that order. The deployer and preview URLs read
+ * services this way.
+ */
+export function mergeEnvironmentServices(
+  manifest: Record<string, unknown> | null | undefined,
+  services: Record<string, Service>,
+  envName: string,
+  storedOverrides?: Record<string, unknown> | null,
+): Record<string, Service> {
+  const environments = manifest?.environments;
+  const envConfig = isPlainRecord(environments) ? environments[envName] : null;
+  const manifestOverrides = isPlainRecord(envConfig) && isPlainRecord(envConfig.overrides)
+    ? envConfig.overrides.services
+    : null;
+  const stored = isPlainRecord(storedOverrides)
+    ? (isPlainRecord(storedOverrides.services) ? storedOverrides.services : storedOverrides)
+    : null;
+
+  const merged: Record<string, Service> = { ...services };
+  for (const overrides of [manifestOverrides, stored]) {
+    if (!isPlainRecord(overrides)) continue;
+    for (const [name, value] of Object.entries(overrides)) {
+      if (!value || typeof value !== 'object') continue;
+      const current = merged[name] as Record<string, unknown> | undefined;
+      merged[name] = (current ? deepMergeRecords(current, value as Record<string, unknown>) : value) as Service;
+    }
+  }
+  return merged;
+}
+
 const INGRESS_DUPLICATES_KEY = '__duplicates';
 
 export const RESERVED_ALIASES = new Set([
