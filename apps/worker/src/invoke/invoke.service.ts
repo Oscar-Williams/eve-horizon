@@ -863,7 +863,12 @@ export class InvokeService implements OnModuleInit {
     }
   }
 
-  private async resolveSecrets(projectId: string, userId?: string, attemptId?: string): Promise<SecretResolveItem[]> {
+  private async resolveSecrets(
+    projectId: string,
+    userId?: string,
+    attemptId?: string,
+    job?: { jobId?: string; harness?: string },
+  ): Promise<SecretResolveItem[]> {
     const startTime = Date.now();
 
     if (attemptId) {
@@ -873,7 +878,7 @@ export class InvokeService implements OnModuleInit {
       });
     }
 
-    const result = await resolveProjectSecrets(projectId, { userId });
+    const result = await resolveProjectSecrets(projectId, { userId, jobId: job?.jobId, harness: job?.harness });
 
     if (attemptId) {
       if (!result.resolved) {
@@ -1291,7 +1296,10 @@ export class InvokeService implements OnModuleInit {
       }
 
       const userId = typeof effectiveInvocation.data?.user_id === 'string' ? effectiveInvocation.data.user_id : undefined;
-      const allSecrets = await this.resolveSecrets(effectiveInvocation.projectId, userId, effectiveInvocation.attemptId);
+      const allSecrets = await this.resolveSecrets(effectiveInvocation.projectId, userId, effectiveInvocation.attemptId, {
+        jobId: effectiveInvocation.jobId,
+        harness: effectiveInvocation.harness,
+      });
       // The workspace clone may use a git credential the job itself does not receive.
       await assertCloneOnlyGitCredentialSafe(effectiveInvocation, allSecrets);
       const gitAuth = await prepareGitAuth(effectiveInvocation, allSecrets);

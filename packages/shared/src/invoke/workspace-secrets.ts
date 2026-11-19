@@ -41,6 +41,7 @@ export async function resolveSecrets(
   logLifecycle?: LifecycleLogger,
   userId?: string,
   attemptId?: string,
+  job?: { jobId?: string; harness?: string },
 ): Promise<SecretResolveItem[]> {
   const startTime = Date.now();
   if (attemptId && logLifecycle) {
@@ -49,7 +50,7 @@ export async function resolveSecrets(
     });
   }
 
-  const result = await resolveProjectSecrets(projectId, { userId });
+  const result = await resolveProjectSecrets(projectId, { userId, jobId: job?.jobId, harness: job?.harness });
 
   if (attemptId && logLifecycle) {
     if (!result.resolved) {
@@ -179,13 +180,27 @@ export async function assertCloneOnlyGitCredentialSafe(
 /** The key of the git credential the platform would use for this repo but the job may not hold, if any. */
 function cloneOnlyGitCredential(invocation: HarnessInvocation, secrets: SecretResolveItem[]): string | null {
   const allowlist = invocation.secrets_allowlist;
-  const repoUrl = invocation.repoUrl;
-  if (!allowlist || !repoUrl) return null;
-  const { sshSecret, githubToken } = gitCredentials(secrets);
+  if (!allowlist) return null;
+  const credential = cloneCredentialKey(invocation.repoUrl, secrets);
+  return credential && !allowlist.includes(credential) ? credential : null;
+}
+
+/**
+ * The key of the credential the platform would clone this repository with,
+ * if any: the SSH key for an SSH URL, the GitHub token for a GitHub HTTPS
+ * URL. It is held to clone the workspace; it is not one of the job's own
+ * secrets, nor a binding.
+ */
+export function cloneCredentialKey(
+  repoUrl: string | null | undefined,
+  secrets: Array<Pick<SecretResolveItem, 'key' | 'type'>>,
+): string | null {
+  if (!repoUrl) return null;
+  const { sshSecret, githubToken } = gitCredentials(secrets as SecretResolveItem[]);
   const credential = isSshRepoUrl(repoUrl)
     ? sshSecret
     : usesGitHubToken(repoUrl) ? githubToken : undefined;
-  return credential && !allowlist.includes(credential.key) ? credential.key : null;
+  return credential?.key ?? null;
 }
 
 function gitCredentials(secrets: SecretResolveItem[]): {

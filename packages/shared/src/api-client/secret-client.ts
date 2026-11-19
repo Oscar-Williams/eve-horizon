@@ -57,7 +57,13 @@ export interface SecretResolutionResult {
  */
 export async function resolveProjectSecrets(
   projectId: string,
-  options?: { userId?: string },
+  options?: {
+    userId?: string;
+    /** The job these secrets are for: the API judges its secret binding. */
+    jobId?: string;
+    /** That job's selected harness. */
+    harness?: string;
+  },
 ): Promise<SecretResolutionResult> {
   const config = loadConfig();
 
@@ -76,6 +82,12 @@ export async function resolveProjectSecrets(
     const body: Record<string, string> = { project_id: projectId };
     if (options?.userId) {
       body.user_id = options.userId;
+    }
+    if (options?.jobId) {
+      body.job_id = options.jobId;
+    }
+    if (options?.jobId && options.harness) {
+      body.harness = options.harness;
     }
 
     const response = await fetch(url, {

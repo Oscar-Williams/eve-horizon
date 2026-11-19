@@ -144,6 +144,18 @@ export function getHarnessAuthStatus(
 }
 
 /**
+ * Whether a secret of this name is, on its own, a credential for the
+ * harness (secrets only: never this host's environment or files). With no
+ * harness, or one this registry does not know, a credential for any harness.
+ */
+export function isHarnessCredentialKey(name: string | null | undefined, key: string): boolean {
+  const env = { [key]: 'set' };
+  const canonical = name ? resolveHarnessName(name) : undefined;
+  const names = canonical ? [canonical] : (Object.keys(HARNESS_AUTH_CHECKS) as HarnessCanonicalName[]);
+  return names.some((harness) => HARNESS_AUTH_CHECKS[harness](env, false).available);
+}
+
+/**
  * List auth status for all harnesses, optionally using resolved secrets.
  * @param env - Optional resolved secrets to merge with process.env (takes precedence)
  */

@@ -100,6 +100,7 @@ export {
   assertCloneOnlyGitCredentialSafe,
   extractSecretRefs,
   interpolateEnvOverrides,
+  cloneCredentialKey,
 } from './workspace-secrets.js';
 
 // Secrets allowlists (agent access.secrets, workflow step secrets)

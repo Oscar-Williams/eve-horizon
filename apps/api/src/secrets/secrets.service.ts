@@ -4,7 +4,10 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { Db } from '@eve/db';
 import {
+  agentQueries,
+  findJobAgent,
   integrationQueries,
+  jobQueries,
   oauthAppConfigQueries,
   orgQueries,
   projectManifestQueries,
@@ -14,7 +17,7 @@ import {
   type SecretScopeType,
   type SecretType,
 } from '@eve/db';
-import { ManifestSchema, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isUserSecretWithheldKey, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretStorageCounts, type SecretValidationResult, type SecretsReencryptResponse, type UpdateSecretRequest } from '@eve/shared';
+import { ManifestSchema, agentSecretsAllowlist, cloneCredentialKey, extractSecretRefs, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isHarnessCredentialKey, isUserSecretWithheldKey, narrowSecretsAllowlist, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretStorageCounts, type SecretValidationResult, type SecretsReencryptResponse, type UpdateSecretRequest } from '@eve/shared';
 import * as yaml from 'yaml';
 import { SecurityService } from '../security/security.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -31,7 +34,17 @@ export { maskSecretValue } from './secret-cipher.js';
 const SAFE_SECRET_ALLOWLIST = new Set(['GITHUB_WEBHOOK_SECRET']);
 /** Project rule: under `strict`, secret values are write-only through the API. */
 const VALUE_READ_RULE = 'secrets.value_read';
+/** Project rule: under `strict`, system secrets reach a project only when the instance shares them by name. */
+const SYSTEM_SCOPE_RULE = 'secrets.system_scope';
+/** Instance setting: the system secret names every project may receive (comma or space separated). */
+export const SYSTEM_SHARED_KEYS_SETTING = 'secrets.system_shared_keys';
+/** Project rule: a job that declares no secret binding (recorded here; filtered by the runner resolve). */
+const UNBOUND_JOB_RULE = 'secrets.unbound_job';
+/** At most this many withheld names are written into a finding. */
+const MAX_FINDING_KEYS = 40;
 const REENCRYPT_BATCH = 200;
+
+type ResolvedSecret = { value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string };
 
 @Injectable()
 export class SecretsService {
@@ -232,6 +245,8 @@ export class SecretsService {
     const orgSecrets = await this.secrets.listByScope('org', orgId, { limit: 500, offset: 0 });
     await this.decryptSecrets(orgSecrets, resolved, 'org', orgId);
 
+    await this.applySystemScope(resolved, { orgId });
+
     return Array.from(resolved.entries()).map(([key, entry]) => ({
       key,
       value: entry.value,
@@ -239,7 +254,16 @@ export class SecretsService {
     }));
   }
 
-  async resolveForProject(projectId: string, userId?: string): Promise<Array<{ key: string; value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string }>> {
+  /**
+   * Every secret a project's workload or job receives: system, org, user
+   * (with `userId`) and project scope, the narrower scope winning. With
+   * `jobId`, the job's secret binding is judged (rule secrets.unbound_job).
+   */
+  async resolveForProject(
+    projectId: string,
+    userId?: string,
+    options: { jobId?: string; harness?: string } = {},
+  ): Promise<Array<{ key: string; value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string }>> {
     this.ensureConfigured();
     const project = await this.projects.findById(projectId, { include_deleted: false });
     if (!project) {
@@ -270,6 +294,11 @@ export class SecretsService {
     const projectSecrets = await this.secrets.listByScope('project', projectId, { limit: 500, offset: 0 });
     await this.decryptSecrets(projectSecrets, resolved, 'project', projectId);
 
+    await this.applySystemScope(resolved, { projectId });
+    if (options.jobId) {
+      await this.recordUnboundJob(project, options.jobId, options.harness, resolved);
+    }
+
     return Array.from(resolved.entries()).map(([key, entry]) => ({
       key,
       value: entry.value,
@@ -277,6 +306,84 @@ export class SecretsService {
       scope_type: entry.scope_type,
       scope_id: entry.scope_id,
     }));
+  }
+
+  /**
+   * Rule secrets.system_scope: system secrets that reach the workload (no
+   * narrower scope set the same name) and that the instance does not share by
+   * name in `secrets.system_shared_keys` are recorded under `audit`, and
+   * withheld under `strict`.
+   */
+  private async applySystemScope(
+    resolved: Map<string, ResolvedSecret>,
+    scope: { projectId?: string; orgId?: string },
+  ): Promise<void> {
+    if (!this.security) return;
+    const delivered = [...resolved.entries()].filter(([, entry]) => entry.scope_type === 'system').map(([key]) => key);
+    if (delivered.length === 0) return;
+    const shared = await this.sharedSystemKeys();
+    const unshared = delivered.filter((key) => !shared.has(key)).sort();
+    if (unshared.length === 0) return;
+    const profile = await this.security.decide(SYSTEM_SCOPE_RULE, {
+      ...scope,
+      governing: 'project',
+      detail: { keys: unshared.join(','), count: unshared.length },
+    });
+    if (profile !== 'strict') return;
+    for (const key of unshared) resolved.delete(key);
+  }
+
+  /** The system secret names the instance shares with every project. */
+  private async sharedSystemKeys(): Promise<Set<string>> {
+    const row = await systemSettingsQueries(this.db).get(SYSTEM_SHARED_KEYS_SETTING);
+    return new Set((row?.value ?? '').split(/[\s,]+/).map((key) => key.trim()).filter(Boolean));
+  }
+
+  /**
+   * Rule secrets.unbound_job: a job whose agent and job declare no secrets
+   * allowlist is recorded, with the secrets `strict` would withhold. Kept
+   * under strict: its harness credential, the keys its env overrides
+   * reference, and the clone credential, which the platform holds only to
+   * clone and which does not count as a binding. The filtering itself belongs
+   * to the runner resolve; here every secret is still returned.
+   */
+  private async recordUnboundJob(
+    project: { id: string; org_id: string; repo_url?: string | null },
+    jobId: string,
+    harness: string | undefined,
+    resolved: Map<string, ResolvedSecret>,
+  ): Promise<void> {
+    if (!this.security) return;
+    const job = await jobQueries(this.db).findById(jobId);
+    if (!job || job.project_id !== project.id) return;
+    const target = job.target as { agent_slug?: string } | null;
+    const agent = await findJobAgent(agentQueries(this.db), {
+      projectId: job.project_id,
+      agentId: job.assignee,
+      agentSlug: target?.agent_slug,
+    }, project.org_id);
+    if (narrowSecretsAllowlist(agentSecretsAllowlist(agent?.access_json), job.secrets_allowlist ?? null) !== null) return;
+
+    const overrides = (job as { env_overrides?: Record<string, string> | null }).env_overrides ?? {};
+    const referenced = new Set(extractSecretRefs(overrides));
+    const items = [...resolved.entries()].map(([key, entry]) => ({ key, type: entry.type }));
+    const clone = cloneCredentialKey(project.repo_url, items);
+    const withheld = items
+      .map((item) => item.key)
+      .filter((key) => key !== clone && !referenced.has(key) && !isHarnessCredentialKey(harness, key))
+      .sort();
+    await this.security.decide(UNBOUND_JOB_RULE, {
+      projectId: project.id,
+      governing: 'project',
+      actor: { user_id: job.actor_user_id ?? 'system', is_job_token: true, job_id: job.id } as AuthUser,
+      detail: {
+        job_id: job.id,
+        harness: harness ?? null,
+        withheld: withheld.slice(0, MAX_FINDING_KEYS).join(','),
+        withheld_count: withheld.length,
+        filtered: false,
+      },
+    });
   }
 
   /**
@@ -602,7 +709,12 @@ export class SecretsService {
     const keys = new Set<string>();
 
     const systemSecrets = await this.secrets.listByScope('system', 'system', { limit: 500, offset: 0 });
+    // Under a strict secrets.system_scope only the shared system names reach the project.
+    const sharedOnly = systemSecrets.length > 0 && this.security
+      && (await this.security.effectiveProfile({ projectId }, 'project', SYSTEM_SCOPE_RULE)) === 'strict';
+    const shared = sharedOnly ? await this.sharedSystemKeys() : null;
     for (const secret of systemSecrets) {
+      if (shared && !shared.has(secret.key)) continue;
       keys.add(secret.key);
     }
 

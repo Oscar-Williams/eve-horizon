@@ -1045,6 +1045,7 @@ export class InvokeService implements OnModuleInit {
         lifecycleLogger,
         userId,
         effectiveInvocation.attemptId,
+        { jobId: effectiveInvocation.jobId, harness: effectiveInvocation.harness },
       ));
       // The workspace clone may use a git credential the job itself does not receive.
       await assertCloneOnlyGitCredentialSafe(effectiveInvocation, allSecrets);

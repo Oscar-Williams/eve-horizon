@@ -31,7 +31,10 @@ export class SecretsInternalController {
       throw new BadRequestException('project_id mismatch');
     }
 
-    const resolved = await this.secretsService.resolveForProject(projectId, body.user_id);
+    const resolved = await this.secretsService.resolveForProject(projectId, body.user_id, {
+      jobId: body.job_id,
+      harness: body.harness,
+    });
     return { data: resolved };
   }
 }

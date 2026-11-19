@@ -52,6 +52,10 @@ export type SecretListResponse = z.infer<typeof SecretListResponseSchema>;
 export const SecretResolveRequestSchema = z.object({
   project_id: z.string(),
   user_id: z.string().optional(),
+  /** The job the secrets are delivered to, so its secret binding can be judged. */
+  job_id: z.string().optional(),
+  /** That job's selected harness, whose provider keys a binding always keeps. */
+  harness: z.string().optional(),
 });
 
 export type SecretResolveRequest = z.infer<typeof SecretResolveRequestSchema>;
