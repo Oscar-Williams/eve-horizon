@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { JobsService } from './jobs.service';
 import { JobsController } from './jobs.controller';
 import { AccessService } from '../auth/access.service';
@@ -109,7 +109,8 @@ const db = Object.assign(
   async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');
     if (/FOR UPDATE/.test(sql)) {
-      return [{ id: values[0] }];
+      const row = m.state.jobs.get(values[0] as string);
+      return row ? [{ ...row }] : [];
     }
     if (/WHERE parent_id = \?/.test(sql) && /step_name IS NOT NULL/.test(sql)) {
       return [...m.state.jobs.values()].filter((row) => row.parent_id === values[0] && row.step_name).map((row) => ({ id: row.id }));
@@ -338,6 +339,34 @@ describe('changes that settle or remove a review, under the audit profile', () =
     expect(findingsFor('jobs.approve_token')).toEqual([
       expect.objectContaining({ actor_type: 'job', actor_id: 'solo-1', detail: expect.objectContaining({ job_id: 'solo-r', action: 'reject' }) }),
     ]);
+  });
+});
+
+describe('a PATCH decided on a job that changed before it was applied', () => {
+  /** The job as the PATCH first read it, while the stored row has since moved on. */
+  function readAs(jobId: string, snapshot: Record<string, unknown>) {
+    const row = m.state.jobs.get(jobId)!;
+    m.jobQ.findById.mockImplementationOnce(async () => ({ ...row, ...snapshot }));
+  }
+
+  beforeEach(() => {
+    m.state.projectProfile = 'strict';
+  });
+
+  it('is refused with 409 when the job went into review after it was read', async () => {
+    m.state.jobs.get('solo-h')!.phase = 'review';
+    readAs('solo-h', { phase: 'active' });
+
+    await expect(route(controller(), 'update', 'solo-h', { phase: 'done' }, jobToken('solo-h'))).rejects.toBeInstanceOf(ConflictException);
+    expect(m.jobQ.updatePhase).not.toHaveBeenCalled();
+    expect(m.jobQ.approveReview).not.toHaveBeenCalled();
+  });
+
+  it('is refused with 409 when the review it needs was raised after it was read', async () => {
+    readAs('solo-h', { review_required: 'none' });
+
+    await expect(route(controller(), 'update', 'solo-h', { review_required: 'none', priority: 1 }, jobToken('solo-h')))
+      .rejects.toBeInstanceOf(ConflictException);
   });
 });
 
