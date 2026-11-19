@@ -39,7 +39,7 @@ type MemorySetInput = {
   lifecycle_status?: 'active' | 'stale' | 'archived' | 'expired';
 };
 
-type DistillInput = {
+export type DistillInput = {
   to_path?: string;
   agent?: string;
   category?: MemoryCategory;
@@ -123,6 +123,24 @@ export class AgentMemoryService {
 
   private capLimit(value: number, max: number): number {
     return Math.max(1, Math.min(value, max));
+  }
+
+  /** The path a job token's org-docs scope judges agent KV by: `/agents/<slug>/kv/<namespace>[/<key>]`. */
+  kvPath(agentSlug: string, namespace: string, key?: string): string {
+    const slug = this.normalizeAgentSlug(agentSlug);
+    const ns = this.validateKvName(namespace || 'default', 'namespace');
+    return key ? `/agents/${slug}/kv/${ns}/${this.validateKvName(key, 'key')}` : `/agents/${slug}/kv/${ns}`;
+  }
+
+  /** The org doc a thread distillation writes. */
+  distillTargetPath(threadId: string, input: DistillInput): string {
+    return input.to_path
+      ? (input.to_path.startsWith('/') ? input.to_path : `/${input.to_path}`)
+      : this.memoryPath(
+          input.agent ? this.normalizeAgentSlug(input.agent) : 'shared',
+          input.category ?? 'decisions',
+          input.key ?? `thread-${threadId}`,
+        );
   }
 
   memoryPath(agentSlug: string, category: string, key: string): string {
@@ -542,13 +560,7 @@ export class AgentMemoryService {
       '- Review digest and promote concrete decisions into project runbooks/decision docs.',
     ].join('\n');
 
-    const targetPath = input.to_path
-      ? (input.to_path.startsWith('/') ? input.to_path : `/${input.to_path}`)
-      : this.memoryPath(
-          input.agent ? this.normalizeAgentSlug(input.agent) : 'shared',
-          input.category ?? 'decisions',
-          input.key ?? `thread-${threadId}`,
-        );
+    const targetPath = this.distillTargetPath(threadId, input);
 
     const existing = await this.docs.findByOrgAndPath(orgId, targetPath);
     const metadata = {

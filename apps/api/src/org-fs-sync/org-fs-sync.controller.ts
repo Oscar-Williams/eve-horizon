@@ -164,6 +164,8 @@ export class OrgFsSyncController {
       user: caller,
       request_id: correlationId,
     });
+    // A device syncs the whole org filesystem: no job token's scope covers it.
+    await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     return this.service.enrollDevice(orgId, body, caller?.user_id, correlationId);
   }
 
@@ -278,6 +280,8 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
+      // A link with no path names no resource a job token's scope could cover.
+      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.updateLink(orgId, linkId, body, correlationId);
   }
@@ -317,6 +321,8 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
+      // A link with no path names no resource a job token's scope could cover.
+      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.rotateLinkGatewayToken(orgId, linkId, correlationId);
   }
@@ -355,6 +361,8 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
+      // A link with no path names no resource a job token's scope could cover.
+      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.deleteLink(orgId, linkId, correlationId);
   }
@@ -530,6 +538,8 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
+      // A link with no path names no resource a job token's scope could cover.
+      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.resolveConflict(orgId, conflictId, body, caller?.user_id, correlationId);
   }

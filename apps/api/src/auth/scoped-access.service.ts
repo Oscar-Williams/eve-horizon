@@ -168,8 +168,11 @@ export class ScopedAccessService {
   /** Whether the caller reaches this mount, judged as a route naming it would judge it. */
   private async mountReachable(orgId: string, user: AuthUser, mountId: string): Promise<boolean> {
     if (user.is_job_token) {
-      // Judged by the scope alone; a token with no scope was judged before.
-      return !user.scope || mountsInTokenScope([{ id: mountId }], user).length > 0;
+      // A scoped token reaches a mount only through its cloud_fs entry; a
+      // token with no scope was judged before (assertJobMayUseOrgData).
+      if (!user.scope) return true;
+      const allowed = user.scope.cloud_fs?.allow_mount_ids ?? [];
+      return allowed.includes('*') || allowed.includes(mountId);
     }
     return this.can({
       org_id: orgId,
@@ -177,6 +180,81 @@ export class ScopedAccessService {
       user,
       resource: { type: 'cloud_fs', id: mountId, action: 'read' },
     });
+  }
+
+  /** Whether a job token's declared scope covers this resource (a token with no scope: yes). */
+  tokenScopeCovers(user: AuthUser, permission: string, resource: ScopedResourceContext): boolean {
+    if (!user.scope) return true;
+    const evaluation = this.accessService.evaluateScope(user.scope, permission, resource);
+    return !evaluation.scope_required || evaluation.scope_matched;
+  }
+
+  /**
+   * For a route that names no single resource (a search or a listing): hold
+   * a job token's results to its declared scope, under the org's profile.
+   * `strict` keeps only the items `inScope` accepts, `audit` keeps them all
+   * and records what strict would hold back (access.org_data_route_scope),
+   * `legacy` keeps them all. Other callers, and a token with no scope (judged
+   * by assert), get the items as they are.
+   */
+  async filterToJobScope<T>(params: {
+    org_id: string;
+    user?: AuthUser;
+    permission: string;
+    items: T[];
+    inScope: (item: T) => boolean;
+  }): Promise<T[]> {
+    const { user, items } = params;
+    if (!user?.is_job_token || !user.scope || !this.security || items.length === 0) {
+      return items;
+    }
+    const inside = items.filter(params.inScope);
+    if (inside.length === items.length) {
+      return items;
+    }
+    const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+      governing: 'org',
+      orgId: user.org_id ?? params.org_id,
+      projectId: user.project_id,
+      actor: user,
+      detail: { permission: params.permission, held_back: items.length - inside.length },
+    });
+    return profile === 'strict' ? inside : items;
+  }
+
+  /**
+   * For a route on org data whose results cannot be filtered (agent KV,
+   * thread distillation, org-fs device enrolment): a job token with a
+   * declared scope needs the resource inside it. Under the org's profile,
+   * `strict` refuses (403) a resource outside it, or a route that names
+   * none; `audit` records it (access.org_data_route_scope); `legacy` does not
+   * look. Other callers pass.
+   */
+  async assertJobRouteInScope(params: {
+    org_id: string;
+    user?: AuthUser;
+    permission: string;
+    resource?: ScopedResourceContext;
+    request_id?: string;
+  }): Promise<void> {
+    const { user, permission, resource } = params;
+    if (!user?.is_job_token || !user.scope || !this.security) return;
+    if (resource && this.tokenScopeCovers(user, permission, resource)) return;
+    const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+      governing: 'org',
+      orgId: user.org_id ?? params.org_id,
+      projectId: user.project_id,
+      actor: user,
+      detail: { permission, resource: resource ? `${resource.type}:${resource.id}` : 'none' },
+    });
+    if (profile === 'strict') {
+      throw buildApiError(403, 'resource_access_denied', resource
+        ? `Access denied for resource: ${resource.type}:${resource.id}`
+        : `Access denied for permission: ${permission}`, {
+        requestId: params.request_id,
+        details: { permission, resource: resource ?? null },
+      });
+    }
   }
 
   /**

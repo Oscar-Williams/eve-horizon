@@ -166,7 +166,8 @@ export class OrgDocumentsController {
       user: caller,
       request_id: correlationId,
     });
-    return this.service.search(orgId, query, limit, mode ?? 'text', pathPrefix);
+    const result = await this.service.search(orgId, query, limit, mode ?? 'text', pathPrefix);
+    return { ...result, documents: await this.withinTokenScope(orgId, result.documents, caller) };
   }
 
   @RequirePermission('orgdocs:read')
@@ -202,11 +203,12 @@ export class OrgDocumentsController {
         : undefined,
       request_id: correlationId,
     });
-    return this.service.listStale(orgId, {
+    const stale = await this.service.listStale(orgId, {
       overdueBySeconds: parseDurationSeconds(overdueBy),
       prefix: scopedPrefix,
       limit,
     });
+    return { ...stale, documents: await this.withinTokenScope(orgId, stale.documents, caller) };
   }
 
   @RequirePermission('orgdocs:write')
@@ -568,5 +570,20 @@ export class OrgDocumentsController {
       request_id: correlationId,
     });
     return this.service.getVersion(orgId, path, version, correlationId);
+  }
+
+  /**
+   * A job token's search and listing results stay within its declared
+   * org-docs scope, under the org's profile (see
+   * ScopedAccessService.filterToJobScope).
+   */
+  private withinTokenScope<T extends { path: string }>(orgId: string, documents: T[], caller: AuthUser | undefined): Promise<T[]> {
+    return this.scopedAccess.filterToJobScope({
+      org_id: orgId,
+      user: caller,
+      permission: 'orgdocs:read',
+      items: documents,
+      inScope: (doc) => this.scopedAccess.tokenScopeCovers(caller!, 'orgdocs:read', { type: 'orgdocs', id: doc.path, action: 'read' }),
+    });
   }
 }

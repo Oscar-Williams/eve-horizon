@@ -233,7 +233,8 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
-    return this.memory.searchMemory(orgId, q, { agent, limit });
+    const result = await this.memory.searchMemory(orgId, q, { agent, limit });
+    return { ...result, data: await this.withinTokenScope(orgId, result.data, caller) };
   }
 
   @RequirePermission('orgdocs:write')
@@ -254,6 +255,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:write',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.kvPath(agentSlug, namespace, key), action: 'write' },
+        request_id: correlationId,
+      });
+    }
     return this.memory.kvPut(orgId, agentSlug, namespace, key, body.value, body.ttl_seconds);
   }
 
@@ -274,6 +284,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:read',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.kvPath(agentSlug, namespace, key), action: 'read' },
+        request_id: correlationId,
+      });
+    }
     return this.memory.kvGet(orgId, agentSlug, namespace, key);
   }
 
@@ -294,6 +313,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:read',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.kvPath(agentSlug, namespace), action: 'read' },
+        request_id: correlationId,
+      });
+    }
     return this.memory.kvList(orgId, agentSlug, namespace, limit);
   }
 
@@ -314,6 +342,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:read',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.kvPath(agentSlug, namespace), action: 'read' },
+        request_id: correlationId,
+      });
+    }
     return this.memory.kvMget(orgId, agentSlug, namespace, body.keys ?? []);
   }
 
@@ -334,6 +371,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:write',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.kvPath(agentSlug, namespace, key), action: 'write' },
+        request_id: correlationId,
+      });
+    }
     return this.memory.kvDelete(orgId, agentSlug, namespace, key);
   }
 
@@ -364,7 +410,32 @@ export class AgentMemoryController {
       limit,
       agent,
     });
-    return { ...result, data: await this.withinProjectRights(result.data, caller) };
+    const data = await this.withinProjectRights(result.data, caller);
+    return { ...result, data: await this.withinTokenScope(orgId, data, caller) };
+  }
+
+  /**
+   * A job token's search results stay within its declared scope, under the
+   * org's profile (see ScopedAccessService.filterToJobScope): org docs and
+   * memory its org-docs scope covers, and attachments and events of its own
+   * project. Org threads are not in a job token's scope.
+   */
+  private withinTokenScope<T extends Record<string, unknown>>(orgId: string, rows: T[], caller: AuthUser | undefined): Promise<T[]> {
+    return this.scopedAccess.filterToJobScope({
+      org_id: orgId,
+      user: caller,
+      permission: 'orgdocs:read',
+      items: rows,
+      inScope: (row) => {
+        if (typeof row.path === 'string') {
+          return this.scopedAccess.tokenScopeCovers(caller!, 'orgdocs:read', { type: 'orgdocs', id: row.path, action: 'read' });
+        }
+        if (row.source === 'attachments' || row.source === 'events') {
+          return row.project_id === caller?.project_id;
+        }
+        return false;
+      },
+    });
   }
 
   /**
@@ -419,6 +490,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    if (caller?.is_job_token) {
+      await this.scopedAccess.assertJobRouteInScope({
+        org_id: orgId,
+        permission: 'orgdocs:write',
+        user: caller,
+        resource: { type: 'orgdocs', id: this.memory.distillTargetPath(threadId, body), action: 'write' },
+        request_id: correlationId,
+      });
+    }
     // A project's thread is read with that project's rights. An org thread
     // has no project, and an unknown thread is left to the service's 404.
     const owner = await this.rbac.getResourceProjectContext('thread', threadId).catch((error: unknown) => {
