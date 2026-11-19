@@ -33,19 +33,26 @@ export interface ProjectMembershipWithUser extends ProjectMembership {
 }
 
 /**
- * SQL condition: the user holds a binding on project `p` itself, directly or
- * through an access group. Org-wide bindings do not count.
+ * SQL condition: the user holds a binding that grants `permission` on project
+ * `p`, as permission checks apply bindings: the role belongs to the project's
+ * org, the binding is on the project or org-wide, and it is held directly or
+ * through an access group of that org.
  */
-export function projectBindingExists(db: Db, userId: string) {
+export function projectBindingExists(db: Db, userId: string, permission: string) {
   return db`
     EXISTS (
       SELECT 1 FROM access_bindings b
-      WHERE b.project_id = p.id
+      JOIN access_roles ar ON ar.id = b.role_id
+      WHERE ar.org_id = p.org_id
+        AND (b.project_id IS NULL OR b.project_id = p.id)
+        AND ${permission}::text = ANY(ar.permissions)
         AND (
           (b.principal_type = 'user' AND b.principal_id = ${userId})
           OR (b.principal_type = 'group' AND b.principal_id IN (
             SELECT gm.group_id FROM access_group_members gm
-            WHERE gm.principal_type = 'user' AND gm.principal_id = ${userId}
+            JOIN access_groups g ON g.id = gm.group_id
+            WHERE g.org_id = p.org_id
+              AND gm.principal_type = 'user' AND gm.principal_id = ${userId}
           ))
         )
     )
@@ -157,7 +164,8 @@ export function membershipQueries(db: Db) {
     /**
      * Projects a user reaches by project membership or org membership, each
      * marked `implicit_access` when only the org member role reaches it (no
-     * project membership, no binding on the project). Under a strict profile
+     * project membership, no binding granting `projects:read` there; see
+     * projectBindingExists). Under a strict profile
      * (the project's, else its org's, else `instance_profile`) the org member
      * role reaches nothing, so those projects are left out.
      */
@@ -185,7 +193,7 @@ export function membershipQueries(db: Db) {
           SELECT
             EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id = p.id AND pm.user_id = ${userId}) AS via_project,
             (SELECT om.role FROM org_memberships om WHERE om.org_id = p.org_id AND om.user_id = ${userId}) AS org_role,
-            ${projectBindingExists(db, userId)} AS via_binding
+            ${projectBindingExists(db, userId, 'projects:read')} AS via_binding
         ) r
         CROSS JOIN LATERAL (
           SELECT (NOT r.via_project AND r.org_role = 'member' AND NOT r.via_binding) AS implicit_access

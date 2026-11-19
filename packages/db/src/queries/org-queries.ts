@@ -327,17 +327,19 @@ export function orgQueryQueries(db: Db) {
     /**
      * The projects in an org a user reaches: by a project membership, or by
      * any org membership. Each is marked `implicit_access` when only the org
-     * member role reaches it (no project membership, no binding on the
-     * project); a strict project withholds those, which the caller decides.
+     * member role gives `permission` there (no project membership, no binding
+     * granting it; see projectBindingExists); a strict project withholds
+     * those, which the caller decides.
      */
     async listAccessibleProjects(
       orgId: string,
       userId: string,
+      permission: string,
     ): Promise<Array<{ id: string; implicit_access: boolean }>> {
       return db<{ id: string; implicit_access: boolean }[]>`
         SELECT
           p.id,
-          (pm.user_id IS NULL AND om.role = 'member' AND NOT ${projectBindingExists(db, userId)}) AS implicit_access
+          (pm.user_id IS NULL AND om.role = 'member' AND NOT ${projectBindingExists(db, userId, permission)}) AS implicit_access
         FROM projects p
         LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = ${userId}
         LEFT JOIN org_memberships om ON om.org_id = p.org_id AND om.user_id = ${userId}

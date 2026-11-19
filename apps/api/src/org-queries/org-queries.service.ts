@@ -43,12 +43,14 @@ export class OrgQueriesService {
   /**
    * Get the list of project IDs the caller has access to within an org.
    * For admin/system callers, userId may be undefined — in that case,
-   * return all projects in the org. A project reached only through the org
-   * member role is left out under its strict profile, and recorded under audit.
+   * return all projects in the org. A project where only the org member role
+   * gives `permission` (the one the project's own listing route needs) is
+   * left out under its strict profile, and recorded under audit.
    */
   private async getAccessibleProjectIds(
     orgId: string,
-    userId?: string,
+    userId: string | undefined,
+    permission: 'jobs:read' | 'events:read' | 'projects:read',
   ): Promise<string[]> {
     if (!userId) {
       // System/admin caller: return all projects in the org
@@ -59,7 +61,7 @@ export class OrgQueriesService {
       return rows.map((r) => r.id);
     }
 
-    const projects = await this.queries.listAccessibleProjects(orgId, userId);
+    const projects = await this.queries.listAccessibleProjects(orgId, userId, permission);
     const ids: string[] = [];
     for (const project of projects) {
       if (project.implicit_access) {
@@ -68,7 +70,7 @@ export class OrgQueriesService {
           projectId: project.id,
           orgId,
           actor: { user_id: userId },
-          detail: { org_role: 'member', listing: 'org_queries' },
+          detail: { org_role: 'member', listing: 'org_queries', permission },
         });
         if (profile === 'strict') continue;
       }
@@ -87,7 +89,7 @@ export class OrgQueriesService {
     userId?: string,
   ): Promise<OrgJobListResponse> {
     const orgId = await this.resolveOrgId(orgIdOrSlug);
-    const projectIds = await this.getAccessibleProjectIds(orgId, userId);
+    const projectIds = await this.getAccessibleProjectIds(orgId, userId, 'jobs:read');
 
     const limit = params.limit ?? 50;
     const result = await this.queries.findJobsAcrossProjects(projectIds, {
@@ -129,7 +131,7 @@ export class OrgQueriesService {
     userId?: string,
   ): Promise<OrgJobStatsResponse> {
     const orgId = await this.resolveOrgId(orgIdOrSlug);
-    const projectIds = await this.getAccessibleProjectIds(orgId, userId);
+    const projectIds = await this.getAccessibleProjectIds(orgId, userId, 'jobs:read');
 
     const stats = await this.queries.jobStats(projectIds);
 
@@ -159,7 +161,7 @@ export class OrgQueriesService {
     userId?: string,
   ): Promise<OrgEventListResponse> {
     const orgId = await this.resolveOrgId(orgIdOrSlug);
-    const projectIds = await this.getAccessibleProjectIds(orgId, userId);
+    const projectIds = await this.getAccessibleProjectIds(orgId, userId, 'events:read');
 
     const limit = params.limit ?? 50;
     const result = await this.queries.findEventsAcrossProjects(projectIds, {
@@ -196,7 +198,7 @@ export class OrgQueriesService {
     userId?: string,
   ): Promise<OrgAgentsListResponse> {
     const orgId = await this.resolveOrgId(orgIdOrSlug);
-    const projectIds = await this.getAccessibleProjectIds(orgId, userId);
+    const projectIds = await this.getAccessibleProjectIds(orgId, userId, 'projects:read');
 
     const rows = await this.queries.findAgentsAcrossProjects(projectIds);
 
