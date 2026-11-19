@@ -27,6 +27,11 @@ import {
 import { RequirePermission } from '../auth/permission.decorator.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ScopedAccessService } from '../auth/scoped-access.service.js';
+import { pageWithinReach } from '../auth/reach-paging.js';
+
+/** A strict org's document query scans in pages of this size, and at most this many documents per request. */
+const DOC_SCAN_PAGE = 200;
+const DOC_SCAN_CAP = 2_000;
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { zodSchemaToOpenApi } from '../openapi.js';
 import {
@@ -504,6 +509,25 @@ export class OrgDocumentsController {
       reach: 'filtered',
       request_id: correlationId,
     });
+    // Under a strict org, page within what the caller reaches: the cursor
+    // comes from the last document they see, never from one they do not.
+    const strict = await this.scopedAccess.strictListingReach({ org_id: orgId, user: caller, permission: 'orgdocs:read' });
+    if (strict) {
+      const pageSize = body.limit ?? 50;
+      const page = await pageWithinReach({
+        limit: pageSize,
+        start: body.cursor ?? undefined,
+        fetch: async (cursor) => {
+          const batch = await this.service.query(orgId, { ...body, limit: DOC_SCAN_PAGE, cursor: cursor ?? null }, correlationId);
+          return { items: batch.documents, next: batch.pagination.next_cursor };
+        },
+        visible: (doc) => strict.covers({ type: 'orgdocs', id: doc.path, action: 'read' }),
+        cursorOf: (doc) => this.service.cursorFor(doc),
+        scanCap: DOC_SCAN_CAP,
+      });
+      await strict.heldBack(page.hidden);
+      return { documents: page.items, pagination: { limit: pageSize, has_more: page.next !== null, next_cursor: page.next } };
+    }
     const found = await this.service.query(orgId, body, correlationId);
     return { ...found, documents: await this.withinReach(orgId, found.documents, caller) };
   }

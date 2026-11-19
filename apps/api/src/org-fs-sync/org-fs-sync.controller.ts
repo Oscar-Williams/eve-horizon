@@ -88,6 +88,11 @@ import type { AuthUser } from '../auth/auth.service.js';
 import { refuseProjectTokens } from '../auth/token-scope.js';
 import { RequirePermission } from '../auth/permission.decorator.js';
 import { ScopedAccessService } from '../auth/scoped-access.service.js';
+import { pageWithinReach } from '../auth/reach-paging.js';
+
+/** A strict org's object listing scans the store in pages of this size, and at most this many objects per request. */
+const OBJECT_SCAN_PAGE = 500;
+const OBJECT_SCAN_CAP = 5_000;
 import { zodSchemaToOpenApi } from '../openapi.js';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { ORG_FS_INTERNAL_TOKEN_HEADER, OrgFsSyncService } from './org-fs-sync.service.js';
@@ -627,6 +632,25 @@ export class OrgFsSyncController {
       request_id: correlationId,
       reach: prefix ? { type: 'orgfs', id: normalizeScopedPath(prefix), action: 'read' } : 'filtered',
     });
+    // Under a strict org, page within what the caller reaches: the cursor
+    // comes from the last object they see, never from one they do not.
+    const strict = await this.scopedAccess.strictListingReach({ org_id: orgId, user: caller, permission: 'orgfs:read' });
+    if (strict) {
+      const pageSize = Math.max(1, Math.min(limit, 500));
+      const page = await pageWithinReach({
+        limit: pageSize,
+        start: after,
+        fetch: async (cursor) => {
+          const batch = await this.service.listObjects(orgId, { prefix, limit: OBJECT_SCAN_PAGE, after: cursor });
+          return { items: batch.data, next: batch.data.length < OBJECT_SCAN_PAGE ? null : batch.pagination.next_after };
+        },
+        visible: (object) => strict.covers({ type: 'orgfs', id: object.path, action: 'read' }),
+        cursorOf: (object) => object.path,
+        scanCap: OBJECT_SCAN_CAP,
+      });
+      await strict.heldBack(page.hidden);
+      return { data: page.items, pagination: { limit: pageSize, next_after: page.next } };
+    }
     const objects = await this.service.listObjects(orgId, { prefix, limit, after });
     return {
       ...objects,

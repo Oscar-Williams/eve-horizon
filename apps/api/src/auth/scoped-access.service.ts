@@ -348,6 +348,37 @@ export class ScopedAccessService {
     };
   }
 
+  /**
+   * For a paged listing: under the org's strict profile, the test each item
+   * must pass and how to record what was held back; otherwise null, and the
+   * route pages as before through filterToReach (audit records there).
+   */
+  async strictListingReach(params: {
+    org_id: string;
+    user?: AuthUser;
+    permission: string;
+  }): Promise<{ covers: Reach['covers']; heldBack: (count: number) => Promise<void> } | null> {
+    const { user } = params;
+    if (!user || !this.security) return null;
+    const security = this.security;
+    const scope = this.orgDataScope(params.org_id, user);
+    if ((await security.effectiveProfile(scope, 'org')) !== 'strict') return null;
+    const reach = await this.reachOf(params);
+    if (reach.everything) return null;
+    return {
+      covers: reach.covers,
+      heldBack: async (count) => {
+        if (count === 0) return;
+        await security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+          ...scope,
+          governing: 'org',
+          actor: user,
+          detail: { permission: params.permission, held_back: count, paged: true },
+        });
+      },
+    };
+  }
+
   /** The org whose profile governs org data for this caller: a job token's own org. */
   private orgDataScope(orgId: string, user: AuthUser): { orgId: string; projectId?: string } {
     return user.is_job_token

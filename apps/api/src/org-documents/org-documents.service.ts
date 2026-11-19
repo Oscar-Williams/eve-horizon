@@ -59,12 +59,17 @@ export class OrgDocumentsService {
     throw buildApiError(404, 'resource_not_found', `Organization ${orgIdOrSlug} not found`);
   }
 
-  private encodeCursor(doc: OrgDocument): string {
+  private encodeCursor(doc: Pick<OrgDocument, 'id'> & { updated_at: Date | string }): string {
     const payload = {
       updated_at: doc.updated_at instanceof Date ? doc.updated_at.toISOString() : String(doc.updated_at),
       id: doc.id,
     };
     return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  }
+
+  /** The query cursor that continues after this document (as in a query's next_cursor). */
+  cursorFor(doc: { id: string; updated_at: Date | string }): string {
+    return this.encodeCursor(doc);
   }
 
   private decodeCursor(cursor: string, requestId?: string | null): { updated_at: string; id: string } {
