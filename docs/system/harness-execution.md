@@ -30,6 +30,13 @@ For full details on worker types and their capabilities, see [worker-types.md](.
 
 ## Invocation Flow
 
+Where the steps below run depends on the job ([runner pods](runner-pods.md)):
+in the agent runtime's process (inline), in the worker's process outside
+Kubernetes, or in a credential-free runner pod. In a runner pod the worker
+does the database and internal-API steps first (secrets, job token, git ref,
+resources, `.eve/` context) and sends the result to the pod, which runs the
+rest and reports through its attempt's push-only routes.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           HarnessInvocation                             │
