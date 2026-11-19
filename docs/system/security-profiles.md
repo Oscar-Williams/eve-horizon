@@ -83,6 +83,14 @@ A project whose report shows no findings for a few days of normal use can
 move to `strict`. Switching back is instant: set the profile to `audit`
 again.
 
+The report also shows whether the cluster enforces NetworkPolicy (the
+instance setting `network.policy_enforced`, `network` in `--json`) and, for
+each project not yet `strict`, its strict checklist (`strict_checklist`):
+clean when the window has no findings for it and `network.policy_enforced`
+is `true`. Without enforcement, `egress.default_deny` applies its policies
+and blocks nothing, so a project is not ready for `strict` until it is set.
+See [egress policies](egress-policies.md#enforcement).
+
 ## Rules
 
 Each hardening rule lists its id, its governing profile and what `strict`
@@ -135,9 +143,15 @@ A profile stamped 1 runs these under `audit` until `strict` is set again.
 | `secrets.use` | Project | Starting work bound to a secret beyond its harness credential needs `secrets:use`: job create, workflow invoke and chat (the sender the gateway mapped, or no one). The binding is what the declared allowlists name (the agent's `access.secrets`, a workflow step's `secrets:`, the starting job token's allowlist), plus the keys env overrides reference, less the harness's provider keys. A job with no allowlist counts only its references; a clone credential is never declared, so never counts. A workflow is judged once, before any job exists; a chat listener the sender may not start is skipped, not the whole dispatch. Work no caller starts (triggers, schedules) was authorised by the manifest sync. Under `audit`, a starter with neither `secrets:use` nor `secrets:read` is recorded, with the bound names. |
 | `envdb.export` | Project | `GET /projects/:id/envs/:name/db/snapshots/:snapshotId/download` (a full dump, presigned for an hour) needs `envdb:export`; `envdb:read` still lists and shows snapshots. |
 | `secrets.job_org_write` | Project | A job or service token may not write a secret at org scope, which other projects share. The org secret routes refuse those tokens on every profile; this rule governs the harness credential write-back, which may update only a project-scope copy (`SecretsService.mayJobWriteSecret`). Keep a project-scope copy of a credential a strict project's jobs refresh (for example `CODEX_AUTH_JSON_B64`). Under `audit`, each org-scope write is recorded. |
+| `egress.default_deny` | Project | The project's env namespaces hold only `eve-egress` (DNS, the namespace itself, the API's public port, the ingress controller, the internet outside private ranges and `network.private_cidrs`, and the env's managed databases and app-link producers) and `eve-egress-metadata` (the metadata server, for Workload Identity pods only); its runner pods get `eve-runner-<project>` (the same base, its own env namespaces and its producers). Under `audit` an allow-all companion sits beside each (`eve-egress-audit`, `eve-runner-<project>-audit`), so nothing is blocked; under `legacy` env namespaces get none and runner pods get the companion alone. A profile change reconciles the project at once. Under `audit` nothing is recorded per connection: compare allowed-flow logs with the strict set. See [egress policies](egress-policies.md). |
 | `harness.checkout_settings` | Project | Settings the checkout supplies cannot reroute the harness: routing env names (`*_BASE_URL`, proxies, TLS trust, `NODE_OPTIONS` and the code-loading names) and `apiKeyHelper` in Claude Code's `.claude/settings.json`, `settings.local.json` and Eve's copy of `.agent/harnesses/<harness>/`; `model_provider`, `model_providers` and `*base_url` in a Codex project `.codex/config.toml` or a config home inside the checkout; routing names in the `.env` files Gemini loads. No checkout file is edited. Claude Code reads a cleaned copy through `--settings` with `--setting-sources user`; Codex gets `-c model_provider="openai"` (and the variant profile's); Gemini gets an Eve-owned system settings file excluding the names from the project `.env`. Refused (the run fails, naming the file): a harness config directory inside the checkout that sets routing, a Codex base URL no override undoes, routing names in `.gemini/.env`, and the `code` and `pi` harnesses, which have no confirmed mechanism. Under `audit`, each run whose checkout supplies routing settings is recorded with the files and names, never values. See [harness execution](harness-execution.md#checkout-settings). |
 
-Always on in 0.1.327, whatever the profile: read-only SQL (`eve db sql`
+Always on in 0.1.327, whatever the profile: runner pods fail closed
+(the static `eve-runner-deny` allows a runner pod only DNS and the API's
+public port until its project's policy adds more) and take connections only
+from the worker on the submit port (`eve-runner-ingress`); apps and runner
+pods get the API's public port as `EVE_API_URL` (`EVE_API_APP_URL`), never
+the internal one; read-only SQL (`eve db sql`
 without `--write`) runs one statement on the extended protocol, so a
 statement list gets 400 instead of being able to commit the read-only
 transaction and write after it; reads of both ciphertext formats
@@ -194,7 +208,16 @@ while it is set; the SSO keys its sign-in forms with its own key the same way.
 
 `eve system security reconcile` (`POST /system/security/reconcile`, system
 admins) brings environments in line with the profiles without restarting
-anything. In 0.1.327 it re-signs each environment's registry pull secret with
-the current registry credential key (the internal key when none is set, the
-way back before a rollback) and records the key version (see
+anything. In 0.1.327 it writes every environment's and project's egress
+policies for `egress.default_deny` and removes the runner policies of deleted
+projects (see [egress policies](egress-policies.md)), then re-signs each
+environment's registry pull secret with the current registry credential key
+(the internal key when none is set, the way back before a rollback) and
+records the key version (see
 [container registry](container-registry.md#credential-key)).
+
+Setting the profile of a project, an org or the instance also reconciles the
+egress policies of the projects in scope, so their allow-all companions go
+(or come back) at once rather than at the next deploy. The profile stands if
+the worker cannot be reached; the response's `network` says so, and
+`eve system security reconcile` finishes the job.

@@ -1,0 +1,172 @@
+# Egress policies
+
+Eve limits where tenant pods and job runner pods may connect with Kubernetes
+NetworkPolicies. The project rule `egress.default_deny`
+([security profiles](security-profiles.md)) decides what is enforced; the
+policies themselves live in the cluster and are written by the worker.
+
+What they stop: a tenant pod or job reaching the platform's own services
+(other than the API's public port), the metadata server, another tenant's
+namespace, or any private address. What they do not stop (yet): job code
+sending data to an internet host. Host-level allow lists are planned.
+
+NetworkPolicy does nothing on a CNI that does not enforce it. Set the
+instance setting `network.policy_enforced` to say whether yours does (see
+[enforcement](#enforcement)).
+
+## Env namespaces
+
+Each environment namespace gets, by its project's profile:
+
+| Profile | Policies |
+|---|---|
+| `legacy` | None. A deploy or reconcile removes any it finds. |
+| `audit` | `eve-egress-audit` (allows all egress), then `eve-egress` and `eve-egress-metadata`. Nothing is blocked; mistakes in the strict set show while they are harmless. |
+| `strict` | `eve-egress` and `eve-egress-metadata`. `eve-egress-audit` is removed. |
+
+`eve-egress` selects every pod in the namespace and allows:
+
+- DNS to `kube-dns` in `kube-system`, on 53 (UDP and TCP);
+- the namespace itself;
+- `eve-api` pods in the platform namespace, on the API's public port
+  (`4701`) only, never the internal port;
+- the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
+  `kube-system`) on its container ports 8000 and 8443: calls to the
+  instance's own public hosts hairpin to its pods, which `ipBlock` cannot
+  match;
+- `0.0.0.0/0` except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `100.64.0.0/10`, `169.254.0.0/16` and the CIDRs in
+  `network.private_cidrs`;
+- the env's managed databases: an IP host as a `/32` on its port, a host
+  name as the `/32`s it resolves to at deploy or reconcile, a cluster
+  service (`<svc>.<ns>.svc...`) as its namespace on the port;
+- the app-link producers the project consumes for this env, as their
+  namespaces on the producer service's port.
+
+`eve-egress-metadata` lets only pods labelled `eve.workload_identity=true`
+reach the metadata server (`169.254.169.254:80`, `169.254.169.252:988`). The
+deployer sets that label on the pods (Deployments and service jobs) of a
+service whose service account has GKE Workload Identity (object-store
+`workload-identity` mode). No other pod can reach it under `strict`.
+
+The deployer writes these after rendering and before any workload of the
+deploy or service job is applied, so new pods start covered. Under `strict`,
+a failure to write them fails the deploy; otherwise it is logged.
+
+NetworkPolicy matches the destination pod's port after Service translation,
+so every in-cluster port here is a container port.
+
+## Runner pods
+
+Runner pods (job code) fail closed. Every runner pod carries
+`eve.horizon/runner=true` from the moment it exists, warm or claimed,
+sandbox or plain; a claimed pod also gets `eve.horizon/project-id`.
+
+Two static policies in `k8s/base` (`runner-network-policies.yaml`), in the
+runner namespace (`eve-runners`) and, for plain-pod runners (org filesystem
+jobs), in the platform namespace:
+
+- `eve-runner-deny` selects every runner pod and allows only DNS and
+  `eve-api` on its public port. A warm pod, which has no project yet, can
+  reach nothing else. (A deny that waited for the project label would leave
+  the pod open in between.)
+- `eve-runner-ingress` lets only `eve-worker` pods reach runner pods, only
+  on the submit port (4749). A warm pod accepts the first submit that brings
+  a key, so nothing else may reach it.
+
+Each project then has `eve-runner-<project>` in both namespaces, selecting
+`eve.horizon/runner=true` and `eve.horizon/project-id=<project>`. The name is
+the project id lowercased with `_` as `-` and 8 hex of its hash (NetworkPolicy
+names allow no `_`); the label keeps the real id.
+
+| Profile | Runner policies |
+|---|---|
+| `legacy` | `eve-runner-<project>-audit` alone (allows all egress): the static deny would otherwise leave the project's jobs DNS and the API. |
+| `audit` | `eve-runner-<project>-audit`, then `eve-runner-<project>`. |
+| `strict` | `eve-runner-<project>`: DNS, the API's public port, the ingress controller, the internet rule above, the project's own env namespaces (any port, for app APIs) and its app-link producers. |
+
+The worker writes them at deploy and reconcile. Before it starts a runner
+pod, it checks the project's set and writes only when a namespace lacks it or
+holds a set the profile no longer wants; a failure there is logged and the
+job goes on (the deny still holds). Reconcile removes the runner policies of
+deleted projects.
+
+## The API URL apps and runners get
+
+Apps and runner pods get `EVE_API_APP_URL` as their `EVE_API_URL` (default
+`http://eve-api.eve.svc.cluster.local:4701`), never the worker's own
+`EVE_API_URL`, which points at the internal port where one is set. The
+policies allow only that port, so `/internal/*` is out of reach. See
+[deployment](deployment.md#internal-api-port).
+
+## Profile changes and reconcile
+
+Setting a profile on a project, an org or the instance makes the worker
+reconcile the projects in scope at once, so companions go (or come back)
+without a deploy. The profile stands if that fails; the response says so.
+
+`eve system security reconcile` (`POST /system/security/reconcile`) writes
+every environment's and project's policies with no workload restart, removes
+those of deleted projects, and reports what it wrote, removed and could not
+do. Envs never deployed are counted as without a namespace.
+
+## Enforcement
+
+- `network.policy_enforced`: `true` where the CNI enforces NetworkPolicy
+  (for example GKE Dataplane V2; an infrastructure template can take it from
+  its outputs), `false` where it does not. `eve doctor security` shows it;
+  while it is not `true` the report says egress rules are not effective and
+  every project's strict checklist is not clean.
+- `network.private_cidrs`: more IPv4 CIDRs the internet rule must not reach
+  (the node range, VPC peerings, a control plane on a public-looking range).
+  Comma or space separated, or a JSON array; `/0` is refused.
+
+```bash
+eve system settings set network.policy_enforced true
+eve system settings set network.private_cidrs "198.18.0.0/15"
+```
+
+## Running it on a managed cluster
+
+- **The worker's rights:** the base ClusterRole lets the worker manage
+  NetworkPolicies cluster-wide. Hold its writes in the platform and runner
+  namespaces to `eve-runner-<project>` policies with an admission policy:
+  name prefix `eve-runner-`, not `eve-runner-deny` or `eve-runner-ingress`,
+  label `eve.horizon/egress=runner`, `podSelector.matchLabels` with
+  `eve.horizon/runner` and `eve.horizon/project-id` and no
+  `matchExpressions`, `policyTypes` `[Egress]` only, checked on the old
+  object for updates and deletes.
+- **Overlays that set one namespace for everything** (`namespace:` in a
+  kustomization) would move the runner-namespace copies of the static
+  policies into the platform namespace; the build then fails on the duplicate
+  names. Apply the runner namespace's objects from their own kustomization.
+- **Flow logs:** to see what `strict` would refuse before turning it on,
+  log allowed connections for Eve's namespaces (GKE: `NetworkLogging` with
+  `allow.log` or `allow.delegate` and the namespace annotation) and compare
+  each flow with the strict set.
+
+## Limits
+
+- IPv4 only: the internet rule is `0.0.0.0/0`; IPv6 egress is not allowed
+  under `strict`.
+- A managed database host name is resolved when the policy is written; if
+  its address changes, `strict` blocks it until the next deploy or reconcile.
+- DNS is allowed to `kube-dns` pods only; a node-local DNS cache on a
+  link-local address is not covered.
+- Ingress to tenant namespaces is not restricted by these policies; the
+  egress side already stops one tenant's pods connecting to another's.
+
+## Rollback
+
+The policies are plain Kubernetes objects. A release before them ignores
+them, and they keep doing what they did:
+
+- **Env namespaces:** under `audit` the companion keeps everything open, so
+  nothing is blocked. Under `strict` the strict set keeps applying, and an
+  earlier release neither updates it (a new managed database or app link is
+  not added) nor gives apps the public API URL (a redeploy hands them the
+  worker's `EVE_API_URL`, the internal port where one is set). So set
+  `strict` projects to `audit`, and let the reconcile run, before rolling
+  back; or delete `eve-egress` from their namespaces.
+- **Runner policies** select only `eve.horizon/runner=true`, which pods from
+  earlier releases do not carry, so they affect nothing after a rollback.
