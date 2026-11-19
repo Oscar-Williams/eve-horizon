@@ -6,6 +6,14 @@ import { buildJobCommandEnv, JOB_COMMAND_INHERITED_ENV_KEYS } from './job-comman
 import { ScriptExecutorService } from '../script-executor/script-executor.service.js';
 import { PipelineRunnerService } from '../pipeline-runner/pipeline-runner.service.js';
 
+// The runner-mode decision reads the project's profile from the database;
+// these tests use a stub database, so the decision is legacy (in-process).
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => ({ profile: 'legacy', podsOnly: false, required: false })),
+  recordRunnerModeFinding: vi.fn(async () => undefined),
+}));
+
 /** What a worker pod's environment looks like with `envFrom: eve-app` plus cloud wiring. */
 const WORKER_SECRETS: Record<string, string> = {
   DATABASE_URL: 'postgres://eve:pw@db/eve',
