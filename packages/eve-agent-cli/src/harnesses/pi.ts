@@ -1,6 +1,10 @@
+import { CHECKOUT_SETTINGS_ENV, checkoutSettingsRefusal } from '@eve/shared';
 import type { CliHarnessAdapter, CliContext, HarnessCommand } from './types.js';
 
 export function buildPiCommand(ctx: CliContext): { command: HarnessCommand; warnings: string[] } {
+  if (ctx.env[CHECKOUT_SETTINGS_ENV] === 'strict') {
+    throw new Error(checkoutSettingsRefusal('pi has no confirmed way to keep checkout settings from rerouting it'));
+  }
   const warnings: string[] = [];
   const args: string[] = [];
   const env: Record<string, string | undefined> = { ...ctx.env };

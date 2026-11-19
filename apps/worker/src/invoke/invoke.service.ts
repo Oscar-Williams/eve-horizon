@@ -115,8 +115,11 @@ import {
   projectQueries,
   systemSettingsQueries,
   threadMessageQueries,
+  decideSecurityRule,
+  governingSecurityProfile,
 } from '@eve/db';
 import { resolveHarnessAdapter, type HarnessName, type PermissionPolicy, type HarnessHelpers } from '@eve/shared';
+import { CHECKOUT_SETTINGS_RULE, holdCheckoutSettings } from '@eve/shared';
 import { selectedCodexAuth, type CodexAuthSelection } from '@eve/shared';
 import { runInvocationInK8s } from './k8s-runner';
 import { buildSanitizedHarnessEnv, buildAppApiEnvVars, mintJobAppLinkTokens } from '@eve/shared';
@@ -2029,6 +2032,33 @@ export class InvokeService implements OnModuleInit {
     }
   }
 
+  /**
+   * Rule harness.checkout_settings (P2-9), under the project's profile:
+   * routing settings the checkout supplies to the harness are recorded under
+   * audit and strict (names only), and under strict eve-agent-cli is told to
+   * keep them out; a harness with no confirmed way to is refused.
+   */
+  private holdCheckoutSettings(
+    invocation: HarnessInvocation,
+    harness: string,
+    repoPath: string,
+    env?: Record<string, string | undefined>,
+  ): Promise<Record<string, string>> {
+    const scope = { projectId: invocation.projectId, governing: 'project' as const };
+    return holdCheckoutSettings({
+      harness,
+      workspace: repoPath,
+      configDir: env?.CLAUDE_CONFIG_DIR ?? env?.CODEX_HOME,
+      profile: () => governingSecurityProfile(this.db, { ...scope, rule: CHECKOUT_SETTINGS_RULE }),
+      record: (detail) => decideSecurityRule(this.db, CHECKOUT_SETTINGS_RULE, {
+        ...scope,
+        actorType: 'job',
+        actorId: invocation.jobId,
+        detail: { job_id: invocation.jobId, ...detail },
+      }),
+    });
+  }
+
   private async executeEveAgentCli(
     invocation: HarnessInvocation,
     options: {
@@ -2103,6 +2133,9 @@ export class InvokeService implements OnModuleInit {
 
     const adapterEnv: Record<string, string | undefined> = {
       ...(options.env ?? {}),
+      // Rule harness.checkout_settings: what eve-agent-cli needs to keep
+      // checkout routing settings away from the harness under strict.
+      ...await this.holdCheckoutSettings(invocation, options.harness, repoPath, options.env),
     };
     if (jobToken) {
       adapterEnv.EVE_JOB_TOKEN = jobToken;
