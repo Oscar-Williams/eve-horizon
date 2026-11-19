@@ -158,6 +158,24 @@ describe('DeployerService: per-service Secrets', () => {
   });
 });
 
+describe('DeployerService: service Secret names', () => {
+  it('never gives two long service names the same Secret', async () => {
+    const a = 'notification-dispatcher-for-high-priority-events-a';
+    const b = 'notification-dispatcher-for-high-priority-events-b';
+    const { docs } = await render({
+      [a]: { image: 'worker:1', environment: { STRIPE_KEY: '${secret.STRIPE_KEY}' } },
+      [b]: { image: 'worker:1', environment: { STRIPE_KEY: '${secret.STRIPE_KEY}' } },
+    });
+    const names = docs.filter((doc) => doc.kind === 'Secret').map((doc) => doc.metadata.name);
+    const refs = docs.filter((doc) => doc.kind === 'Deployment').map((doc) =>
+      doc.spec.template.spec.containers[0].env.find((e: any) => e.name === 'STRIPE_KEY').valueFrom.secretKeyRef.name);
+
+    expect(new Set(names).size).toBe(2);
+    expect(names.every((name: string) => name.length <= 63 && name.endsWith('-eve-secrets'))).toBe(true);
+    expect([...refs].sort()).toEqual([...names].sort());
+  });
+});
+
 describe('DeployerService: pruning service Secrets', () => {
   function pruner(existing: Array<{ name: string; deployment: string }>, liveDeployments: string[]) {
     const k8s = {

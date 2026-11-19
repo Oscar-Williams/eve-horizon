@@ -165,6 +165,16 @@ describe('isolation.pod_security under strict', () => {
     expect(result.podSecurityLevel).toBe('restricted');
   });
 
+  it('refuses an invalid x-eve.security that an environment override brings in', async () => {
+    const { deployer } = newDeployer();
+    await expect((deployer as any).renderManifest({
+      manifestYaml: yaml.stringify({ services: { web: { image: 'web:1', ports: ['3000'] } } }),
+      ...params,
+      envOverrides: { services: { web: { 'x-eve': { security: { run_as_user: 'node' } } } } },
+      podSecurity: 'strict',
+    })).rejects.toThrow(/x-eve\.security of web is invalid/);
+  });
+
   it('refuses networking.egress: stable', async () => {
     await expect(render({
       web: { image: 'web:1', ports: ['3000'], 'x-eve': { networking: { egress: 'stable' } } },
@@ -257,6 +267,19 @@ describe('isolation.pod_security under audit', () => {
       low_ports: '80',
       strict_blocker: 'named_user',
     }));
+  });
+
+  it('does not refuse an invalid x-eve.security that an environment override brings in', async () => {
+    const { deployer } = newDeployer();
+    const result = await (deployer as any).renderManifest({
+      manifestYaml: yaml.stringify({ services: { web: { image: 'web:1', ports: ['3000'] } } }),
+      ...params,
+      envOverrides: { services: { web: { 'x-eve': { security: { run_as_user: 'node' } } } } },
+      podSecurity: 'audit',
+    });
+
+    expect(result.manifestYaml).toContain('kind: Deployment');
+    expect(findings()[0].detail).toEqual(expect.objectContaining({ service: 'web', image_user: 'numeric' }));
   });
 
   it('records stable egress as a strict blocker without refusing', async () => {
