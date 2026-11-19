@@ -145,6 +145,20 @@ describe('SecurityService', () => {
   });
 
   describe('setProfile', () => {
+    it('changes a profile and records the change in one transaction', async () => {
+      const tx = { transaction: true };
+      const svc = new SecurityService({ begin: async (work: (t: unknown) => Promise<unknown>) => work(tx) } as never);
+      const { auditQueries, securityQueries, systemSettingsQueries } = await import('@eve/db');
+
+      await svc.setProfile({ scope: 'org', id: ORG }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin');
+
+      expect(db.audit.log).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(auditQueries).mock.calls.map(([arg]) => arg)).toContain(tx);
+      expect(vi.mocked(securityQueries).mock.calls.map(([arg]) => arg)).toContain(tx);
+      expect(vi.mocked(systemSettingsQueries).mock.calls.map(([arg]) => arg)).toContain(tx);
+    });
+
     it('records who changed a profile, and from what', async () => {
       db.state.settings.set('security.profile', 'audit');
       db.state.orgProfiles.set(ORG, 'audit');
