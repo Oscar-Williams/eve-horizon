@@ -35,6 +35,8 @@ function createAccessStore() {
     groupMembers: [] as GroupMemberRow[],
     settings: new Map<string, string>(),
     findings: [] as Array<{ rule: string; profile: string; org_id: string | null; project_id: string | null; actor_type: string; actor_id: string; detail: Record<string, unknown> }>,
+    /** Project-owned resources (jobs, threads) by id, for owner lookups. */
+    resources: new Map<string, { kind: 'jobs' | 'threads'; project_id: string }>(),
   };
 
   const projectById = (id: string) => state.projects.find((p) => p.id === id && !p.deleted_at) ?? null;
@@ -203,6 +205,12 @@ function createAccessStore() {
     async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sql = strings.join('?');
       const [value] = values;
+      const owned = /FROM (jobs|threads) r JOIN projects p/.exec(sql);
+      if (owned) {
+        const resource = state.resources.get(value as string);
+        const org = resource && resource.kind === owned[1] ? projectOrg(resource.project_id) : undefined;
+        return resource && org ? [{ project_id: resource.project_id, org_id: org }] : [];
+      }
       if (/FROM orgs/.test(sql)) {
         return state.orgs.filter((o) => o.id === value || o.slug === value).map((o) => ({ id: o.id }));
       }
@@ -239,6 +247,10 @@ function createAccessStore() {
       state.groupMembers = [];
       state.settings.clear();
       state.findings = [];
+      state.resources.clear();
+    },
+    addResource(kind: 'jobs' | 'threads', id: string, projectId: string) {
+      state.resources.set(id, { kind, project_id: projectId });
     },
     addOrg(id: string, slug: string, profile: Profile = null) {
       state.orgs.push({ id, slug, security_profile: profile });
