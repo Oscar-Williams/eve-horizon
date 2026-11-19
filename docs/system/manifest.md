@@ -561,6 +561,8 @@ Notes:
   `audit`), and private under `strict`. Declare `public: true` or
   `public: false` on every service with ports so the profile does not matter.
   The deployer, preview URLs and `eve env diagnose` follow the same rule.
+  When a service is no longer public, its next deploy removes the Ingress Eve
+  made for it in that environment.
 - `alias` and `domains` are served only on a public service. Sync warns about
   `domains` on a service that is not public.
 - `x-eve.ingress.timeout` tunes nginx-ingress request/response timeout for all

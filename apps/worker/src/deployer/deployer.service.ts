@@ -195,12 +195,20 @@ interface CustomDomainIngressCandidate {
   certSecretName: string;
 }
 
+/** The Ingress Eve makes for a service, by name and component label. */
+interface PrivateServiceIngress {
+  name: string;
+  component: string;
+}
+
 interface RenderManifestResult {
   manifestYaml: string;
   services: Record<string, Service>;
   aliasIngresses: AliasIngressCandidate[];
   customDomainIngresses: CustomDomainIngressCandidate[];
   desiredTcpIngressServices: string[];
+  /** Services that get no Ingress in this render: an earlier one is removed. */
+  privateServiceIngresses?: PrivateServiceIngress[];
 }
 
 type ServiceStorageConfig = {
@@ -488,6 +496,10 @@ export class DeployerService {
       await this.garbageCollectAliasIngresses(namespace, Array.from(desiredBoundAliases.values()));
       await this.garbageCollectCustomDomainIngresses(namespace, Array.from(desiredDomains.values()), envId);
       await this.garbageCollectTcpIngressServices(namespace, renderResult.desiredTcpIngressServices ?? []);
+      await this.garbageCollectPrivateServiceIngresses(namespace, renderResult.privateServiceIngresses ?? [], {
+        projectId: project.id,
+        envId,
+      });
 
       for (const [serviceName, service] of Object.entries(renderResult.services)) {
         const storage = this.resolvePersistentStorage(service, serviceName);
@@ -1360,25 +1372,32 @@ export class DeployerService {
         `(orgId=${params.orgId} projectId=${params.projectId} envName=${params.envName})`
       );
     }
+    const privateServiceIngresses: PrivateServiceIngress[] = [];
     if (typeof domain === 'string' && domain.length > 0) {
       const implicitPublicProfiles = await this.decideImplicitPublicIngress(params, deployableServices);
       Object.entries(deployableServices).forEach(([name, service]) => {
         const ingressConfig = this.resolveIngressConfig(service);
         const ports = this.parseServicePorts(service.ports);
         const ingressPort = this.resolveIngressPort(ingressConfig, ports);
+        const componentSlug = toK8sName(name, 'component');
+        const resourceName = combineK8sName(envSlug, componentSlug, 'resource');
+        // A service that gets no Ingress now loses the one an earlier deploy made.
+        const noIngress = () => {
+          privateServiceIngresses.push({ name: resourceName, component: toK8sLabelValue(name, 'component') });
+        };
 
         if (!ingressConfig && ports.length === 0) {
+          noIngress();
           return;
         }
 
         const isPublic = isPublicIngress(service, implicitPublicProfiles.get(name) ?? 'legacy');
 
         if (!isPublic || !ingressPort) {
+          noIngress();
           return;
         }
 
-        const componentSlug = toK8sName(name, 'component');
-        const resourceName = combineK8sName(envSlug, componentSlug, 'resource');
         const orgSlug = toK8sName(params.orgSlug, 'org');
         const projectSlug = toK8sName(params.projectSlug, 'project');
 
@@ -1565,6 +1584,7 @@ export class DeployerService {
       aliasIngresses,
       customDomainIngresses,
       desiredTcpIngressServices,
+      privateServiceIngresses,
     };
   }
 
@@ -1591,6 +1611,31 @@ export class DeployerService {
       }));
     }
     return profiles;
+  }
+
+  /**
+   * Remove the Ingress an earlier deploy made for a service that gets none
+   * now (not public under the rule, or no port to serve). Only an Ingress Eve
+   * made for that service in this environment is removed: its name is the
+   * service's resource name, and its labels name the project, environment and
+   * component and mark it as neither an alias nor a custom domain.
+   */
+  private async garbageCollectPrivateServiceIngresses(
+    namespace: string,
+    targets: PrivateServiceIngress[],
+    scope: { projectId: string; envId: string },
+  ): Promise<void> {
+    if (targets.length === 0) return;
+    const existing = await this.k8sService.listServiceIngresses(
+      namespace,
+      `eve.project_id=${scope.projectId},eve.env_id=${scope.envId},!eve.ingress_alias,!eve.custom_domain`,
+    );
+    for (const target of targets) {
+      const match = existing.find((ingress) => ingress.name === target.name && ingress.labels['eve.component'] === target.component);
+      if (!match) continue;
+      await this.k8sService.deleteIngress(namespace, match.name);
+      this.logger.log(`Deleted the Ingress of ${target.component}, which is not public, from ${namespace}`);
+    }
   }
 
   private async garbageCollectAliasIngresses(namespace: string, desiredAliases: string[]): Promise<void> {

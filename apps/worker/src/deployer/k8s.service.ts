@@ -261,6 +261,31 @@ export class K8sService {
       .filter((item) => item.name.length > 0);
   }
 
+  /** Ingresses in a namespace matching a label selector, with their labels. */
+  async listServiceIngresses(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: { items?: k8s.V1Ingress[] } };
+    try {
+      response = await this.networkingApi!.listNamespacedIngress(
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector,
+      );
+    } catch (err) {
+      throw wrapK8sError(err, 'list', { kind: 'Ingress', namespace });
+    }
+
+    return (response.body.items ?? [])
+      .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
+      .filter((item) => item.name.length > 0);
+  }
+
   async listPodsWithLabel(
     namespace: string,
     labelSelector: string,
