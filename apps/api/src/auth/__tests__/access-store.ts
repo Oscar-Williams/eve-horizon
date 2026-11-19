@@ -63,10 +63,13 @@ function createAccessStore() {
       }));
   }
 
-  /** A binding on this very project, held directly or through a group. */
-  function hasProjectBinding(userId: string, projectId: string): boolean {
+  /**
+   * A binding of the project's org that grants `permission` there: on the
+   * project itself or org-wide, held directly or through a group.
+   */
+  function hasProjectBinding(userId: string, projectId: string, permission: string): boolean {
     const orgId = projectOrg(projectId);
-    return applicableBindings(orgId ?? '', 'user', userId, projectId).some((b) => b.project_id === projectId);
+    return applicableBindings(orgId ?? '', 'user', userId, projectId).some((b) => b.permissions.includes(permission));
   }
 
   function effectiveProfile(project: ProjectRow, instance: string | null | undefined): string {
@@ -101,7 +104,7 @@ function createAccessStore() {
           const viaProject = state.projectMemberships.some((m) => m.user_id === userId && m.project_id === p.id);
           const orgRole = state.orgMemberships.find((m) => m.user_id === userId && m.org_id === p.org_id)?.role;
           if (!viaProject && !orgRole) return null;
-          const implicit = !viaProject && orgRole === 'member' && !hasProjectBinding(userId, p.id);
+          const implicit = !viaProject && orgRole === 'member' && !hasProjectBinding(userId, p.id, 'projects:read');
           if (implicit && effectiveProfile(p, options.instance_profile) === 'strict') return null;
           return { ...p, implicit_access: implicit };
         })
@@ -182,15 +185,15 @@ function createAccessStore() {
         .filter((p) => state.projectMemberships.some((m) => m.user_id === userId && m.project_id === p.id)
           || state.orgMemberships.some((m) => m.user_id === userId && m.org_id === orgId))
         .map((p) => p.id),
-    /** The same projects, each marked when the org member role alone reaches it. */
-    listAccessibleProjects: async (orgId: string, userId: string) =>
+    /** The same projects, each marked when the org member role alone gives `permission` there. */
+    listAccessibleProjects: async (orgId: string, userId: string, permission: string) =>
       state.projects
         .filter((p) => p.org_id === orgId && !p.deleted_at)
         .map((p) => {
           const viaProject = state.projectMemberships.some((m) => m.user_id === userId && m.project_id === p.id);
           const orgRole = state.orgMemberships.find((m) => m.user_id === userId && m.org_id === orgId)?.role;
           if (!viaProject && !orgRole) return null;
-          return { id: p.id, implicit_access: !viaProject && orgRole === 'member' && !hasProjectBinding(userId, p.id) };
+          return { id: p.id, implicit_access: !viaProject && orgRole === 'member' && !hasProjectBinding(userId, p.id, permission) };
         })
         .filter(<T>(row: T | null): row is T => row !== null),
   };

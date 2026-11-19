@@ -63,6 +63,17 @@ describe('org-wide queries span only the projects the caller may see (P1-5)', ()
     expect(store.findings('access.implicit_project')[0]).toMatchObject({ project_id: 'proj_other', profile: 'strict' });
   });
 
+  it('judge each listing by its own permission when a binding is all the member holds there', async () => {
+    seed('strict');
+    store.bind({ org_id: ORG, principal_id: 'user_member', project_id: 'proj_other', permissions: ['jobs:read'] });
+
+    const [jobs, stats, events, agents] = await spanned('user_member');
+    expect(jobs).toEqual(['proj_mine', 'proj_other']);
+    expect(stats).toEqual(['proj_mine', 'proj_other']);
+    expect(events).toEqual(['proj_mine']);
+    expect(agents).toEqual(['proj_mine']);
+  });
+
   it('leave org admins every project', async () => {
     seed('strict');
 
