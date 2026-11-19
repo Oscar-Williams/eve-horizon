@@ -48,6 +48,8 @@ export async function mintServiceToken(
     serviceName: string;
     permissions?: string[];
     ttlSeconds?: number;
+    /** The release being deployed: the API grants what its manifest declares for the service. */
+    releaseId?: string;
   },
 ): Promise<ServiceTokenResult | null> {
   let config: ReturnType<typeof loadConfig>;
@@ -79,6 +81,7 @@ export async function mintServiceToken(
         service_name: params.serviceName,
         permissions: params.permissions,
         ttl_seconds: params.ttlSeconds ?? DEFAULT_SERVICE_TTL_SECONDS,
+        ...(params.releaseId ? { release_id: params.releaseId } : {}),
       }),
     });
 

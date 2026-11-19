@@ -797,6 +797,7 @@ export class DeployerService {
       orgSlug: org.slug,
       projectSlug: project.slug,
       componentName: params.serviceName,
+      releaseId: params.releaseId ?? undefined,
       secrets: secretsMap,
       managedValues: managedDbContext.managedValues,
     };
@@ -1190,6 +1191,7 @@ export class DeployerService {
         orgSlug: params.orgSlug,
         projectSlug: params.projectSlug,
         componentName: name,
+        releaseId: params.releaseId,
         secrets: secretsMap,
         managedValues: managedDbContext.managedValues,
       };
@@ -2352,6 +2354,8 @@ export class DeployerService {
       orgSlug: string;
       projectSlug: string;
       componentName: string;
+      /** The release being deployed; the API reads the service's permissions from its manifest. */
+      releaseId?: string;
       secrets?: Map<string, string>;
       managedValues?: Map<string, string>;
     },
@@ -2379,6 +2383,7 @@ export class DeployerService {
       envName: context.envName,
       serviceName: context.componentName,
       permissions: mergedPermissions,
+      releaseId: context.releaseId,
     });
     if (tokenResult) {
       platformEnvVars.push({ name: 'EVE_SERVICE_TOKEN', value: tokenResult.access_token });

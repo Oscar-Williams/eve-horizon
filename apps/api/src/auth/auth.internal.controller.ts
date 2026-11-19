@@ -10,8 +10,27 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { DEFAULT_SERVICE_PERMISSIONS, AccessBindingScopeSchema, agentSecretsAllowlist, narrowSecretsAllowlist, type AccessBindingScope } from '@eve/shared';
-import { type Db, agentQueries, findJobAgent, jobQueries, projectQueries } from '@eve/db';
+import * as yaml from 'yaml';
+import {
+  DEFAULT_SERVICE_PERMISSIONS,
+  AccessBindingScopeSchema,
+  agentSecretsAllowlist,
+  getServicePermissions,
+  narrowSecretsAllowlist,
+  type AccessBindingScope,
+  type Service,
+} from '@eve/shared';
+import {
+  type Db,
+  type Environment,
+  agentQueries,
+  environmentQueries,
+  findJobAgent,
+  jobQueries,
+  projectManifestQueries,
+  projectQueries,
+  releaseQueries,
+} from '@eve/db';
 import { Public } from './auth.decorator.js';
 import { InternalCallers, InternalTokenGuard } from '../common/internal-token.guard.js';
 import { AuthService } from './auth.service.js';
@@ -26,6 +45,9 @@ import { isRunningAttempt } from './job-liveness.js';
 export class AuthInternalController {
   private jobs: ReturnType<typeof jobQueries>;
   private projects: ReturnType<typeof projectQueries>;
+  private environments: ReturnType<typeof environmentQueries>;
+  private releases: ReturnType<typeof releaseQueries>;
+  private manifests: ReturnType<typeof projectManifestQueries>;
   private appLinkMinter: AppLinkTokenMinter;
 
   constructor(
@@ -35,6 +57,9 @@ export class AuthInternalController {
   ) {
     this.jobs = jobQueries(db);
     this.projects = projectQueries(db);
+    this.environments = environmentQueries(db);
+    this.releases = releaseQueries(db);
+    this.manifests = projectManifestQueries(db);
     this.appLinkMinter = new AppLinkTokenMinter(authService, db);
   }
 
@@ -192,6 +217,13 @@ export class AuthInternalController {
     };
   }
 
+  /**
+   * A service token grants at most DEFAULT_SERVICE_PERMISSIONS plus the
+   * service's `x-eve.permissions` in the manifest of the release deployed to
+   * the env (the one being deployed, when the worker names it, else the
+   * env's current release). Anything else requested is left out. The env
+   * must exist in the project, and the project in the org.
+   */
   @Public()
   @Post('mint-service-token')
   @HttpCode(HttpStatus.OK)
@@ -204,14 +236,32 @@ export class AuthInternalController {
       service_name: string;
       permissions?: string[];
       ttl_seconds?: number;
+      /** The release being deployed, whose manifest declares the service's permissions. */
+      release_id?: string;
     },
   ): Promise<{ access_token: string; token_type: string; expires_at: number }> {
+    const project = await this.projects.findById(body.project_id);
+    if (!project || project.org_id !== body.org_id) {
+      throw new NotFoundException(`Project ${body.project_id} not found in org ${body.org_id}`);
+    }
+    const environment = await this.environments.findByProjectAndName(project.id, body.env_name);
+    if (!environment) {
+      throw new NotFoundException(`Environment ${body.env_name} not found in project ${project.id}`);
+    }
+
+    const allowed = new Set<string>([
+      ...DEFAULT_SERVICE_PERMISSIONS,
+      ...await this.declaredServicePermissions(project.id, environment, body.release_id, body.service_name),
+    ]);
+    const requested = body.permissions ?? [...DEFAULT_SERVICE_PERMISSIONS];
+    const permissions = [...new Set(requested.filter((permission) => allowed.has(permission)))];
+
     const accessToken = this.authService.mintServiceToken({
-      projectId: body.project_id,
+      projectId: project.id,
       orgId: body.org_id,
       envName: body.env_name,
       serviceName: body.service_name,
-      permissions: body.permissions ?? [...DEFAULT_SERVICE_PERMISSIONS],
+      permissions,
       ttlSeconds: body.ttl_seconds,
     });
 
@@ -223,6 +273,32 @@ export class AuthInternalController {
       token_type: 'bearer',
       expires_at: payload.exp,
     };
+  }
+
+  /** The service's `x-eve.permissions` in the manifest of the env's release; none when there is none. */
+  private async declaredServicePermissions(
+    projectId: string,
+    environment: Pick<Environment, 'current_release_id' | 'last_applied_release_id'>,
+    releaseId: string | undefined,
+    serviceName: string,
+  ): Promise<string[]> {
+    const id = releaseId ?? environment.current_release_id ?? environment.last_applied_release_id;
+    if (!id) return [];
+    const release = await this.releases.findById(id);
+    if (!release || release.project_id !== projectId) {
+      if (releaseId) throw new NotFoundException(`Release ${releaseId} not found in project ${projectId}`);
+      return [];
+    }
+    const manifest = await this.manifests.findByProjectAndHash(projectId, release.manifest_hash);
+    if (!manifest) return [];
+    let parsed: { services?: Record<string, unknown> } | null;
+    try {
+      parsed = yaml.parse(manifest.manifest_yaml) as { services?: Record<string, unknown> } | null;
+    } catch {
+      return [];
+    }
+    const service = parsed?.services?.[serviceName];
+    return service && typeof service === 'object' ? getServicePermissions(service as Service) : [];
   }
 
   @Public()
