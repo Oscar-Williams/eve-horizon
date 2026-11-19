@@ -110,10 +110,23 @@ export function jobCodexAuthDirs(configDir: string | undefined, jobUserHome: str
  */
 export function preexistingCodexAuthPaths(
   configDir: string | undefined,
-  invocation: { secrets_allowlist?: string[] },
+  invocation: { secrets_allowlist?: string[]; credentials_from_secrets_only?: boolean },
 ): string[] {
-  if (invocation.secrets_allowlist || !configDir) return [];
+  if (!mayUseRuntimeCodexAuth(invocation) || !configDir) return [];
   return [path.join(configDir, 'auth.json')];
+}
+
+/**
+ * Whether a job may fall back to Codex auth the runtime holds itself (an
+ * auth.json already in the config dir, or the operator's own env or login):
+ * not for a job with a secrets allowlist, nor under the project's `strict`
+ * profile, where credentials come only from the job's secrets.
+ */
+export function mayUseRuntimeCodexAuth(invocation: {
+  secrets_allowlist?: string[];
+  credentials_from_secrets_only?: boolean;
+}): boolean {
+  return !invocation.secrets_allowlist && !invocation.credentials_from_secrets_only;
 }
 
 /**

@@ -86,6 +86,7 @@ import {
   removeStaleServiceHomeCodexAuth,
   writeJobCodexAuth,
   operatorCodexAuth,
+  mayUseRuntimeCodexAuth,
   selectJobSecrets,
   applyEnvOverrides,
   materializeWorkspaceSkills,
@@ -1979,8 +1980,9 @@ export class InvokeService implements OnModuleInit {
     }
 
     // Priority 5: operator Codex auth (the worker's own env, or a developer's
-    // codex login outside k8s), for jobs without a secrets allowlist only.
-    if (!invocation.secrets_allowlist) {
+    // codex login outside k8s), for jobs without a secrets allowlist only, and
+    // never under the project's strict profile.
+    if (mayUseRuntimeCodexAuth(invocation)) {
       const operatorAuth = await operatorCodexAuth();
       if (operatorAuth) {
         await writeJobCodexAuth(operatorAuth, authTarget);

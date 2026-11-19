@@ -174,6 +174,7 @@ export {
   writeBackCodexAuth,
   jobCodexAuthDirs,
   preexistingCodexAuthPaths,
+  mayUseRuntimeCodexAuth,
   removeStaleServiceHomeCodexAuth,
   writeJobCodexAuth,
   operatorCodexAuth,
