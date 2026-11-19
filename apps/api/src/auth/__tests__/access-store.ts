@@ -37,6 +37,8 @@ function createAccessStore() {
     findings: [] as Array<{ rule: string; profile: string; org_id: string | null; project_id: string | null; actor_type: string; actor_id: string; detail: Record<string, unknown> }>,
     /** Project-owned resources (jobs, threads) by id, for owner lookups. */
     resources: new Map<string, { kind: 'jobs' | 'threads'; project_id: string }>(),
+    /** Jobs whose declared token scope the API judged (jobs.token_scope_judged_at set). */
+    judgedJobs: new Set<string>(),
   };
 
   const projectById = (id: string) => state.projects.find((p) => p.id === id && !p.deleted_at) ?? null;
@@ -205,6 +207,9 @@ function createAccessStore() {
     async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sql = strings.join('?');
       const [value] = values;
+      if (/SELECT token_scope_judged_at FROM jobs/.test(sql)) {
+        return [{ token_scope_judged_at: state.judgedJobs.has(value as string) ? now : null }];
+      }
       const owned = /FROM (jobs|threads) r JOIN projects p/.exec(sql);
       if (owned) {
         const resource = state.resources.get(value as string);
@@ -248,6 +253,10 @@ function createAccessStore() {
       state.settings.clear();
       state.findings = [];
       state.resources.clear();
+      state.judgedJobs.clear();
+    },
+    addJudgedJob(jobId: string) {
+      state.judgedJobs.add(jobId);
     },
     addResource(kind: 'jobs' | 'threads', id: string, projectId: string) {
       state.resources.set(id, { kind, project_id: projectId });
