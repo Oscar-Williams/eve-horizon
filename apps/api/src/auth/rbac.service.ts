@@ -209,21 +209,24 @@ export class RbacService implements TokenScopeResolver {
     }
 
     if (projectInput) {
+      let orgId: string;
       try {
-        const orgId = await this.getProjectOrgId(projectInput);
-        return await this.getEffectivePermissions(user.user_id, orgId, projectInput, { actor: user, need });
-      } catch {
-        // The project could not be resolved: a strict profile refuses rather
-        // than fall back to the member baseline.
+        orgId = await this.getProjectOrgId(projectInput);
+      } catch (error) {
+        // Only a project that is not there falls back; any other failure
+        // (a lookup or profile error) is an error, never the member set.
+        if (!(error instanceof NotFoundException)) throw error;
+        // A project id the instance still holds (a deleted project) is judged
+        // under that project's profile; otherwise the instance profile governs.
         const profile = await this.security?.decide(UNRESOLVED_PROJECT_RULE, {
           governing: 'project',
+          projectId: projectInput.startsWith('proj_') ? projectInput : undefined,
           actor: user,
           detail: { project: projectInput },
         });
-        if (profile === 'strict') {
-          return new Set<string>();
-        }
+        return profile === 'strict' ? new Set<string>() : expandPermissions('member');
       }
+      return this.getEffectivePermissions(user.user_id, orgId, projectInput, { actor: user, need });
     }
     return expandPermissions('member');
   }
