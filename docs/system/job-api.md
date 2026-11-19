@@ -319,7 +319,10 @@ The decider of an approve or reject is the authenticated caller, recorded as
 the job's `reviewer` and in the audit log; a `reviewer_id` in the body is
 ignored. A person's own token is recorded as their user id; a job token as
 `job:<job id>`, never as the person the job runs as; a service, service-principal
-or app-link token as its kind and id (`service:<name>`, and so on).
+or app-link token as its kind and id (`service:<name>`, and so on). A `PATCH`
+that moves a job from `review` to `done` is an approval too: it records the
+caller as the decider, sets `review_status` to `approved` and writes the same
+audit entry as the approve route.
 
 Under the project's `strict` security profile (rule `jobs.approve_token`), only
 a person's own token may approve or reject: job, service, service-principal and

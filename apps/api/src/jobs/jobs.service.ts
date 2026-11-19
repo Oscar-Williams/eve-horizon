@@ -1035,7 +1035,7 @@ export class JobsService {
       await this.guardStepTokenLoweringReview(currentJob, caller);
     }
     const cascade = updates.phase === 'cancelled' && await this.cancelCascades(currentJob);
-    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade });
+    const apply = (tx: Db) => this.applyUpdate(tx, currentJob, updates, { cascade, decider: deciderOf(caller) });
     if (caller && changesWhatRuns(currentJob, updates)) {
       await this.changeWhatJobRuns(currentJob, caller, apply);
     } else {
@@ -1270,13 +1270,28 @@ export class JobsService {
     }
   }
 
-  /** The phase transition and field changes of a PATCH, inside its transaction. */
-  private async applyUpdate(tx: Db, job: Job, updates: UpdateJobRequest, options: { cascade: boolean }): Promise<void> {
+  /**
+   * The phase transition and field changes of a PATCH, inside its
+   * transaction. A move from review to done is an approval: it records the
+   * decider, the review status and an audit entry, as the approve route does.
+   */
+  private async applyUpdate(
+    tx: Db,
+    job: Job,
+    updates: UpdateJobRequest,
+    options: { cascade: boolean; decider: { id: string; type: string } },
+  ): Promise<void> {
     const txJobs = jobQueries(tx);
 
     // Handle phase transitions through updatePhase for validation
     if (updates.phase && updates.phase !== job.phase) {
-      if (updates.phase === 'cancelled') {
+      if (job.phase === 'review' && updates.phase === 'done') {
+        try {
+          await txJobs.approveReview(job.id, options.decider.id, undefined, options.decider.type);
+        } catch (error) {
+          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+        }
+      } else if (updates.phase === 'cancelled') {
         const cancelled = await txJobs.cancelJob(job.id, updates.close_reason ?? undefined, { cascade: options.cascade });
         if (!cancelled) {
           throw new NotFoundException(`Job ${job.id} not found`);
