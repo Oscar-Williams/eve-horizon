@@ -34,10 +34,10 @@ function createService(profile: SecurityProfile, agents: Array<{ id: string }>) 
   Object.assign(service as unknown as Record<string, unknown>, {
     security,
     manifests: { findLatestByProject: vi.fn().mockResolvedValue({ manifest_yaml: MANIFEST }) },
-    projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_trg', org_id: 'org_acme', slug: 'tracker' }) },
+    projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_lab', org_id: 'org_acme', slug: 'lab' }) },
     jobs: {
       generateJobId: vi.fn().mockImplementation(() =>
-        Promise.resolve({ id: `tracker-${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}`, projectId: 'proj_trg' })),
+        Promise.resolve({ id: `lab-${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}`, projectId: 'proj_lab' })),
       create: vi.fn().mockImplementation((data: Record<string, unknown>) => {
         created.push(data);
         return Promise.resolve({ id: data.id, phase: 'ready' });
@@ -60,9 +60,9 @@ describe('WorkflowsService.invoke: a step that names an agent that does not exis
   it('fails under strict before any job is created', async () => {
     const { service, security, created } = createService('strict', []);
 
-    await expect(service.invoke('proj_trg', 'triage', { input: {} })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.invoke('proj_lab', 'triage', { input: {} })).rejects.toBeInstanceOf(ForbiddenException);
     expect(security.gate).toHaveBeenCalledWith('harness.missing_agent', expect.objectContaining({
-      projectId: 'proj_trg',
+      projectId: 'proj_lab',
       governing: 'project',
       detail: expect.objectContaining({ workflow: 'triage', step: 'judge', agent: 'triage' }),
     }), expect.any(String));
@@ -72,7 +72,7 @@ describe('WorkflowsService.invoke: a step that names an agent that does not exis
   it('runs under audit and records a finding', async () => {
     const { service, security, created } = createService('audit', []);
 
-    await service.invoke('proj_trg', 'triage', { input: {} });
+    await service.invoke('proj_lab', 'triage', { input: {} });
 
     expect(security.gate).toHaveBeenCalledWith('harness.missing_agent', expect.anything(), expect.any(String));
     expect(created.find((job) => job.step_name === 'judge')?.assignee).toBeNull();
@@ -81,7 +81,7 @@ describe('WorkflowsService.invoke: a step that names an agent that does not exis
   it('decides nothing when the agent exists', async () => {
     const { service, security, created } = createService('strict', [{ id: 'triage' }]);
 
-    await service.invoke('proj_trg', 'triage', { input: {} });
+    await service.invoke('proj_lab', 'triage', { input: {} });
 
     expect(security.gate).not.toHaveBeenCalled();
     expect(created.find((job) => job.step_name === 'judge')?.assignee).toBe('triage');

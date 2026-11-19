@@ -50,7 +50,7 @@ function gatewayMessage(eveUserId?: string) {
   return {
     provider: 'slack',
     account_id: 'T1',
-    channel_id: 'C1',
+    channel_id: 'C100',
     user_id: 'U_EXT',
     text: 'hello',
     metadata: eveUserId ? { eve_user_id: eveUserId } : {},

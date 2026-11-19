@@ -160,7 +160,7 @@ beforeEach(() => {
   state.findings = [];
   state.findingRows = new Map();
   state.orgs = [
-    { id: 'org_acme', slug: 'acme', name: 'ACME' },
+    { id: 'org_acme', slug: 'acme', name: 'Acme' },
     { id: 'org_b', slug: 'borg', name: 'B' },
   ];
   state.projects = [

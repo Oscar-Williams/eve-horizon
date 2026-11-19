@@ -205,13 +205,13 @@ describe('wrap CSRF signing', () => {
   });
 
   it('is deterministic per key and differs across keys, tokens and flows', async () => {
-    const sec1 = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-one' });
-    const a = sec1.signWrapCsrf(WRAP, FLOW);
-    expect(sec1.signWrapCsrf(WRAP, FLOW)).toBe(a);
-    expect(sec1.signWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz', FLOW)).not.toBe(a);
-    expect(sec1.signWrapCsrf(WRAP, 'another-browsers-flow')).not.toBe(a);
-    const sec2 = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-two' });
-    expect(sec2.signWrapCsrf(WRAP, FLOW)).not.toBe(a);
+    const secOne = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-one' });
+    const a = secOne.signWrapCsrf(WRAP, FLOW);
+    expect(secOne.signWrapCsrf(WRAP, FLOW)).toBe(a);
+    expect(secOne.signWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz', FLOW)).not.toBe(a);
+    expect(secOne.signWrapCsrf(WRAP, 'another-browsers-flow')).not.toBe(a);
+    const secTwo = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-two' });
+    expect(secTwo.signWrapCsrf(WRAP, FLOW)).not.toBe(a);
   });
 
   it('refuses to sign when EVE_INTERNAL_API_KEY is unset', async () => {

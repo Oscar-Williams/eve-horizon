@@ -80,7 +80,7 @@ async function sync(profile: SecurityProfile, yaml: string) {
     security as unknown as SecurityService,
   );
   const result = (service.syncManifest as (...args: unknown[]) => Promise<{ warnings?: string[] }>)(
-    'proj_trg',
+    'proj_lab',
     { yaml },
     { user_id: 'user_alice' },
   );
@@ -101,7 +101,7 @@ describe('ManifestService.syncManifest: harness profiles named by workflow steps
 
     await expect(result).rejects.toBeInstanceOf(ForbiddenException);
     expect(security.gate).toHaveBeenCalledWith('harness.missing_profile', expect.objectContaining({
-      projectId: 'proj_trg',
+      projectId: 'proj_lab',
       governing: 'project',
     }), expect.any(String));
     expect(db.manifests.create).not.toHaveBeenCalled();

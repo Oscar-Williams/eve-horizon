@@ -119,7 +119,7 @@ describe('TokenVerifierService token claims', () => {
     });
 
     // A GoTrue with no GOTRUE_JWT_AUD and no GOTRUE_JWT_DEFAULT_GROUP_NAME
-    // (the Eve base and live) creates users with an empty aud and role, and its
+    // (the Eve base and a deployed instance) creates users with an empty aud and role, and its
     // access tokens carry those empty values.
     it.each([
       ['empty aud and role (GoTrue with no JWT_AUD or default group)', { aud: '', role: '' }],

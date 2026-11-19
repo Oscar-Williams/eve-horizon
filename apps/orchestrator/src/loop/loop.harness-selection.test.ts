@@ -52,7 +52,7 @@ function loop(options: {
 
 function job(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'tracker-a1b2c3d4', project_id: 'proj_trg', harness: null, harness_profile: null,
+    id: 'lab-a1b2c3d4', project_id: 'proj_lab', harness: null, harness_profile: null,
     harness_profile_source: null, harness_options: null, hints: {}, actor_user_id: 'user_alice',
     user_secrets_excluded: false, ...overrides,
   };
@@ -101,7 +101,7 @@ describe('harness selection with nothing configured', () => {
     expect(routing.harnessSpec).toBe('zai');
     expect(rulesDecided()).toEqual(['harness.no_preference']);
     expect(mocks.decide).toHaveBeenCalledWith(expect.anything(), 'harness.no_preference', expect.objectContaining({
-      projectId: 'proj_trg',
+      projectId: 'proj_lab',
       governing: 'project',
     }));
   });
@@ -133,7 +133,7 @@ describe('an explicit harness with no credential', () => {
     const routing = await select(job({ harness: 'gemini' }), attempt, 'agent');
 
     expect(routing.harnessSpec).toBe('gemini');
-    expect(resolveSecrets).toHaveBeenCalledWith('proj_trg', 'user_alice');
+    expect(resolveSecrets).toHaveBeenCalledWith('proj_lab', 'user_alice');
     expect(mocks.decide).not.toHaveBeenCalled();
   });
 
