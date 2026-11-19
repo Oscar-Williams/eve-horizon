@@ -113,5 +113,10 @@ export async function handleSystemSecurity(
     return;
   }
   const target = result.id ? `${result.scope} ${result.id}` : result.scope;
-  console.log(`Security profile for ${target}: ${result.profile ?? 'cleared (inherits)'}`);
+  const cleared = result.scope === 'instance'
+    ? 'cleared (the instance profile is now legacy)'
+    : result.scope === 'new_projects'
+      ? 'cleared (new projects inherit)'
+      : 'cleared (inherits)';
+  console.log(`Security profile for ${target}: ${result.profile ?? cleared}`);
 }
