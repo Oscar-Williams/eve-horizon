@@ -77,6 +77,27 @@
         ]
       }
     },
+    "/system/security/reconcile": {
+      "post": {
+        "description": "Re-signs each environment's registry pull secret with the current registry credential key, with no restart, and records the key version on the environment.",
+        "operationId": "SecurityController_reconcile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "What was re-signed, already current, without a pull secret, or failed"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Bring every environment in line with the security profiles (system_admin only)",
+        "tags": [
+          "system"
+        ]
+      }
+    },
     "/auth/me": {
       "get": {
         "operationId": "AuthController_me",

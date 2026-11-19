@@ -125,8 +125,60 @@ A profile stamped 1 runs these under `audit` until `strict` is set again.
 |---|---|---|
 | `secrets.value_read` | Project | Secret values are write-only through the API: `POST /projects/:id/secrets/export` gets 403. `ensure` returns a value it generates once, in its own response, and `eve github setup` returns the webhook secret only when it creates it (`secret` is `null` otherwise; `--regenerate` makes a new one). Under `audit`, each export is recorded. |
 | `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token or OAuth client secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. `eve system security profile strict` on the instance gets 409, naming the count, while any `v1` or plain rows remain: run `eve system secrets reencrypt` first (`--dry-run` shows the count), or override with `--force` (recorded in the audit log). Org and project flips are not checked. See [secrets](secrets.md#storage-at-rest). |
+| `webhooks.global_secret` | Project | A GitHub webhook for a project with no `GITHUB_WEBHOOK_SECRET` of its own gets 401 instead of being verified with the instance's `EVE_GITHUB_WEBHOOK_SECRET`. Under `audit`, each delivery the global secret verifies is recorded; nothing is recorded for a signature that does not verify. Set a project secret with `eve github setup`. |
+| `internal.service_key` | Instance | A call to an internal route with only the legacy `EVE_INTERNAL_API_KEY` (`x-eve-internal-token`) gets 401, at the API and at the worker and agent runtime. The gateway's and the SSO's keys work only on the routes that declare them (`@InternalCallers`); elsewhere 403. The core key works everywhere. Under `audit`, each legacy-only call and each gateway or SSO call off its routes is recorded (actor `service:legacy-key`, `service:gateway`, `service:sso`). See [internal service keys](#internal-service-keys). |
+| `registry.internal_key` | Instance | The registry token endpoint refuses the internal key as a Basic password, and pull and push credentials signed with it (401). Credentials signed with `EVE_REGISTRY_CREDENTIAL_KEY` work. Under `audit`, each use of the internal key or a credential it signed is recorded. `eve system security profile strict` on the instance gets 409 while any environment's pull secret is not on the current registry key version: run `eve system security reconcile` first, or override with `--force`. See [container registry](container-registry.md#credential-key). |
 
 Always on in 0.1.327, whatever the profile: reads of both ciphertext formats
 and of sealed or plain OAuth columns; masks that show no character of a
-value; and OAuth state stored with its expiry and bound to the user (or
-signed-link install cookie) that started the install.
+value; OAuth state stored with its expiry and bound to the user (or
+signed-link install cookie) that started the install; the internal service
+keys below, with each platform service holding only the platform secrets it
+reads; registry credentials signed with their own key; and service tokens
+clamped to the manifest: `POST /internal/auth/mint-service-token` grants at
+most `DEFAULT_SERVICE_PERMISSIONS` plus the service's `x-eve.permissions` in
+the manifest of the release being deployed (or the env's current release),
+for an env that exists in the project of a project in the org (404
+otherwise).
+
+### Internal service keys
+
+Platform services call each other with a key per service, sent as
+`x-eve-service-key: <service>.<key>`:
+
+| Key | Held by | Accepted |
+|---|---|---|
+| `EVE_INTERNAL_CORE_KEY` (`core`) | API, worker, orchestrator, agent runtime | On every internal route, and by the worker, agent runtime, orchestrator and gateway. They all hold the database URL, so separate keys between them would add no wall. |
+| `EVE_INTERNAL_GATEWAY_KEY` (`gateway`) | Gateway | By the API, on the routes the gateway calls. |
+| `EVE_INTERNAL_SSO_KEY` (`sso`) | SSO | By the API, on `magic-link-wrap/inspect` and `consume`. |
+
+A callee that accepts a key without holding it holds its SHA-256 instead:
+`EVE_INTERNAL_CALLER_HASHES=core:<hex>,gateway:<hex>,sso:<hex>` (the API
+needs the gateway and SSO hashes, the gateway the core hash). It cannot act
+as those callers. Runner pods get only the core key's hash, to accept the
+worker's submissions.
+
+**Upgrade order does not matter.** While a service still holds the legacy
+`EVE_INTERNAL_API_KEY`, it also sends `x-eve-internal-token`, so a callee not
+yet upgraded keeps working; a callee that cannot verify a service key yet
+(its hashes not set) falls back to the legacy key. A call carrying both is
+judged on the service key. Removing the legacy key from a service's env stops
+it sending and accepting it.
+
+**Removing the legacy key.** Remove `EVE_INTERNAL_API_KEY` only when
+`eve doctor security` shows no `internal.service_key` findings from
+`service:legacy-key` and no environment on an older registry key version,
+the same gate as `registry.internal_key`: until then, pull secrets signed with
+it still depend on it. Tokens the API signs for itself (identity link tokens,
+Slack install links, org filesystem link tokens without
+`EVE_ORG_FS_LINK_TOKEN_SECRET`) are signed with keys derived from the core
+key once it is set, and those signed with the legacy key keep verifying only
+while it is set; the SSO keys its sign-in forms with its own key the same way.
+
+### Reconcile
+
+`eve system security reconcile` (`POST /system/security/reconcile`, system
+admins) brings environments in line with the profiles without restarting
+anything. In 0.1.327 it re-signs each environment's registry pull secret with
+the current registry credential key and records the key version (see
+[container registry](container-registry.md#credential-key)).

@@ -93,4 +93,6 @@ No manual rotation needed — regular deploys keep the token fresh.
 
 **403 "Missing required permission"**: The service token doesn't have the required scope. Add the missing permission to `x-eve.permissions` in the manifest and redeploy (unless it is one of the permissions not available to services, above).
 
-**Empty `EVE_SERVICE_TOKEN`**: Check that `EVE_INTERNAL_API_KEY` is configured in the platform. The deployer logs a warning if token minting fails.
+**Empty `EVE_SERVICE_TOKEN`**: Check that the worker holds an internal key (`EVE_INTERNAL_CORE_KEY`, or the legacy `EVE_INTERNAL_API_KEY`). The deployer logs a warning if token minting fails.
+
+**A permission missing from the token**: the API grants a service only `DEFAULT_SERVICE_PERMISSIONS` and the `x-eve.permissions` its manifest declares in the release being deployed; anything else the deployer asks for is left out. Declare it in the manifest and redeploy.

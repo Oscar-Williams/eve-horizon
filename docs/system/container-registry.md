@@ -47,15 +47,17 @@ Required system configuration:
 - `EVE_BUILDKIT_INSECURE_REGISTRIES` (optional) — comma-separated registry hosts to use with BuildKit insecure/plain-HTTP transport (useful for local in-cluster registries)
 - `EVE_BUILDKIT_INSECURE_ALL` (optional) — set to `true` only for local troubleshooting to force insecure transport for all BuildKit registry operations
 
-The signing key is needed on the API only. `EVE_INTERNAL_API_KEY`, on the API
-and the worker, also signs the push and pull credentials described below.
+The signing key is needed on the API only. `EVE_REGISTRY_CREDENTIAL_KEY`, on
+the API and the worker only, signs the push and pull credentials described
+below (see [credential key](#credential-key)); until it is set,
+`EVE_INTERNAL_API_KEY` signs them.
 
 Token endpoint (the registry's token realm, which must stay reachable by
 BuildKit and by kubelet on every node):
 
 ```
 GET  /internal/registry/token?service=eve-registry&scope=repository:<name>:<actions>   (Basic auth)
-POST /internal/registry/token                                                          (x-eve-internal-token)
+POST /internal/registry/token                                                          (internal key: x-eve-service-key core)
 ```
 
 **Image names.** Every image a project builds into the Eve registry lives
@@ -77,7 +79,8 @@ refuses that operation):
 |--------|------------|---------|
 | A build (BuildKit or Kaniko) | Basic `eve-push` / project push credential | `pull`, `push` on repositories under `<project id>/` |
 | Kubelet in an app namespace | Basic `eve-pull` / environment pull credential | `pull` on repositories under `<project id>/` |
-| Operator or internal POST | `EVE_INTERNAL_API_KEY` | `pull`, `push` on any `repository` scope |
+| Internal POST | The core service key (or the legacy key, under `internal.service_key`) | `pull`, `push` on any `repository` scope |
+| Operator (legacy) | Basic, `EVE_INTERNAL_API_KEY` as the password | `pull`, `push` on any `repository` scope; refused under `registry.internal_key` `strict` |
 
 Never granted to anyone: `delete`, `*`, and non-repository scopes such as
 `registry:catalog:*`. Because the prefix is assigned by the platform, not
@@ -86,7 +89,7 @@ repositories, for push or pull.
 
 **Push credentials.** A build gets
 `evepush1.<base64url({"p":"<project id>","exp":<unix seconds>})>.<HMAC>`
-(HMAC key derived from `EVE_INTERNAL_API_KEY` by HKDF under its own label),
+(HMAC key derived from the registry credential key by HKDF under its own label),
 valid for 6 hours, in place of the internal API key. The build backend's
 docker config never holds the internal key, so a Dockerfile `RUN` step that
 can read it (Kaniko mounts it at `/kaniko/.docker`) gets at most a short-lived
@@ -110,9 +113,51 @@ It has no expiry time of its own, so pods can be rescheduled at any time while
 the environment lives.
 
 **Revocation.** Redeploy the environment twice, or delete it, to retire a
-leaked pull secret. Rotating `EVE_INTERNAL_API_KEY` revokes every pull and push
-credential at once; each environment gets a fresh pull credential on its next
-deploy.
+leaked pull secret. Rotating `EVE_REGISTRY_CREDENTIAL_KEY` revokes every pull
+and push credential at once; run `eve system security reconcile` so every
+environment gets a fresh pull credential without a redeploy.
+
+#### Credential key
+
+`EVE_REGISTRY_CREDENTIAL_KEY` (API and worker only) signs registry
+credentials, so the key every platform service holds is not also the key to
+the registry. Its **version** is 16 hex characters of an HMAC of a fixed label
+under the key: it names the key without revealing it. Credentials signed with
+`EVE_INTERNAL_API_KEY` have the version `internal`.
+
+Each environment records the version of the key that signed its pull secret,
+and the pull epoch it was recorded at (`registry_key_version`,
+`registry_key_epoch`), once the secret is written. An environment that has had
+an Eve pull secret (`registry_pull_epoch` above 0) is **stale** when its
+version is not the current key's, or was recorded at an older epoch (a write
+by a release that did not record versions).
+
+`eve system security reconcile` (`POST /system/security/reconcile`) has the
+worker go through the stale environments, with no restart:
+
+- an `eve-registry` secret holding an Eve pull credential signed with another
+  key, or at another epoch, is rewritten at a new epoch with a credential
+  signed with the current key (kubelet reads it at its next pull);
+- one already signed with the current key at the current epoch is only
+  recorded;
+- a namespace with no Eve pull credential (none written, or a bring-your-own
+  registry's credentials, which are never touched) is recorded as current.
+
+It reports what it re-signed and what failed; a failed environment stays
+stale. `eve doctor security` shows the current version and how many
+environments are stale.
+
+The token endpoint verifies a credential under the credential key first, then
+under the internal key. The internal key itself as a password, and credentials
+it signed, follow `registry.internal_key`: accepted under `legacy`, accepted
+and recorded under `audit`, refused under `strict`. The instance goes `strict`
+only once no environment is stale (409 otherwise, unless `--force`), and the
+legacy `EVE_INTERNAL_API_KEY` must stay until then: removing it stops every
+credential it signed from verifying.
+
+Upgrading: set `EVE_REGISTRY_CREDENTIAL_KEY` on the API and the worker (new
+credentials are signed with it at once; old ones keep working), then run
+`eve system security reconcile`.
 
 **Upgrading from un-prefixed images.** Images pushed before project prefixes
 (`<host>/<image>`) are outside every project's prefix, so no project
@@ -126,7 +171,9 @@ secret: if it still holds the internal key (written before environment pull
 credentials existed), rescheduled pods can still pull their un-prefixed
 images; if it already holds an environment pull credential, a pod rescheduled
 onto a node without the image cached fails to pull until the redeploy. Once
-every environment is redeployed, rotate `EVE_INTERNAL_API_KEY`. Old
+every environment is redeployed, run `eve system security reconcile` and
+retire `EVE_INTERNAL_API_KEY` as [security profiles](security-profiles.md#internal-service-keys)
+describes. Old
 un-prefixed repositories stay in the registry's storage until removed by hand.
 
 ### Service Images

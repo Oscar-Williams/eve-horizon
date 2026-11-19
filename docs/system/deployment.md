@@ -429,13 +429,25 @@ Docker Compose is optimized for **fast local iteration** during development.
 ## Runtime Environment Variables (Key)
 
 All platform services:
-- `EVE_INTERNAL_API_KEY` (required): the service-to-service key. The worker
-  and agent runtime refuse every request except `GET /health` without it, and
-  refuse to start without it when `NODE_ENV=production`. Set the same value on
-  `eve-api`, `eve-orchestrator`, `eve-worker`, `eve-agent-runtime`,
-  `eve-gateway` and `eve-sso`; runner pods inherit it from the worker or agent
-  runtime that creates them. See
-  [auth.md → Internal Service Authentication](./auth.md#internal-service-authentication).
+- Internal service keys. `EVE_INTERNAL_CORE_KEY` on `eve-api`,
+  `eve-orchestrator`, `eve-worker` and `eve-agent-runtime`;
+  `EVE_INTERNAL_GATEWAY_KEY` on `eve-gateway` only; `EVE_INTERNAL_SSO_KEY` on
+  `eve-sso` only; `EVE_INTERNAL_CALLER_HASHES` (`core:<sha256>,gateway:<sha256>,sso:<sha256>`)
+  on `eve-api` and `eve-gateway`. The worker and agent runtime refuse every
+  request except `GET /health` without a key, and refuse to start without one
+  when `NODE_ENV=production`. Runner pods get only the core key's hash.
+- `EVE_INTERNAL_API_KEY`: the legacy shared key, still sent and accepted
+  beside the keys above until it is removed. See
+  [auth.md → Internal Service Authentication](./auth.md#internal-service-authentication)
+  and [security profiles](./security-profiles.md#internal-service-keys).
+- `EVE_REGISTRY_CREDENTIAL_KEY` on `eve-api` and `eve-worker` only: signs
+  registry credentials ([container registry](./container-registry.md#credential-key)).
+
+Each platform service takes only the `eve-app` keys it reads, by
+`secretKeyRef` (base `k8s/base/*-deployment.yaml`), never the whole Secret by
+`envFrom`; the gateway and the SSO get no database URL and no core key. The
+refs are optional, as `envFrom` was, so a key missing from the Secret leaves
+the variable unset rather than stopping the pod.
 
 Orchestrator:
 - `ORCH_LOOP_INTERVAL_MS`
@@ -478,8 +490,8 @@ Production uses Kubernetes (k3s or managed k8s):
   same release version. Use the separate toolchain-image prefix/tag settings
   for on-demand language and media tooling.
 - **ConfigMaps/Secrets**: Environment configuration and credentials.
-  `EVE_INTERNAL_API_KEY` must reach every platform service (see above); probes
-  stay on `GET /health`, which needs no credentials.
+  Each platform service gets its internal key (see above); probes stay on
+  `GET /health`, which needs no credentials.
 - **Persistent volumes**: Database and workspace storage
 - **RBAC**: Worker service account permissions (pods, PVCs, services CRUD)
 - **Manifests**: Same base manifests as local k3d with production-specific overlays

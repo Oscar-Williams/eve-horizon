@@ -143,7 +143,7 @@ install in the same browser that opened the link.
 
 **Gateway hot-loading**: The gateway detects and initializes new integrations within ~30 seconds (no restart required). It polls the API for active integrations on a 30-second interval.
 
-**Install token format**: `eve-slack-install-<base64url(payload)>.<base64url(hmac)>`. Tokens are HMAC-signed with `EVE_INTERNAL_API_KEY`, single-use (JTI tracked), and expire after the configured TTL.
+**Install token format**: `eve-slack-install-<base64url(payload)>.<base64url(hmac)>`. Tokens are HMAC-signed with a key derived from `EVE_INTERNAL_CORE_KEY` (the legacy `EVE_INTERNAL_API_KEY` until the core key is set; tokens it signed verify while it is set), single-use (JTI tracked), and expire after the configured TTL.
 
 **API endpoints**:
 - `POST /orgs/:org_id/integrations/slack/install-token` — generate signed install token (requires `integrations:write`)
@@ -315,7 +315,7 @@ eve integrations update <integration_id> --org <org_id> \
 ## GitHub
 
 - **Webhook**: `/integrations/github/events/:projectId`
-- **Auth**: `EVE_GITHUB_WEBHOOK_SECRET` + project-scoped secret override
+- **Auth**: the project's `GITHUB_WEBHOOK_SECRET`; a project without one falls back to the instance's `EVE_GITHUB_WEBHOOK_SECRET` except under `strict` ([`webhooks.global_secret`](security-profiles.md))
 - **Events**: Push, pull request, and other configured GitHub webhook events trigger Eve pipelines and workflows
 
 ## External Identities

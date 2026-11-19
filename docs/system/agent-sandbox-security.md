@@ -71,8 +71,9 @@ For production deployments using Kubernetes runner pods:
 - Resource limits prevent DoS attacks
 - Ephemeral storage destroyed after job completion
 
-Runner pods still receive `DATABASE_URL` and `EVE_INTERNAL_API_KEY`, which the
-runner process uses to record logs and resolve secrets. See
+Runner pods still receive `DATABASE_URL` and the legacy `EVE_INTERNAL_API_KEY`,
+which the runner process uses to record logs and resolve secrets. They never
+get the core service key: only its hash, to accept the worker's submissions. See
 [job-execution-isolation-plan.md](../plans/job-execution-isolation-plan.md).
 
 ## Configuration

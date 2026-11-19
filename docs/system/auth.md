@@ -50,7 +50,10 @@ mint the job token, so the on-disk view and API authority match.
 | `EVE_AUTH_ENABLED` | Enable authentication (`true`/`false`, default: `true`) |
 | `EVE_AUTH_PRIVATE_KEY` | RSA private key (PEM, `\n`-escaped PEM, base64-encoded PEM, or file path; see below) — required for internal mode |
 | `EVE_BOOTSTRAP_TOKEN` | One-time token for initial admin creation |
-| `EVE_INTERNAL_API_KEY` | Shared service-to-service key; see [Internal Service Authentication](#internal-service-authentication). Required on the API, orchestrator, worker, agent runtime, gateway and SSO |
+| `EVE_INTERNAL_CORE_KEY` | Core service key, shared by the API, orchestrator, worker and agent runtime; see [Internal Service Authentication](#internal-service-authentication) |
+| `EVE_INTERNAL_GATEWAY_KEY`, `EVE_INTERNAL_SSO_KEY` | The gateway's and the SSO's own keys |
+| `EVE_INTERNAL_CALLER_HASHES` | `service:sha256hex,...` of the keys a callee accepts without holding them (API: gateway and SSO; gateway: core) |
+| `EVE_INTERNAL_API_KEY` | Legacy shared key: sent and accepted beside the keys above until it is removed |
 
 ### Optional Variables
 
@@ -79,34 +82,63 @@ mint the job token, so the on-disk view and API authority match.
 
 ## Internal Service Authentication
 
-Platform services call each other with the shared `EVE_INTERNAL_API_KEY`, sent
-in the `x-eve-internal-token` header. Every check compares the presented token
-in constant time (`internalTokenMatches` in `@eve/shared`) and fails closed: an
-unset key matches nothing.
+Platform services call each other with a key per service, sent as
+`x-eve-service-key: <service>.<key>`:
 
-| Surface | What requires the key | Open without it |
-|---------|-----------------------|-----------------|
-| API (`/internal/*`) | Every internal route (`InternalTokenGuard`) | Everything outside `/internal` uses user, job or service tokens |
-| Worker (`:4749`, and runner pods, which serve the worker app) | Every route: `/invoke`, `/deploy`, `/environments/delete`, `/scripts/execute`, `/actions/execute`, `/pipeline-runs/:id/execute`, and unknown paths | `GET /health` only |
-| Agent runtime (`:4812`) | Every route, including `/invoke` and unknown paths | `GET /health` only |
+- `core` (`EVE_INTERNAL_CORE_KEY`): one key shared by the API, orchestrator,
+  worker and agent runtime, accepted on every internal route;
+- `gateway` (`EVE_INTERNAL_GATEWAY_KEY`) and `sso` (`EVE_INTERNAL_SSO_KEY`):
+  accepted by the API only on the routes that declare them
+  (`@InternalCallers('gateway')`, `@InternalCallers('sso')`), checked against
+  their SHA-256 in `EVE_INTERNAL_CALLER_HASHES`, so the API cannot act as
+  them.
+
+While a service still holds the legacy `EVE_INTERNAL_API_KEY`, it also sends
+`x-eve-internal-token`, and callees still accept it, so services can be
+upgraded in any order. A call carrying both is judged on the service key.
+The instance rule `internal.service_key` records legacy-only calls, and
+gateway or SSO calls off their routes, under `audit`, and refuses them under
+`strict` (401 for the legacy key, 403 for a key off its routes). See
+[security profiles](security-profiles.md#internal-service-keys) for the keys,
+the hashes and when the legacy key can be removed. Every check is constant
+time and fails closed: an unset key matches nothing.
+
+| Surface | What requires a key | Keys accepted | Open without it |
+|---------|---------------------|---------------|-----------------|
+| API (`/internal/*`) | Every internal route (`InternalTokenGuard`) | core everywhere; gateway and SSO on their routes; legacy under `internal.service_key` | Everything outside `/internal` uses user, job or service tokens |
+| Worker (`:4749`, and runner pods, which serve the worker app) | Every route: `/invoke`, `/deploy`, `/environments/delete`, `/scripts/execute`, `/actions/execute`, `/pipeline-runs/:id/execute`, `/registry/pull-secrets/resign`, and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
+| Agent runtime (`:4812`) | Every route, including `/invoke` and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
+| Orchestrator (`/system/orchestrator/*`) | Every route | core; legacy (`x-internal-api-key` or Bearer) | — |
+| Gateway (`/internal/deliver`, simulate) | Delivery and simulate | core (by its hash); legacy while the gateway holds it | Webhooks verify their provider's signature |
 
 The worker and agent runtime enforce this with a Fastify `onRequest` hook
 (`registerInternalAuthHook`), so new routes are protected by default and
 unauthenticated requests are refused before the body is parsed. Unknown paths
 answer 401, not 404. Only the exact path `/health` is open, so readiness and
-liveness probes need no credentials.
+liveness probes need no credentials. A runner pod holds only the core key's
+hash, never the key, to accept the worker's submissions.
 
-Callers send the key with `internalAuthHeaders()`: the orchestrator (worker and
-agent-runtime submits, including shard redirects), the API (deploy and
-environment teardown), and the worker and agent runtime when they hand a job
-to a runner pod.
+Callers send their keys with `internalAuthHeaders()` (core by default;
+`internalApiFetch(path, { service: 'gateway' })` in the gateway, `'sso'` in
+the SSO).
 
-**When the key is unset.** The worker and agent runtime refuse to start when
-`NODE_ENV=production` and `EVE_INTERNAL_API_KEY` is empty, with an error naming
-the variable. In any other mode they start, log a warning, and refuse every
-request except `/health`. Local stacks already set the key (`./bin/eh k8s
-secrets` and `eve local` generate one; `.env.test` sets `test-internal-key`),
-because the orchestrator needs it to read job results from the API.
+**When no key is set.** The worker and agent runtime refuse to start when
+`NODE_ENV=production` and neither `EVE_INTERNAL_CORE_KEY` nor
+`EVE_INTERNAL_API_KEY` is set. In any other mode they start, log a warning,
+and refuse every request except `/health`. Local stacks set all the keys
+(`./bin/eh k8s secrets` and `eve local` generate them; `.env.test` sets
+`test-internal-key`).
+
+**Tokens the API signs for itself** (identity link tokens, Slack install
+links, org filesystem link tokens without `EVE_ORG_FS_LINK_TOKEN_SECRET`) are
+signed with keys derived from the core key once it is set; those the legacy
+key signed verify while it is set.
+
+**Service tokens.** `POST /internal/auth/mint-service-token` grants at most
+`DEFAULT_SERVICE_PERMISSIONS` plus the service's `x-eve.permissions` in the
+manifest of the release being deployed (`release_id`, sent by the worker) or
+the env's current release; anything else requested is left out. The env must
+exist in the project, and the project in the org (404 otherwise).
 
 The key is a network-level credential, not a substitute for network policy:
 keep the worker, agent runtime and BuildKit reachable only from platform pods.
@@ -218,7 +250,7 @@ Eve-rendered magic-link and invite emails do not embed the raw GoTrue verify URL
 
 Operations note: rows with `get_count > 1` are expected for users on protected mailboxes. The pruner deletes expired or long-consumed rows after 24h. Wrap tokens have the typeid('mlw') shape (`mlw_<26 base32>`) and are validated against that regex before any DB lookup. The wrap token is the bearer credential — knowing it lets the holder redeem. Trust boundary matches `org_invites.invite_code`.
 
-CSRF defense is an HMAC (keyed with `EVE_INTERNAL_API_KEY`, which the SSO must have: without it the interstitial is not served) of the wrap token and this browser's sign-in flow nonce, and `POST /m/:wrap` takes only the SSO's own `Origin` (see [The sign-in callback](#the-sign-in-callback)); it does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` to keep them out of shared caches. Their `Referrer-Policy` keeps the wrap token in the URL from reaching any other site: `same-origin` on the interstitial, which posts its form back to the SSO (a browser sends `Origin: null` on a form POST from a `no-referrer` page), and `no-referrer` on every other `/m/*` response, which post nowhere. The "Continue as" page (`POST /callback`) uses `same-origin` for the same reason. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
+CSRF defense is an HMAC (keyed with the SSO's own `EVE_INTERNAL_SSO_KEY`, or `EVE_INTERNAL_API_KEY` until that is set; values keyed with the legacy key verify while it is set; without either the interstitial is not served) of the wrap token and this browser's sign-in flow nonce, and `POST /m/:wrap` takes only the SSO's own `Origin` (see [The sign-in callback](#the-sign-in-callback)); it does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` to keep them out of shared caches. Their `Referrer-Policy` keeps the wrap token in the URL from reaching any other site: `same-origin` on the interstitial, which posts its form back to the SSO (a browser sends `Origin: null` on a form POST from a `no-referrer` page), and `no-referrer` on every other `/m/*` response, which post nowhere. The "Continue as" page (`POST /callback`) uses `same-origin` for the same reason. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
 
 A successful consume emits `auth.action_link.wrap_redeemed` to the event spine when `project_id` is present, carrying `{ org_id, email_hash, kind, get_count, latency_ms }`. The event source `auth` is also used for the existing `auth.domain_signup.*` events.
 

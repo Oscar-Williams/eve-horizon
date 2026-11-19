@@ -91,7 +91,8 @@ POST /system/orchestrator/concurrency
 ```
 
 Authentication:
-- Requires `EVE_INTERNAL_API_KEY` via internal auth guard.
+- Requires the core service key (`x-eve-service-key: core.<EVE_INTERNAL_CORE_KEY>`),
+  or the legacy `EVE_INTERNAL_API_KEY` (`x-internal-api-key` or Bearer) while it is set.
 
 Example:
 

@@ -609,7 +609,9 @@ Gateway token claims:
 }
 ```
 
-Secret: `EVE_ORG_FS_LINK_TOKEN_SECRET` (falls back to `EVE_INTERNAL_API_KEY`).
+Secret: `EVE_ORG_FS_LINK_TOKEN_SECRET`; without it, a key derived from
+`EVE_INTERNAL_CORE_KEY` (the legacy `EVE_INTERNAL_API_KEY` until the core key
+is set; tokens it signed verify while it is set).
 
 ---
 

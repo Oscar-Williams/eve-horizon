@@ -358,7 +358,7 @@ After each harness invocation, the worker checks if the Codex/Code CLI refreshed
 ### Internal Secret Update Endpoint
 
 The platform exposes `PATCH /internal/secrets/:scope_type/:scope_id/:key` for worker-to-API token write-back. This endpoint:
-- Requires `x-eve-internal-token` header (same `EVE_INTERNAL_API_KEY` used by secret resolution)
+- Requires the core service key (`x-eve-service-key`), as secret resolution does; the gateway and SSO keys are not accepted here
 - Is **update-only** — it will 404 if the secret does not already exist (no create semantics)
 - Accepts `{ "value": "..." }` body
 
@@ -367,7 +367,7 @@ The platform exposes `PATCH /internal/secrets/:scope_type/:scope_id/:key` for wo
 If a job fails during clone or secret resolution:
 
 1. Confirm the secret exists: `eve secrets show <KEY> --project <id>`
-2. Ensure `EVE_INTERNAL_API_KEY` and `EVE_SECRETS_MASTER_KEY` are set for API/worker
+2. Ensure `EVE_INTERNAL_CORE_KEY` (or the legacy `EVE_INTERNAL_API_KEY`) and `EVE_SECRETS_MASTER_KEY` are set for API/worker
 3. Check orchestrator/worker logs for `[resolveSecrets]` warnings
 4. Re-run with corrected secret scope (`project` → `org` → `system`)
 
@@ -379,7 +379,7 @@ If a job fails during clone or secret resolution:
 ## Required Config
 
 - `EVE_SECRETS_MASTER_KEY` (API): encryption key for secrets, integration tokens and OAuth client secrets at rest (required to store API secrets). It also keys the mask fingerprint.
-- `EVE_INTERNAL_API_KEY` (worker + API): internal token for resolve endpoint (required for API secret resolution).
+- `EVE_INTERNAL_CORE_KEY` (worker + API, and the orchestrator and agent runtime): the core service key for the resolve endpoint (required for API secret resolution). The legacy `EVE_INTERNAL_API_KEY` works beside it until removed; see [security profiles](security-profiles.md#internal-service-keys).
 
 ## Incident Response (Secrets)
 
