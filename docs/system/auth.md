@@ -1237,7 +1237,17 @@ An org `member` with no project membership reaches every project of the org
 through the org role, except in a project whose
 [security profile](./security-profiles.md) is `strict` (rule
 `access.implicit_project`): there they hold only what their bindings on the
-project give. Org owners and admins keep their access in every project.
+project give (bindings of a role in the project's org, on the project or
+org-wide). Org routes that reach such a project's threads, job attachments or
+events hold them to the same rights (rule `access.org_route_project`). Org
+owners and admins keep their access in every project.
+
+Under an org's `strict` profile the org `member` role carries no wildcard over
+org files, docs or cloud-fs mounts (rule `access.org_data_role_wildcard`):
+members reach org data only through bindings. Org owners and admins keep it.
+
+A binding on a project must name a live project of the role's org; any other
+`project_id` is refused with 400.
 
 ### Adding Members
 
