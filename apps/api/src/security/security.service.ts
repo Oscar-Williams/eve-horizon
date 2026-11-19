@@ -2,18 +2,20 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import type { Db, SecurityProfileRow } from '@eve/db';
-import { auditQueries, securityQueries, systemSettingsQueries } from '@eve/db';
+import { auditQueries, environmentQueries, securityQueries, systemSettingsQueries } from '@eve/db';
 import {
   SECURITY_CURRENT_RULESET,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
   SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
+  currentRegistryKeyVersion,
   generateSecurityFindingId,
   governingSecurityLevel,
   isSecurityProfile,
@@ -25,6 +27,7 @@ import {
 } from '@eve/shared';
 import type { AuthUser } from '../auth/auth.types.js';
 import { countStoredCredentials, legacyCredentialRows } from '../secrets/credential-storage.js';
+import { resolveWorkerUrl, workerRequestHeaders } from '../common/worker-url.js';
 
 export interface SecurityScope {
   orgId?: string | null;
@@ -116,7 +119,9 @@ export class SecurityService {
   /**
    * Set a profile. The instance goes `strict` only once no v1 secret or
    * plain OAuth column is left (its `secrets.legacy_ciphertext` would refuse
-   * them): 409 otherwise, unless `force`.
+   * them), and every environment's pull secret is on the current registry
+   * key version (its `registry.internal_key` would refuse the others): 409
+   * otherwise, unless `force`.
    */
   async setProfile(
     target: SecurityProfileTarget,
@@ -143,15 +148,25 @@ export class SecurityService {
 
       if (target.scope === 'instance' || target.scope === 'new_projects') {
         let forcedWithLegacy = 0;
+        let forcedWithStaleRegistry = 0;
         if (target.scope === 'instance' && profile === 'strict') {
           const legacy = legacyCredentialRows(await countStoredCredentials(tx));
-          if (legacy > 0 && !options.force) {
-            throw new ConflictException(
-              `${legacy} credential(s) are still stored as v1 secrets or plain OAuth columns, which a strict instance refuses. ` +
-              'Run eve system secrets reencrypt first (--dry-run shows them), or set the instance strict with --force.',
-            );
+          const staleRegistry = await environmentQueries(tx).countStaleRegistryKeys(currentRegistryKeyVersion());
+          if ((legacy > 0 || staleRegistry > 0) && !options.force) {
+            const reasons = [
+              ...(legacy > 0 ? [
+                `${legacy} credential(s) are still stored as v1 secrets or plain OAuth columns, which a strict instance refuses. ` +
+                'Run eve system secrets reencrypt first (--dry-run shows them).',
+              ] : []),
+              ...(staleRegistry > 0 ? [
+                `${staleRegistry} environment(s) have registry pull secrets not signed with the current registry credential key, ` +
+                'which a strict instance refuses. Set EVE_REGISTRY_CREDENTIAL_KEY on the API and worker, then run eve system security reconcile.',
+              ] : []),
+            ];
+            throw new ConflictException(`${reasons.join(' ')} Or set the instance strict with --force.`);
           }
           forcedWithLegacy = legacy;
+          forcedWithStaleRegistry = staleRegistry;
         }
         const key = target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING;
         const previous = (await settings.get(key))?.value ?? null;
@@ -171,6 +186,7 @@ export class SecurityService {
         }
         await recordProfileChange(audit, target.scope, previous, profile, actorUserId, target.scope === 'instance' ? ruleset : null, {
           ...(forcedWithLegacy > 0 ? { forced_with_legacy_credentials: forcedWithLegacy } : {}),
+          ...(forcedWithStaleRegistry > 0 ? { forced_with_stale_registry_keys: forcedWithStaleRegistry } : {}),
         });
         return { scope: target.scope, id: null, profile, ruleset: target.scope === 'instance' ? ruleset : null };
       }
@@ -207,6 +223,30 @@ export class SecurityService {
     if (!isSecurityProfile(value)) return;
     await this.security.setProjectProfile(projectId, value, value === 'strict' ? SECURITY_CURRENT_RULESET : null);
     this.scopeCache.delete(`project:${projectId}`);
+  }
+
+  /**
+   * Bring environments in line with the security profiles: the worker
+   * re-signs each stale environment's registry pull secret with the current
+   * registry credential key and records the version.
+   */
+  async reconcile(): Promise<{ registry: unknown }> {
+    const response = await fetch(`${resolveWorkerUrl('reconcile environments')}/registry/pull-secrets/resign`, {
+      method: 'POST',
+      headers: workerRequestHeaders(),
+      body: '{}',
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let message = text;
+      try {
+        message = (JSON.parse(text) as { message?: string }).message ?? text;
+      } catch {
+        // Not JSON: keep the text.
+      }
+      throw new HttpException(`The worker could not re-sign registry pull secrets: ${message}`, response.status);
+    }
+    return { registry: JSON.parse(text) as unknown };
   }
 
   /** Profiles and findings for the instance, an org or a project. */
@@ -248,6 +288,8 @@ export class SecurityService {
       return { effective: level.profile, effective_ruleset: level.ruleset };
     };
     const instanceLevel = governingSecurityLevel({ instance, instanceRuleset });
+    const registryKeyVersion = currentRegistryKeyVersion();
+    const staleRegistry = await environmentQueries(this.db).countStaleRegistryKeys(registryKeyVersion);
 
     return {
       days,
@@ -255,6 +297,10 @@ export class SecurityService {
       instance_profile: instanceLevel.profile,
       instance_ruleset: instanceLevel.ruleset,
       new_project_profile: isSecurityProfile(newProjects) ? newProjects : null,
+      // Environments whose pull secret is not on the current registry key
+      // version: the instance's strict, and removing the legacy internal
+      // key, wait for none (eve system security reconcile re-signs them).
+      registry: { key_version: registryKeyVersion, stale_environments: staleRegistry },
       orgs: orgRows.map((o) => ({
         id: o.id,
         slug: o.slug,

@@ -16,8 +16,10 @@ import { createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
  * previous credential).
  *
  * Format: `evepull1.<base64url(JSON claims)>.<base64url(HMAC-SHA256)>`. The
- * MAC key is derived from `EVE_INTERNAL_API_KEY` with HKDF under a label used
- * nowhere else, so the credential never reveals the key, and rotating the key
+ * MAC key is derived with HKDF, under a label used nowhere else, from the
+ * registry credential key (`EVE_REGISTRY_CREDENTIAL_KEY`, held by the API and
+ * the worker only), or from `EVE_INTERNAL_API_KEY` on an install that has not
+ * set it yet. The credential never reveals the key, and rotating the key
  * revokes every credential at once.
  */
 
@@ -25,6 +27,40 @@ const PREFIX = 'evepull1';
 const HKDF_INFO = 'eve-registry-pull-credential/v1';
 const PUSH_PREFIX = 'evepush1';
 const PUSH_HKDF_INFO = 'eve-registry-push-credential/v1';
+
+/** The key version of credentials signed with `EVE_INTERNAL_API_KEY`. */
+export const REGISTRY_INTERNAL_KEY_VERSION = 'internal';
+
+/**
+ * The version of a registry credential key: 16 hex characters of an HMAC of
+ * a fixed label under the key, so it names the key without revealing it.
+ * An environment records the version that signed its pull secret.
+ */
+export function registryKeyVersion(key: string): string {
+  return createHmac('sha256', key).update('eve-registry-key-version/v1', 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * The key that signs new registry credentials, and its version:
+ * `EVE_REGISTRY_CREDENTIAL_KEY` when set, else `EVE_INTERNAL_API_KEY` (the
+ * `internal` version), else null.
+ */
+export function registryCredentialKey(
+  env: Record<string, string | undefined> = process.env,
+): { key: string; version: string } | null {
+  if (env.EVE_REGISTRY_CREDENTIAL_KEY) {
+    return { key: env.EVE_REGISTRY_CREDENTIAL_KEY, version: registryKeyVersion(env.EVE_REGISTRY_CREDENTIAL_KEY) };
+  }
+  if (env.EVE_INTERNAL_API_KEY) {
+    return { key: env.EVE_INTERNAL_API_KEY, version: REGISTRY_INTERNAL_KEY_VERSION };
+  }
+  return null;
+}
+
+/** The current registry key version on this host: the credential key's, or null when it is not set. */
+export function currentRegistryKeyVersion(env: Record<string, string | undefined> = process.env): string | null {
+  return env.EVE_REGISTRY_CREDENTIAL_KEY ? registryKeyVersion(env.EVE_REGISTRY_CREDENTIAL_KEY) : null;
+}
 
 /** Basic-auth username the deployer pairs with a pull credential. */
 export const REGISTRY_PULL_USERNAME = 'eve-pull';
@@ -40,12 +76,12 @@ export interface RegistryPullCredentialClaims {
   epoch: number;
 }
 
-function macKey(internalKey: string, info: string): Buffer {
-  return Buffer.from(hkdfSync('sha256', internalKey, Buffer.alloc(0), info, 32));
+function macKey(signingKey: string, info: string): Buffer {
+  return Buffer.from(hkdfSync('sha256', signingKey, Buffer.alloc(0), info, 32));
 }
 
-function sign(body: string, internalKey: string, info = HKDF_INFO): Buffer {
-  return createHmac('sha256', macKey(internalKey, info)).update(body, 'utf8').digest();
+function sign(body: string, signingKey: string, info = HKDF_INFO): Buffer {
+  return createHmac('sha256', macKey(signingKey, info)).update(body, 'utf8').digest();
 }
 
 /** Check `<prefix>.<payload>.<mac>` and return the decoded JSON payload, or null. */
@@ -85,7 +121,7 @@ export function mintRegistryPullCredential(
   internalKey: string | undefined,
 ): string {
   if (!internalKey) {
-    throw new Error('EVE_INTERNAL_API_KEY is required to mint a registry pull credential');
+    throw new Error('EVE_REGISTRY_CREDENTIAL_KEY or EVE_INTERNAL_API_KEY is required to mint a registry pull credential');
   }
   if (
     !claims.projectId ||
@@ -160,7 +196,7 @@ export function mintRegistryPushCredential(
   nowSeconds: number = Math.floor(Date.now() / 1000),
 ): string {
   if (!internalKey) {
-    throw new Error('EVE_INTERNAL_API_KEY is required to mint a registry push credential');
+    throw new Error('EVE_REGISTRY_CREDENTIAL_KEY or EVE_INTERNAL_API_KEY is required to mint a registry push credential');
   }
   if (!projectId) {
     throw new Error('A registry push credential needs a project');

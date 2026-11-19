@@ -3,6 +3,7 @@ import yaml from 'yaml';
 import {
   loadConfig,
   mintRegistryPushCredential,
+  registryCredentialKey,
   REGISTRY_PUSH_USERNAME,
   resolveProjectSecrets,
 } from '@eve/shared';
@@ -63,20 +64,24 @@ export class RegistryAuthService {
       );
     }
 
-    if (!config.EVE_INTERNAL_API_KEY) {
+    const signer = registryCredentialKey({
+      EVE_REGISTRY_CREDENTIAL_KEY: config.EVE_REGISTRY_CREDENTIAL_KEY,
+      EVE_INTERNAL_API_KEY: config.EVE_INTERNAL_API_KEY,
+    });
+    if (!signer) {
       throw new Error(
-        'Eve registry requires EVE_INTERNAL_API_KEY to sign build credentials',
+        'Eve registry requires EVE_REGISTRY_CREDENTIAL_KEY (or EVE_INTERNAL_API_KEY) to sign build credentials',
       );
     }
 
-    // A push credential scoped to this project's repository prefix, never the
-    // internal API key: the docker config is written where the build backend
+    // A push credential scoped to this project's repository prefix, signed
+    // with the registry credential key, never an internal key: the docker config is written where the build backend
     // can read it (Kaniko mounts it into the build pod). BuildKit follows the
     // Docker v2 token auth flow: the registry challenges with 401, BuildKit
     // GETs the token endpoint with Basic auth (these creds), and the API grants
     // push and pull under `<project id>/` only.
     const username = REGISTRY_PUSH_USERNAME;
-    const password = mintRegistryPushCredential(projectId, config.EVE_INTERNAL_API_KEY);
+    const password = mintRegistryPushCredential(projectId, signer.key);
 
     const dockerConfigJson = this.buildDockerConfigJson(host, username, password);
 
@@ -91,47 +96,6 @@ export class RegistryAuthService {
     this.logger.log(`Resolved Eve-native registry auth for ${host}`);
 
     return { auth: registryAuth, config: registryConfig };
-  }
-
-  /**
-   * Request a push-scoped JWT token from the Eve API internal registry endpoint.
-   */
-  private async requestRegistryToken(config: {
-    EVE_API_URL: string;
-    EVE_INTERNAL_API_KEY?: string;
-  }): Promise<string> {
-    const url = `${config.EVE_API_URL}/internal/registry/token`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.EVE_INTERNAL_API_KEY
-          ? { 'x-eve-internal-token': config.EVE_INTERNAL_API_KEY }
-          : {}),
-      },
-      body: JSON.stringify({
-        scope: 'repository:*:push,pull',
-        service: 'eve-registry',
-      }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(
-        `Failed to obtain Eve registry token: ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`,
-      );
-    }
-
-    const data = (await response.json()) as { token: string; expires_in: number };
-
-    if (!data.token) {
-      throw new Error(
-        'Eve registry token response missing "token" field',
-      );
-    }
-
-    return data.token;
   }
 
   // ────────────────────────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ import {
   mintServiceToken,
   mintAppLinkToken,
   mintRegistryPullCredential,
-  REGISTRY_PULL_USERNAME,
+  registryCredentialKey,
   getServicePermissions,
   DEFAULT_SERVICE_PERMISSIONS,
   isPlatformDomainHostname,
@@ -61,6 +61,7 @@ import {
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import { K8sService } from './k8s.service';
+import { evePullSecretManifest } from '../registry/eve-pull-secret.js';
 import { DeploymentReadiness } from './deployment-readiness';
 import { ImageResolver } from './image-resolver';
 import {
@@ -2948,13 +2949,17 @@ export class DeployerService {
         this.logger.warn('Eve registry requested but EVE_REGISTRY_HOST not configured');
         return null;
       }
-      if (!config.EVE_INTERNAL_API_KEY) {
-        this.logger.warn('Eve registry requested but EVE_INTERNAL_API_KEY not configured');
+      const signer = registryCredentialKey({
+        EVE_REGISTRY_CREDENTIAL_KEY: config.EVE_REGISTRY_CREDENTIAL_KEY,
+        EVE_INTERNAL_API_KEY: config.EVE_INTERNAL_API_KEY,
+      });
+      if (!signer) {
+        this.logger.warn('Eve registry requested but neither EVE_REGISTRY_CREDENTIAL_KEY nor EVE_INTERNAL_API_KEY is configured');
         return null;
       }
 
       // Store an environment-bound pull credential as the docker password:
-      // never the internal API key, and not a pre-signed JWT (those expire).
+      // never an internal key, and not a pre-signed JWT (those expire).
       // When kubelet gets a 401 from the registry, it follows the Docker v2
       // token auth flow: GET the token endpoint with Basic auth (these creds).
       // The token endpoint verifies the credential against the environment and
@@ -2964,7 +2969,6 @@ export class DeployerService {
       if (epoch === null) {
         throw new Error(`Environment ${params.environmentId} not found while writing its registry pull secret`);
       }
-      const username = REGISTRY_PULL_USERNAME;
       const password = mintRegistryPullCredential(
         {
           projectId: params.projectId,
@@ -2972,29 +2976,11 @@ export class DeployerService {
           namespace: params.namespace,
           epoch,
         },
-        config.EVE_INTERNAL_API_KEY,
+        signer.key,
       );
-      const auth = Buffer.from(`${username}:${password}`).toString('base64');
-      const dockerConfig = {
-        auths: {
-          [registryHost]: { username, password, auth },
-        },
-      };
-      const dockerConfigJson = Buffer.from(JSON.stringify(dockerConfig)).toString('base64');
-      const secretManifest = yaml.stringify({
-        apiVersion: 'v1',
-        kind: 'Secret',
-        metadata: {
-          name: this.registrySecretName,
-          namespace: params.namespace,
-        },
-        type: 'kubernetes.io/dockerconfigjson',
-        data: {
-          '.dockerconfigjson': dockerConfigJson,
-        },
-      });
-
-      await this.k8sService.applyManifest(params.namespace, secretManifest);
+      await this.k8sService.applyManifest(params.namespace, evePullSecretManifest(params.namespace, registryHost, password));
+      // Once written: the key version the env's pull secret carries, at this epoch.
+      await this.environments.recordRegistryKeyVersion(params.environmentId, signer.version, epoch);
       return this.registrySecretName;
     }
 

@@ -22,6 +22,8 @@ export interface Environment {
   suspended_at: Date | null;
   suspension_reason: string | null;
   registry_pull_epoch: number;  // Bumped each time the deployer rewrites the eve-registry pull secret
+  registry_key_version: string | null;  // Version of the registry key that signed the pull secret
+  registry_key_epoch: number | null;    // registry_pull_epoch when registry_key_version was recorded
   created_at: Date;
   updated_at: Date;
 }
@@ -54,7 +56,7 @@ export function environmentQueries(db: Db) {
     },
 
     async create(
-      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch'> & { deploy_status?: string },
+      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch'> & { deploy_status?: string },
     ): Promise<Environment> {
       const overridesJson = environment.overrides_json
         ? db.json(environment.overrides_json as never)
@@ -265,6 +267,60 @@ export function environmentQueries(db: Db) {
         RETURNING registry_pull_epoch
       `;
       return row?.registry_pull_epoch ?? null;
+    },
+
+    /**
+     * Record the registry key version that signed the environment's pull
+     * secret, written at `epoch`. Leaves updated_at alone.
+     */
+    async recordRegistryKeyVersion(id: string, version: string, epoch: number): Promise<void> {
+      await db`
+        UPDATE environments
+        SET registry_key_version = ${version}, registry_key_epoch = ${epoch}
+        WHERE id = ${id}
+      `;
+    },
+
+    /**
+     * Environments, not terminated, that have had an Eve pull secret and are
+     * not on the current registry key version at their current epoch. With
+     * no current version (no registry credential key), every such
+     * environment counts.
+     */
+    async countStaleRegistryKeys(currentVersion: string | null): Promise<number> {
+      const [row] = await db<{ count: string }[]>`
+        SELECT COUNT(*)::text AS count FROM environments
+        WHERE status <> 'terminated'
+          AND registry_pull_epoch > 0
+          AND (
+            ${currentVersion}::text IS NULL
+            OR registry_key_version IS DISTINCT FROM ${currentVersion}::text
+            OR registry_key_epoch IS DISTINCT FROM registry_pull_epoch
+          )
+      `;
+      return Number(row?.count ?? 0);
+    },
+
+    /** The stale environments (as countStaleRegistryKeys), with the slugs that name their namespace. */
+    async listRegistryKeyCandidates(currentVersion: string): Promise<Array<Pick<Environment,
+      'id' | 'project_id' | 'name' | 'namespace' | 'registry_pull_epoch'> & { org_slug: string; project_slug: string }>> {
+      return db<Array<Pick<Environment, 'id' | 'project_id' | 'name' | 'namespace' | 'registry_pull_epoch'> & {
+        org_slug: string;
+        project_slug: string;
+      }>>`
+        SELECT e.id, e.project_id, e.name, e.namespace, e.registry_pull_epoch,
+               o.slug AS org_slug, p.slug AS project_slug
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id
+        JOIN orgs o ON o.id = p.org_id
+        WHERE e.status <> 'terminated'
+          AND e.registry_pull_epoch > 0
+          AND (
+            e.registry_key_version IS DISTINCT FROM ${currentVersion}
+            OR e.registry_key_epoch IS DISTINCT FROM e.registry_pull_epoch
+          )
+        ORDER BY e.created_at
+      `;
     },
 
     async delete(id: string): Promise<boolean> {

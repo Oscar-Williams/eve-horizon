@@ -14,8 +14,9 @@ export interface RegistryAccessEntry {
 /**
  * Who is asking the token endpoint for registry access.
  *
- * - `internal`: holds `EVE_INTERNAL_API_KEY` (the internal POST endpoint, or
- *   an operator). May push and pull anywhere.
+ * - `internal`: holds an internal key (the internal POST endpoint, or the
+ *   legacy `EVE_INTERNAL_API_KEY` as a Basic password). May push and pull
+ *   anywhere.
  * - `project-push`: presents a build's push credential (BuildKit or Kaniko).
  *   May push and pull under the project's repository prefix, until it expires.
  * - `project-pull`: presents an environment's pull credential from an app
@@ -66,17 +67,40 @@ function secretsEqual(presented: string, expected: string): boolean {
   return timingSafeEqual(digest(presented), digest(expected));
 }
 
-/** Identify a Basic-auth password as the internal key, a push credential or a pull credential. */
+/** The keys the token endpoint checks a Basic-auth password against. */
+export interface RegistryVerificationKeys {
+  /** `EVE_REGISTRY_CREDENTIAL_KEY`: signs credentials from 0.1.327 on. */
+  credentialKey?: string;
+  /** The legacy `EVE_INTERNAL_API_KEY`: the password itself, or the key older credentials were signed with. */
+  internalKey?: string;
+}
+
+/**
+ * Identify a Basic-auth password as the internal key, a push credential or
+ * a pull credential, and say which key proved it: `credential` for the
+ * registry credential key, `internal` for the internal key itself or a
+ * credential signed with it (which `registry.internal_key` governs).
+ */
 export function identifyRegistryCaller(
   password: string | undefined,
-  internalKey: string | undefined,
-): RegistryCaller | null {
-  if (!password || !internalKey) return null;
-  if (secretsEqual(password, internalKey)) return { kind: 'internal' };
-  const push = verifyRegistryPushCredential(password, internalKey);
-  if (push) return { kind: 'project-push', ...push };
-  const pull = verifyRegistryPullCredential(password, internalKey);
-  return pull ? { kind: 'project-pull', ...pull } : null;
+  keys: RegistryVerificationKeys,
+): { caller: RegistryCaller; key: 'credential' | 'internal' } | null {
+  if (!password) return null;
+  if (keys.internalKey && secretsEqual(password, keys.internalKey)) {
+    return { caller: { kind: 'internal' }, key: 'internal' };
+  }
+  const signers: Array<['credential' | 'internal', string | undefined]> = [
+    ['credential', keys.credentialKey],
+    ['internal', keys.internalKey],
+  ];
+  for (const [key, signingKey] of signers) {
+    if (!signingKey) continue;
+    const push = verifyRegistryPushCredential(password, signingKey);
+    if (push) return { caller: { kind: 'project-push', ...push }, key };
+    const pull = verifyRegistryPullCredential(password, signingKey);
+    if (pull) return { caller: { kind: 'project-pull', ...pull }, key };
+  }
+  return null;
 }
 
 function projectPrefix(caller: RegistryCaller): string | null {

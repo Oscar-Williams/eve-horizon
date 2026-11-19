@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Put, Query } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { SetSecurityProfileRequestSchema, type SetSecurityProfileRequest } from '@eve/shared';
 import { RequirePermission } from '../auth/permission.decorator.js';
@@ -57,5 +57,20 @@ export class SecurityController {
   ) {
     const actor = requireSystemAdmin(caller);
     return this.security.setProfile({ scope: body.scope, id: body.id } as never, body.profile, actor, { force: body.force });
+  }
+
+  @RequirePermission('system:admin')
+  @Post('reconcile')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Bring every environment in line with the security profiles (system_admin only)',
+    description:
+      'Re-signs each environment\'s registry pull secret with the current registry credential key, with no restart, ' +
+      'and records the key version on the environment.',
+  })
+  @ApiOkResponse({ description: 'What was re-signed, already current, without a pull secret, or failed' })
+  async reconcile(@CurrentUser() caller: AuthUser | undefined) {
+    requireSystemAdmin(caller);
+    return this.security.reconcile();
   }
 }

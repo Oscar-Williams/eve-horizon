@@ -124,7 +124,17 @@ export const configSchema = z.object({
   // The following cluster-level vars have been removed:
   // - EVE_SLACK_SIGNING_SECRET, EVE_SLACK_CLIENT_ID, EVE_SLACK_CLIENT_SECRET
   // - EVE_GOOGLE_CLIENT_ID, EVE_GOOGLE_CLIENT_SECRET
+  // Legacy shared internal key: sent and accepted beside the service keys
+  // below until it is removed (security profiles: internal.service_key).
   EVE_INTERNAL_API_KEY: z.string().optional(),
+  // Internal service keys: one core key (API, worker, orchestrator, agent
+  // runtime), and the gateway's and SSO's own. Callees hold
+  // EVE_INTERNAL_CALLER_HASHES (`service:sha256hex,...`) for keys they accept
+  // without holding them.
+  EVE_INTERNAL_CORE_KEY: z.string().optional(),
+  EVE_INTERNAL_GATEWAY_KEY: z.string().optional(),
+  EVE_INTERNAL_SSO_KEY: z.string().optional(),
+  EVE_INTERNAL_CALLER_HASHES: z.string().optional(),
   EVE_GATEWAY_URL: z.string().url().optional(), // Internal gateway URL for outbound delivery (e.g., http://eve-gateway.eve.svc.cluster.local:4820)
   EVE_ORG_FS_LINK_TOKEN_SECRET: z.string().optional(),
   EVE_ORG_FS_LINK_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
@@ -144,6 +154,7 @@ export const configSchema = z.object({
   EVE_RESERVED_DOMAINS: z.string().optional(),
   EVE_REGISTRY_HOST: z.string().optional(), // Eve-native container registry host (e.g., registry.eve.example.com)
   EVE_REGISTRY_SIGNING_KEY: z.string().optional(), // RSA private key (PEM) for signing registry JWTs
+  EVE_REGISTRY_CREDENTIAL_KEY: z.string().optional(), // Signs registry pull and push credentials (API and worker only)
   EVE_CORS_ORIGIN: z.string().default('*'), // CORS origin: '*' (any), 'true' (reflect), or specific URL
   Z_AI_API_KEY: z.string().optional(),
   ZAI_MODEL: z.string().optional(),

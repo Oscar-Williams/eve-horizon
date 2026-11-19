@@ -21,6 +21,7 @@ interface SecurityReport {
   instance_profile: string;
   instance_ruleset?: number | null;
   new_project_profile: string | null;
+  registry?: { key_version: string | null; stale_environments: number };
   orgs: ScopeProfile[];
   projects: ScopeProfile[];
   summary: Array<{ rule: string; count: number; projects: number; actors: number }>;
@@ -63,6 +64,11 @@ export async function handleDoctor(
     describeStampedProfile(profile, ruleset, current);
   console.log(`Instance profile: ${stamped(report.instance_profile, report.instance_ruleset)}`);
   console.log(`New projects:     ${report.new_project_profile ?? 'inherit'}`);
+  if (report.registry) {
+    const stale = report.registry.stale_environments;
+    console.log(`Registry key:     ${report.registry.key_version ?? 'EVE_REGISTRY_CREDENTIAL_KEY not set'}` +
+      (stale > 0 ? `; ${stale} environment(s) on an older key (eve system security reconcile)` : '; every environment current'));
+  }
   console.log('');
   console.log('Orgs:');
   for (const org of report.orgs) {
@@ -106,10 +112,23 @@ function stampNote(scope: ScopeProfile, current: number): string {
   return described === scope.effective ? '' : `  ${described}`;
 }
 
+interface ReconcileReport {
+  registry: {
+    key_version: string;
+    resigned: number;
+    already_current: number;
+    without_pull_secret: number;
+    failed: Array<{ environment_id: string; error: string }>;
+  };
+}
+
 /**
  * `eve system security profile <legacy|audit|strict|clear>
  *   [--org <id> | --project <id> | --new-projects]`
  * With no scope flag it sets the instance profile.
+ *
+ * `eve system security reconcile`: bring environments in line with the
+ * profiles (registry pull secrets re-signed with the current key).
  */
 export async function handleSystemSecurity(
   positionals: string[],
@@ -119,7 +138,25 @@ export async function handleSystemSecurity(
 ): Promise<void> {
   const [action, value] = positionals;
   const usage =
-    'Usage: eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects] [--force]';
+    'Usage: eve system security profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects] [--force]\n' +
+    '       eve system security reconcile';
+  if (action === 'reconcile') {
+    const result = await requestJson<ReconcileReport>(context, '/system/security/reconcile', { method: 'POST', body: {} });
+    if (json) {
+      outputJson(result, json);
+      return;
+    }
+    const r = result.registry;
+    console.log(`Registry pull secrets, key version ${r.key_version}:`);
+    console.log(`  re-signed ${r.resigned}, already current ${r.already_current}, without a pull secret ${r.without_pull_secret}, failed ${r.failed.length}`);
+    for (const failure of r.failed) {
+      console.log(`  ${failure.environment_id}: ${failure.error}`);
+    }
+    if (r.failed.length > 0) {
+      console.log('Environments that failed stay on their old key; run eve system security reconcile again.');
+    }
+    return;
+  }
   if (action !== 'profile' || !value) throw new Error(usage);
   if (value !== 'clear' && !PROFILES.includes(value)) throw new Error(usage);
 

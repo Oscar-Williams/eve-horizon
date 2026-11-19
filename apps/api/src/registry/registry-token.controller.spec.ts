@@ -20,7 +20,7 @@ describe('registry signing key formats', () => {
     ['\\n-escaped PEM', pem.trimEnd().replace(/\n/g, '\\n')],
     ['base64-encoded PEM', Buffer.from(pem).toString('base64')],
   ])('issues a token signed with a %s', async (_label, value) => {
-    const controller = new RegistryTokenController(noDb);
+    const controller = new RegistryTokenController(noDb, null as any);
     const response = await (controller as any).buildScopedToken(
       { EVE_REGISTRY_SIGNING_KEY: value },
       internalCaller,
@@ -33,7 +33,7 @@ describe('registry signing key formats', () => {
   });
 
   it('names the variable when the key cannot be read', async () => {
-    const controller = new RegistryTokenController(noDb);
+    const controller = new RegistryTokenController(noDb, null as any);
     await expect((controller as any).buildScopedToken(
       { EVE_REGISTRY_SIGNING_KEY: 'not-a-key' },
       internalCaller,

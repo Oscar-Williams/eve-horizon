@@ -28,6 +28,7 @@ import { environmentQueries, projectQueries } from '@eve/db';
 import { Public } from '../auth/auth.decorator.js';
 import { loadKeyValue } from '../auth/auth.util.js';
 import { InternalTokenGuard } from '../common/internal-token.guard.js';
+import { SecurityService } from '../security/security.service.js';
 import {
   grantRegistryAccess,
   identifyRegistryCaller,
@@ -37,6 +38,9 @@ import {
 } from './registry-access.js';
 
 const TOKEN_TTL_SECONDS = 300;
+
+/** Instance rule: the internal key as a Basic password, and credentials it signed. */
+export const REGISTRY_INTERNAL_KEY_RULE = 'registry.internal_key';
 
 interface RegistryTokenRequest {
   scope: string | string[];
@@ -137,7 +141,10 @@ export class RegistryTokenController {
   private readonly environments: ReturnType<typeof environmentQueries>;
   private readonly projects: ReturnType<typeof projectQueries>;
 
-  constructor(@Inject('DB') db: Db) {
+  constructor(
+    @Inject('DB') db: Db,
+    private readonly security: SecurityService,
+  ) {
     this.environments = environmentQueries(db);
     this.projects = projectQueries(db);
   }
@@ -160,9 +167,15 @@ export class RegistryTokenController {
    *
    * BuildKit and docker clients follow the registry's WWW-Authenticate challenge
    * by sending a GET request with scope/service as query params and Basic auth
-   * credentials from the Docker config. The password is either the internal
-   * API key (worker builds: push and pull) or a project pull credential from an
-   * app namespace's pull secret (kubelet: pull on that project's repositories).
+   * credentials from the Docker config. The password is a build's push
+   * credential (push and pull on its project's repositories), a project pull
+   * credential from an app namespace's pull secret (kubelet: pull on that
+   * project's repositories), or the legacy internal key.
+   *
+   * Credentials are signed with EVE_REGISTRY_CREDENTIAL_KEY. The internal key
+   * as a password, and credentials signed with it, follow
+   * `registry.internal_key`: allowed under `legacy`, allowed and recorded
+   * under `audit`, refused with 401 under `strict`.
    */
   @Public()
   @Get('token')
@@ -176,10 +189,14 @@ export class RegistryTokenController {
     const config = loadConfig();
 
     const password = this.extractBasicAuthPassword(authorization);
-    const caller = identifyRegistryCaller(password, config.EVE_INTERNAL_API_KEY);
-    if (!caller) {
+    const identified = identifyRegistryCaller(password, {
+      credentialKey: config.EVE_REGISTRY_CREDENTIAL_KEY,
+      internalKey: config.EVE_INTERNAL_API_KEY,
+    });
+    if (!identified) {
       throw new UnauthorizedException('Invalid registry credentials');
     }
+    const { caller } = identified;
     if (caller.kind === 'project-pull') {
       const [environment, project] = await Promise.all([
         this.environments.findById(caller.environmentId),
@@ -192,6 +209,26 @@ export class RegistryTokenController {
             `terminated, moved to another project, or the credential was superseded`,
         );
         throw new UnauthorizedException('Invalid registry credentials');
+      }
+    }
+
+    if (identified.key === 'internal') {
+      const profile = await this.security.decide(REGISTRY_INTERNAL_KEY_RULE, {
+        governing: 'instance',
+        projectId: caller.kind === 'internal' ? null : caller.projectId,
+        principal: caller.kind === 'internal'
+          ? { type: 'service', id: 'legacy-key' }
+          : { type: 'registry', id: caller.kind === 'project-pull' ? caller.environmentId : caller.projectId },
+        detail: {
+          caller: caller.kind,
+          ...(caller.kind === 'project-pull' ? { environment_id: caller.environmentId, epoch: caller.epoch } : {}),
+        },
+        keepFirstDetail: true,
+      });
+      if (profile === 'strict') {
+        throw new UnauthorizedException(
+          `Registry credentials signed with the internal key are refused (rule ${REGISTRY_INTERNAL_KEY_RULE})`,
+        );
       }
     }
 

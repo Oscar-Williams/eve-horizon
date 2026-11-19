@@ -65,7 +65,7 @@ describe('DeployerService - Eve registry app pod composition', () => {
     applyManifest.mockReset();
     deployer = new DeployerService(null as any, { applyManifest } as any);
     (deployer as any).logger = { warn: vi.fn(), log: vi.fn(), error: vi.fn(), debug: vi.fn() };
-    (deployer as any).environments = { bumpRegistryPullEpoch: vi.fn().mockResolvedValue(3) };
+    (deployer as any).environments = { bumpRegistryPullEpoch: vi.fn().mockResolvedValue(3), recordRegistryKeyVersion: vi.fn() };
     const bucketProvisioner = {
       isConfigured: true,
       backend: 'gcs',

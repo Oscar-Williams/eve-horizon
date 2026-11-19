@@ -8,6 +8,7 @@ import { PipelineRunnerModule } from './pipeline-runner/pipeline-runner.module';
 import { ScriptExecutorModule } from './script-executor/script-executor.module';
 import { BuilderModule } from './builder/builder.module.js';
 import { ReaperModule } from './reaper/reaper.module';
+import { RegistryModule } from './registry/registry.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ReaperModule } from './reaper/reaper.module';
     ScriptExecutorModule,
     BuilderModule,
     ReaperModule,
+    RegistryModule,
   ],
 })
 export class AppModule {}
