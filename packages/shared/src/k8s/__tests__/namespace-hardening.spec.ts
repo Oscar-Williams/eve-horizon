@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import * as hardening from '../namespace-hardening.js';
 import {
   generateResourceQuota,
   generateLimitRange,
-  generateNetworkPolicy,
   generateAllHardeningManifests,
   mergeHardeningConfig,
   DEFAULT_HARDENING_CONFIG,
@@ -109,110 +109,16 @@ describe('generateLimitRange', () => {
 });
 
 // ---------------------------------------------------------------------------
-// generateNetworkPolicy
+// Network policy: egress.default_deny (egress-policies.ts) replaced it
 // ---------------------------------------------------------------------------
 
-describe('generateNetworkPolicy', () => {
-  it('produces a valid NetworkPolicy with default-deny base', () => {
-    const np = generateNetworkPolicy({ namespace: 'eve-org-proj-test' }) as Record<string, unknown>;
-
-    expect(np.apiVersion).toBe('networking.k8s.io/v1');
-    expect(np.kind).toBe('NetworkPolicy');
-
-    const metadata = np.metadata as Record<string, unknown>;
-    expect(metadata.name).toBe('eve-default-deny');
-    expect(metadata.namespace).toBe('eve-org-proj-test');
-
-    const spec = np.spec as Record<string, unknown>;
-    expect(spec.policyTypes).toEqual(['Ingress', 'Egress']);
-
-    // podSelector should be empty (applies to all pods)
-    expect(spec.podSelector).toEqual({});
-  });
-
-  it('includes in-namespace ingress and ingress-nginx by default', () => {
-    const np = generateNetworkPolicy({ namespace: 'eve-org-proj-test' }) as Record<string, unknown>;
-    const spec = np.spec as Record<string, unknown>;
-    const ingress = spec.ingress as Array<Record<string, unknown>>;
-
-    // First rule: in-namespace traffic
-    const inNsRule = ingress[0];
-    expect(inNsRule.from).toEqual([{ podSelector: {} }]);
-
-    // Second rule: ingress-nginx
-    const ingressNginxRule = ingress[1];
-    expect(ingressNginxRule.from).toEqual([
-      {
-        namespaceSelector: {
-          matchLabels: {
-            'kubernetes.io/metadata.name': 'ingress-nginx',
-          },
-        },
-      },
-    ]);
-  });
-
-  it('includes DNS, in-namespace, eve, kube-system, and external egress by default', () => {
-    const np = generateNetworkPolicy({ namespace: 'eve-org-proj-test' }) as Record<string, unknown>;
-    const spec = np.spec as Record<string, unknown>;
-    const egress = spec.egress as Array<Record<string, unknown>>;
-
-    // Should have: DNS, in-namespace, eve, kube-system, external CIDRs
-    expect(egress.length).toBeGreaterThanOrEqual(4);
-
-    // First rule: DNS (kube-system port 53)
-    const dnsRule = egress[0];
-    expect(dnsRule.ports).toEqual([
-      { protocol: 'UDP', port: 53 },
-      { protocol: 'TCP', port: 53 },
-    ]);
-
-    // Second rule: in-namespace
-    const inNsRule = egress[1];
-    expect(inNsRule.to).toEqual([{ podSelector: {} }]);
-  });
-
-  it('uses custom network policy when provided', () => {
-    const config: NamespaceHardeningConfig = {
-      namespace: 'custom-ns',
-      network_policy: {
-        allow_ingress_from_namespaces: ['my-ingress'],
-        allow_egress_to_namespaces: ['my-platform'],
-        allow_egress_cidrs: ['10.0.0.0/8'],
-      },
-    };
-
-    const np = generateNetworkPolicy(config) as Record<string, unknown>;
-    const spec = np.spec as Record<string, unknown>;
-    const ingress = spec.ingress as Array<Record<string, unknown>>;
-    const egress = spec.egress as Array<Record<string, unknown>>;
-
-    // Should have my-ingress in ingress rules
-    const ingressNs = ingress.find((rule) => {
-      const from = rule.from as Array<Record<string, unknown>>;
-      return from?.some(
-        (f) => (f.namespaceSelector as Record<string, unknown>)?.matchLabels != null &&
-          ((f.namespaceSelector as Record<string, unknown>).matchLabels as Record<string, string>)['kubernetes.io/metadata.name'] === 'my-ingress'
-      );
-    });
-    expect(ingressNs).toBeDefined();
-
-    // Should have my-platform in egress rules
-    const egressNs = egress.find((rule) => {
-      const to = rule.to as Array<Record<string, unknown>>;
-      return to?.some(
-        (t) => (t.namespaceSelector as Record<string, unknown>)?.matchLabels != null &&
-          ((t.namespaceSelector as Record<string, unknown>).matchLabels as Record<string, string>)['kubernetes.io/metadata.name'] === 'my-platform'
-      );
-    });
-    expect(egressNs).toBeDefined();
-
-    // Should have 10.0.0.0/8 in egress CIDRs
-    const egressCidr = egress.find((rule) => {
-      const to = rule.to as Array<Record<string, unknown>>;
-      return to?.some((t) => (t as Record<string, unknown>).ipBlock != null);
-    });
-    expect(egressCidr).toBeDefined();
+describe('no permissive network defaults', () => {
+  it('generates no NetworkPolicy and has no network defaults', () => {
+    expect('generateNetworkPolicy' in hardening).toBe(false);
+    expect(DEFAULT_HARDENING_CONFIG).not.toHaveProperty('network_policy');
+    const json = JSON.stringify(generateAllHardeningManifests({ namespace: 'eve-org-proj-test' }));
+    expect(json).not.toContain('0.0.0.0/0');
+    expect(json).not.toContain('NetworkPolicy');
   });
 });
 
@@ -221,12 +127,12 @@ describe('generateNetworkPolicy', () => {
 // ---------------------------------------------------------------------------
 
 describe('generateAllHardeningManifests', () => {
-  it('returns exactly three manifests', () => {
+  it('returns the quota and the limits', () => {
     const manifests = generateAllHardeningManifests({ namespace: 'test-ns' });
-    expect(manifests).toHaveLength(3);
+    expect(manifests).toHaveLength(2);
 
     const kinds = manifests.map((m) => (m as Record<string, unknown>).kind);
-    expect(kinds).toEqual(['ResourceQuota', 'LimitRange', 'NetworkPolicy']);
+    expect(kinds).toEqual(['ResourceQuota', 'LimitRange']);
   });
 
   it('all manifests target the same namespace', () => {
@@ -248,7 +154,7 @@ describe('mergeHardeningConfig', () => {
     expect(config.namespace).toBe('test-ns');
     expect(config.resource_quota).toEqual(DEFAULT_HARDENING_CONFIG.resource_quota);
     expect(config.limit_range).toEqual(DEFAULT_HARDENING_CONFIG.limit_range);
-    expect(config.network_policy).toEqual(DEFAULT_HARDENING_CONFIG.network_policy);
+    expect(config).not.toHaveProperty('network_policy');
   });
 
   it('overrides only the specified sections', () => {
@@ -262,7 +168,6 @@ describe('mergeHardeningConfig', () => {
     });
     expect(config.resource_quota!.cpu_requests).toBe('16');
     expect(config.limit_range).toEqual(DEFAULT_HARDENING_CONFIG.limit_range);
-    expect(config.network_policy).toEqual(DEFAULT_HARDENING_CONFIG.network_policy);
   });
 });
 
@@ -274,7 +179,7 @@ describe('prepareHardeningManifests', () => {
   it('returns manifests and resolved config', () => {
     const result = prepareHardeningManifests('my-ns');
     expect(result.namespace).toBe('my-ns');
-    expect(result.manifests).toHaveLength(3);
+    expect(result.manifests).toHaveLength(2);
     expect(result.config.namespace).toBe('my-ns');
     expect(result.config.resource_quota).toEqual(DEFAULT_HARDENING_CONFIG.resource_quota);
   });
