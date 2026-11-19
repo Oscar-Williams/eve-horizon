@@ -22,6 +22,10 @@ import { EventsService } from '../events/events.service.js';
 import { Public } from '../auth/auth.decorator.js';
 import { loadConfig } from '@eve/shared';
 import { SecretsService } from '../secrets/secrets.service.js';
+import { SecurityService } from '../security/security.service.js';
+
+/** Project rule: a webhook verified with the instance's global secret. */
+export const WEBHOOK_GLOBAL_SECRET_RULE = 'webhooks.global_secret';
 
 // GitHub webhook payload types
 interface GitHubPushPayload {
@@ -69,6 +73,7 @@ export class GitHubController {
   constructor(
     private readonly eventsService: EventsService,
     private readonly secretsService: SecretsService,
+    private readonly security: SecurityService,
   ) {}
 
   @Post('events/:projectId')
@@ -120,6 +125,24 @@ export class GitHubController {
 
     if (!verifyGitHubSignature(secret, rawBody, signature)) {
       throw new UnauthorizedException('Invalid GitHub webhook signature');
+    }
+
+    // A project with no GITHUB_WEBHOOK_SECRET of its own falls back to the
+    // instance's: allowed under legacy, recorded under audit, 401 under
+    // strict. Judged only once the signature verified.
+    if (!projectSecret) {
+      const profile = await this.security.decide(WEBHOOK_GLOBAL_SECRET_RULE, {
+        governing: 'project',
+        projectId,
+        principal: { type: 'webhook', id: 'github' },
+        detail: { event: typeof githubEvent === 'string' ? githubEvent.slice(0, 40) : null },
+        keepFirstDetail: true,
+      });
+      if (profile === 'strict') {
+        throw new UnauthorizedException(
+          `This project has no GITHUB_WEBHOOK_SECRET of its own; set one (rule ${WEBHOOK_GLOBAL_SECRET_RULE})`,
+        );
+      }
     }
 
     if (!githubEvent) {
