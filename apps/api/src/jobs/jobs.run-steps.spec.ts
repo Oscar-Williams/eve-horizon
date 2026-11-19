@@ -410,3 +410,57 @@ describe('cancelling a job with its downstream steps', () => {
     expect(statements.some((s) => /WITH RECURSIVE downstream/.test(s))).toBe(false);
   });
 });
+
+describe('dependency edges of a run root', () => {
+  it("refuse a teammate's edge on another person's run root under strict, and allow the run's actor", async () => {
+    m.state.projectProfile = 'strict';
+    const c = controller();
+
+    await expect(route(c, 'addDependency', 'a-run', { related_job_id: 'solo-1' }, TEAMMATE)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'removeDependency', 'a-run', 'solo-1', TEAMMATE)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'addDependency', 'b-run', { related_job_id: 'c-run.1' }, RUN_C_STEP)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(m.jobQ.addDependency).not.toHaveBeenCalled();
+
+    await route(c, 'addDependency', 'a-run', { related_job_id: 'solo-1' }, OWNER);
+    expect(m.jobQ.addDependency).toHaveBeenCalledWith('a-run', 'solo-1', 'blocks');
+  });
+
+  it("allow a teammate's edge on another person's run root under audit, and record it", async () => {
+    m.state.projectProfile = 'audit';
+
+    await route(controller(), 'addDependency', 'a-run', { related_job_id: 'solo-1' }, TEAMMATE);
+
+    expect(m.jobQ.addDependency).toHaveBeenCalledWith('a-run', 'solo-1', 'blocks');
+    expect(findingsFor('jobs.run_step_change')).toEqual([
+      expect.objectContaining({ actor_type: 'user', actor_id: 'user_mate', detail: expect.objectContaining({ job_id: 'a-run' }) }),
+    ]);
+  });
+});
+
+describe("a cancel's cascade", () => {
+  it("stays inside the cancelled step's own run", async () => {
+    const { jobQueries } = await vi.importActual<typeof import('@eve/db')>('@eve/db');
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        calls.push({ text, values });
+        if (/SELECT \* FROM jobs WHERE id/.test(text) || /RETURNING \*/.test(text)) return [{ ...m.state.jobs.get('a-run.1') }];
+        return [];
+      },
+      { json: (v: unknown) => v },
+    );
+    const queries = jobQueries(sql as never) as unknown as {
+      cancelJob(id: string, reason?: string, options?: { cascade?: boolean }): Promise<unknown>;
+    };
+
+    await queries.cancelJob('a-run.1', 'Stopped by hand', { cascade: true });
+
+    const downstream = calls.find((call) => /WITH RECURSIVE downstream/.test(call.text));
+    expect(downstream?.text).toMatch(/step_name IS NOT NULL/);
+    expect(downstream?.text).toMatch(/parent_id IS NOT DISTINCT FROM/);
+    expect(downstream?.text).toMatch(/run_id IS NOT DISTINCT FROM/);
+    expect(downstream?.values).toContain('a-run');
+  });
+});
+
