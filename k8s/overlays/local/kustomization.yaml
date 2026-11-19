@@ -2,6 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
+  # Local-only: mail catcher and object storage hosts on *.eve.lvh.me.
+  - mailpit-ingress.yaml
+  - minio-ingress.yaml
 namespace: eve
 patchesStrategicMerge:
   - postgres.patch.yaml
@@ -15,3 +18,4 @@ patchesStrategicMerge:
   - worker-tcp-ingress.patch.yaml
   - supabase-auth-autoconfirm.patch.yaml
   - gateway-simulate.patch.yaml
+  - minio-console.patch.yaml

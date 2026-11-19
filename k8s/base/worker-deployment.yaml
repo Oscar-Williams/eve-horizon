@@ -30,11 +30,18 @@ spec:
           image: eve-horizon/worker:local
           imagePullPolicy: IfNotPresent
           envFrom:
-            # Cluster-wide config (DATABASE_URL, service URLs, EVE_STORAGE_*).
+            # Cluster-wide config (service URLs, EVE_STORAGE_*).
             # Inline env entries below override these if names collide.
             - configMapRef:
                 name: eve-cluster-config
           env:
+            # The database URL is a secret (eve-app), not ConfigMap data.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: DATABASE_URL
+                  optional: true
             # Platform secrets: only the eve-app keys this service reads (no envFrom,
             # so a key added to eve-app reaches no service that does not name it).
             # Each is optional, as with envFrom: a missing key leaves the variable

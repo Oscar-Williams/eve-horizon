@@ -41,11 +41,13 @@ spec:
             # Shared cluster values come from the eve-cluster-config ConfigMap.
             # (No envFrom: agent-runtime must not inherit EVE_STORAGE_PUBLIC_ENDPOINT /
             # EVE_STORAGE_INTERNAL_BUCKET / SSO vars it never had.)
+            # The database URL is a secret (eve-app), not ConfigMap data.
             - name: DATABASE_URL
               valueFrom:
-                configMapKeyRef:
-                  name: eve-cluster-config
+                secretKeyRef:
+                  name: eve-app
                   key: DATABASE_URL
+                  optional: true
             - name: EVE_API_URL
               valueFrom:
                 configMapKeyRef:

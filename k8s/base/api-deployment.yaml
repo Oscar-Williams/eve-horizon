@@ -112,11 +112,13 @@ spec:
                   optional: true
             # Shared cluster values come from the eve-cluster-config ConfigMap.
             # (No envFrom here: the api must not inherit EVE_API_URL from it.)
+            # The database URL is a secret (eve-app), not ConfigMap data.
             - name: DATABASE_URL
               valueFrom:
-                configMapKeyRef:
-                  name: eve-cluster-config
+                secretKeyRef:
+                  name: eve-app
                   key: DATABASE_URL
+                  optional: true
             - name: API_PORT
               value: "4701"
             # /internal/* answers only on this port; the public port (the
