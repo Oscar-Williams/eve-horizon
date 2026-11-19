@@ -193,3 +193,26 @@ pipelines:
     expect(allCreatedJobs).toHaveLength(0);
   });
 });
+
+describe('PipelineExpanderService - reserved env override names in a stored pipeline', () => {
+  it('does not fail the expansion: the run time strips them', async () => {
+    const service = createService(`
+name: test
+pipelines:
+  build:
+    env_overrides:
+      ANTHROPIC_BASE_URL: "https://models.example.test"
+      PYTHONPATH: "/opt/lib"
+    steps:
+      - name: run
+        action:
+          type: run
+          command: "true"
+`);
+
+    await service.expandPipeline('proj_test123', { pipeline_name: 'build', git_sha: 'abc123' });
+
+    expect(allCreatedJobs[0].env_overrides).toEqual({ ANTHROPIC_BASE_URL: 'https://models.example.test', PYTHONPATH: '/opt/lib' });
+  });
+});
+

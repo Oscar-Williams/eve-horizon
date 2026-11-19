@@ -1292,3 +1292,40 @@ describe('validateStepGraph - condition validation', () => {
     expect(() => validateStepGraph('test', steps)).not.toThrow();
   });
 });
+
+describe('WorkflowsService.invoke: reserved env override names', () => {
+  const stored = `
+name: test
+workflows:
+  research:
+    env_overrides:
+      ANTHROPIC_BASE_URL: https://models.example.test
+      PYTHONPATH: /opt/lib
+    steps:
+      - name: search
+        agent:
+          prompt: "Search"
+`;
+
+  it('does not fail on reserved names a stored workflow carries: the run time strips them', async () => {
+    const service = createService(stored);
+
+    await service.invoke('proj_test123', 'research', {});
+
+    const searchJob = allCreatedJobs.find((job) => job.step_name === 'search');
+    expect(searchJob?.env_overrides).toEqual({ ANTHROPIC_BASE_URL: 'https://models.example.test', PYTHONPATH: '/opt/lib' });
+  });
+
+  it('holds a code-loading name in the invocation to the project profile', async () => {
+    const service = createService(stored);
+    const gate = vi.fn(async (rule: string) => {
+      throw new Error(`refused (rule ${rule})`);
+    });
+    (service as any).security = { gate, decide: vi.fn(async () => 'strict') };
+
+    await expect(service.invoke('proj_test123', 'research', { env_overrides: { LD_PRELOAD: '/tmp/x.so' } }))
+      .rejects.toThrow(/harness.reserved_env/);
+    expect(gate).toHaveBeenCalledWith('harness.reserved_env', expect.objectContaining({ projectId: 'proj_test123' }), expect.any(String));
+  });
+});
+

@@ -283,3 +283,33 @@ describe('applyEnvOverrides: model credentials and routing at run time', () => {
     expect(result.strippedKeys).toEqual(['ANTHROPIC_API_KEY']);
   });
 });
+
+describe('applyEnvOverrides: names held by the project profile', () => {
+  it('applies a code-loading name outside strict and reports it as held', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: { PYTHONPATH: '/opt/lib', ANTHROPIC_BASE_URL: 'https://models.example.test', FOO: 'bar' },
+      resolvedSecrets: [],
+      baseEnv: {},
+    });
+
+    expect(result.env.PYTHONPATH).toBe('/opt/lib');
+    expect(result.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(result.heldKeys).toEqual(['PYTHONPATH']);
+    expect(result.strippedKeys).toEqual(['ANTHROPIC_BASE_URL']);
+  });
+
+  it('strips it under strict', async () => {
+    const result = await applyEnvOverrides({
+      envOverrides: { PYTHONPATH: '/opt/lib', FOO: 'bar' },
+      resolvedSecrets: [],
+      baseEnv: {},
+      strictReserved: true,
+    });
+
+    expect(result.env.PYTHONPATH).toBeUndefined();
+    expect(result.env.FOO).toBe('bar');
+    expect(result.strippedKeys).toEqual(['PYTHONPATH']);
+    expect(result.heldKeys).toEqual([]);
+  });
+});
+

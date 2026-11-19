@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CreateJobRequestSchema, isReservedEnvKey } from '../job.js';
+import { CreateJobRequestSchema, isReservedEnvKey, profileHeldEnvKeys, alwaysRefusedEnvKeys } from '../job.js';
 import { ManifestSchema } from '../manifest.js';
 import { WorkflowInvokeRequestSchema } from '../workflow.js';
 import { PipelineDefinitionSchema } from '../pipeline.js';
@@ -59,13 +59,24 @@ function chatHintsAccept(env_overrides: Record<string, string>): boolean {
   return ChatHintsSchema.safeParse({ env_overrides }).success;
 }
 
+/** Requests: what a caller sends now. Stored definitions are checked at sync, not on every read. */
 const ENTRY_POINTS: Array<[string, (env: Record<string, string>) => boolean]> = [
   ['job create', jobAccepts],
   ['workflow invoke', workflowInvokeAccepts],
-  ['manifest workflow step', manifestStepAccepts],
-  ['pipeline step', pipelineStepAccepts],
   ['chat hints', chatHintsAccept],
 ];
+
+describe('env override names in a stored workflow or pipeline definition', () => {
+  it('never fail a re-read of the definition, whatever the names', () => {
+    for (const accepts of [manifestStepAccepts, pipelineStepAccepts]) {
+      expect(accepts({ ANTHROPIC_BASE_URL: 'https://models.example.test', PYTHONPATH: '/opt/lib', NODE_OPTIONS: '--x' })).toBe(true);
+    }
+  });
+
+  it('still refuse an expression other than a secret reference', () => {
+    expect(manifestStepAccepts({ FOO: '${env.HOME}' })).toBe(false);
+  });
+});
 
 describe('env override names reserved for model credentials and routing', () => {
   it('refuses a literal ANTHROPIC_BASE_URL and HTTPS_PROXY at every entry point', () => {
@@ -139,22 +150,31 @@ describe('names that load code or set TLS trust', () => {
     'DYLD_LIBRARY_PATH',
     'BASH_ENV',
     'ENV',
-    'NODE_OPTIONS',
     'PYTHONPATH',
     'PYTHONSTARTUP',
   ];
   const TLS_TRUST = ['SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'];
 
-  it.each(LOADERS)('refuses %s as an override, literal or secret', (key) => {
+  it.each([...LOADERS, ...TLS_TRUST])('leaves %s to the project profile: accepted by the schema, held under strict', (key) => {
     expect(isReservedEnvKey(key)).toBe(true);
-    expect(jobAccepts({ [key]: '/tmp/x' })).toBe(false);
-    expect(jobAccepts({ [key]: '${secret.LOADER}' })).toBe(false);
+    expect(jobAccepts({ [key]: '/tmp/x' })).toBe(true);
+    expect(profileHeldEnvKeys({ [key]: '/tmp/x' })).toEqual([key]);
+    expect(alwaysRefusedEnvKeys({ [key]: '/tmp/x' })).toEqual([]);
   });
 
-  it.each(TLS_TRUST)('takes %s only from a single ${secret.KEY}', (key) => {
-    expect(isReservedEnvKey(key)).toBe(true);
-    expect(jobAccepts({ [key]: '/etc/ssl/custom' })).toBe(false);
-    expect(jobAccepts({ [key]: '${secret.CA_BUNDLE}' })).toBe(true);
+  it('holds a TLS trust name only when it is not one secret reference', () => {
+    expect(profileHeldEnvKeys({ SSL_CERT_DIR: '${secret.CA_DIR}' })).toEqual([]);
+    expect(profileHeldEnvKeys({ PYTHONPATH: '${secret.PY_PATH}' })).toEqual(['PYTHONPATH']);
+  });
+
+  it('keeps NODE_OPTIONS and the P1-9 names refused on every profile', () => {
+    expect(jobAccepts({ NODE_OPTIONS: '--require x' })).toBe(false);
+    expect(alwaysRefusedEnvKeys({
+      NODE_OPTIONS: '--require x',
+      ANTHROPIC_BASE_URL: 'https://models.example.test',
+      ANTHROPIC_API_KEY: '${secret.KEY}',
+      HTTPS_PROXY: '${secret.PROXY}',
+      FOO: 'bar',
+    }).sort()).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'NODE_OPTIONS']);
   });
 });
-

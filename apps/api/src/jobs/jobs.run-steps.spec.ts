@@ -464,3 +464,25 @@ describe("a cancel's cascade", () => {
   });
 });
 
+describe('creating a job with env overrides the project profile holds', () => {
+  const body = { description: 'run', env_overrides: { PYTHONPATH: '/opt/lib' } };
+
+  it('is refused under strict', async () => {
+    m.state.projectProfile = 'strict';
+
+    await expect(route(controller(), 'create', 'proj_a', body, OWNER, undefined)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(m.jobQ.create).not.toHaveBeenCalled();
+  });
+
+  it('is allowed and recorded under audit', async () => {
+    m.state.projectProfile = 'audit';
+
+    await route(controller(), 'create', 'proj_a', body, OWNER, undefined);
+
+    expect(m.jobQ.create).toHaveBeenCalled();
+    expect(findingsFor('harness.reserved_env')).toEqual([
+      expect.objectContaining({ actor_type: 'user', actor_id: 'user_owner', detail: expect.objectContaining({ keys: 'PYTHONPATH' }) }),
+    ]);
+  });
+});
+

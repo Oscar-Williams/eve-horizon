@@ -24,6 +24,7 @@ type Routing = {
   profileHash: string | null;
   profileSource: string | null;
   credentialsFromSecretsOnly?: boolean;
+  envOverridesStrict?: boolean;
 };
 type Select = (job: Record<string, unknown>, attempt: Record<string, unknown>, executionType: string) => Promise<Routing>;
 
@@ -253,6 +254,31 @@ describe('a harness credential only the host could supply', () => {
 
     expect(routing.harnessSpec).toBe('gemini');
     expect(rulesDecided()).toEqual(['harness.missing_credential']);
+  });
+});
+
+describe('env overrides a job carries that the project profile holds', () => {
+  it('are recorded under audit and left to the run time', async () => {
+    mocks.profile = 'audit';
+    const { select } = loop({ projectPreference: ['zai'], secrets: { Z_AI_API_KEY: 'zk' } });
+
+    const routing = await select(job({ env_overrides: { PYTHONPATH: '/opt/lib' } }), attempt, 'agent');
+
+    expect(routing.envOverridesStrict).toBe(false);
+    expect(mocks.decide).toHaveBeenCalledWith(expect.anything(), 'harness.reserved_env', expect.objectContaining({
+      projectId: 'proj_lab',
+      detail: expect.objectContaining({ keys: 'PYTHONPATH' }),
+    }));
+  });
+
+  it('are stripped at run time under strict', async () => {
+    mocks.profile = 'strict';
+    const { select } = loop({ projectPreference: ['zai'], secrets: { Z_AI_API_KEY: 'zk' } });
+
+    const routing = await select(job({ env_overrides: { PYTHONPATH: '/opt/lib' } }), attempt, 'agent');
+
+    expect(routing.envOverridesStrict).toBe(true);
+    expect(rulesDecided()).toEqual(['harness.reserved_env']);
   });
 });
 
