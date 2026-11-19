@@ -19,15 +19,20 @@ vi.mock('@eve/shared', async (importOriginal) => {
   return { ...actual, loadConfig: () => ({ EVE_DEFAULT_DOMAIN: 'apps.test' }) };
 });
 
-function service(services: Record<string, unknown>) {
+function preview(manifest: Record<string, unknown>, envOverrides: Record<string, unknown> | null = null) {
   const executor = new ActionExecutorService(null as any, {} as any, {} as any);
   Object.assign(executor as unknown as Record<string, unknown>, {
     projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_shop', slug: 'shop', org_id: 'org_acme' }) },
     releases: { findById: vi.fn().mockResolvedValue({ id: 'rel_1', manifest_hash: 'h1' }) },
-    manifests: { findByProjectAndHash: vi.fn().mockResolvedValue({ manifest_yaml: yaml.stringify({ services }) }) },
+    manifests: { findByProjectAndHash: vi.fn().mockResolvedValue({ manifest_yaml: yaml.stringify(manifest) }) },
     orgs: { findById: vi.fn().mockResolvedValue({ id: 'org_acme', slug: 'acme' }) },
+    envs: { findByProjectAndName: vi.fn().mockResolvedValue({ id: 'env_prod', name: 'prod', overrides_json: envOverrides }) },
   });
   return (executor as any).computePreviewUrl('proj_shop', 'rel_1', 'prod') as Promise<string | null>;
+}
+
+function service(services: Record<string, unknown>) {
+  return preview({ services });
 }
 
 beforeEach(() => {
@@ -62,3 +67,20 @@ describe('ActionExecutorService preview URL follows the deployer', () => {
     expect(mocks.decide).not.toHaveBeenCalled();
   });
 });
+
+describe('ActionExecutorService preview URL reads the services the deployer deploys', () => {
+  it("applies the manifest's overrides for the environment", async () => {
+    await expect(preview({
+      services: { web: { image: 'web:1', ports: [3000], 'x-eve': { ingress: { public: true, port: 3000 } } } },
+      environments: { prod: { overrides: { services: { web: { 'x-eve': { ingress: { public: false } } } } } } },
+    })).resolves.toBeNull();
+  });
+
+  it("applies the environment's stored overrides", async () => {
+    await expect(preview(
+      { services: { web: { image: 'web:1', ports: [3000], 'x-eve': { ingress: { port: 3000 } } } } },
+      { services: { web: { 'x-eve': { ingress: { public: true } } } } },
+    )).resolves.toMatch(/^https:\/\/web\./);
+  });
+});
+
