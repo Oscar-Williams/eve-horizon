@@ -1,6 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { DeployerService } from '../deployer.service.js';
 
+// The pod security profile is read for each deploy and job run.
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  governingSecurityProfile: vi.fn(async () => 'legacy'),
+  decideSecurityRule: vi.fn(async () => 'legacy'),
+}));
+
 /**
  * Test the deployer's ownership-aware garbage collection of custom-domain
  * ingresses. These tests poke at the private method directly to keep the

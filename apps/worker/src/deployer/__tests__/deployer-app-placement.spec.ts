@@ -30,6 +30,13 @@ const appPool = {
 
 let configOverride: Record<string, unknown> = {};
 
+// The pod security profile is read for each deploy and job run.
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  governingSecurityProfile: vi.fn(async () => 'legacy'),
+  decideSecurityRule: vi.fn(async () => 'legacy'),
+}));
+
 vi.mock('@eve/shared', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
   return {
