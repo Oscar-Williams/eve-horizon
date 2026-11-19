@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service.js';
-import { accessStore as store } from '../../test/unit/helpers/access-store.js';
+import { accessStore as store } from '../auth/__tests__/access-store.js';
 
 vi.mock('@eve/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@eve/db')>();
-  const { accessStore } = await import('../../test/unit/helpers/access-store.js');
+  const { accessStore } = await import('../auth/__tests__/access-store.js');
   return { ...actual, ...accessStore.queries };
 });
 

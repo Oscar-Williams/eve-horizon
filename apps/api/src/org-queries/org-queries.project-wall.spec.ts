@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OrgQueriesService } from './org-queries.service.js';
 import { SecurityService } from '../security/security.service.js';
-import { accessStore as store } from '../../test/unit/helpers/access-store.js';
+import { accessStore as store } from '../auth/__tests__/access-store.js';
 
 const across = vi.hoisted(() => ({
   findJobsAcrossProjects: vi.fn(async (_projectIds: string[]) => ({ items: [], next_cursor: null })),
@@ -12,7 +12,7 @@ const across = vi.hoisted(() => ({
 
 vi.mock('@eve/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@eve/db')>();
-  const { accessStore } = await import('../../test/unit/helpers/access-store.js');
+  const { accessStore } = await import('../auth/__tests__/access-store.js');
   return {
     ...actual,
     ...accessStore.queries,

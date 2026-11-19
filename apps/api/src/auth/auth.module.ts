@@ -26,6 +26,7 @@ import { AppAuthPolicyService } from './app-auth-policy.service.js';
 import { IdentityProviderRegistry, SshIdentityProvider, NostrIdentityProvider } from './providers/index.js';
 import { MailerModule } from '../mailer/mailer.module.js';
 import { EventsModule } from '../events/events.module.js';
+import { SecurityModule } from '../security/security.module.js';
 
 const REPLAY_PURGE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -37,7 +38,9 @@ const MAGIC_LINK_WRAP_PURGE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const MAGIC_LINK_WRAP_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 @Module({
-  imports: [MailerModule, EventsModule],
+  // Permission checks consult the security profiles (global in the app; named
+  // here so any graph with AuthModule resolves them).
+  imports: [MailerModule, EventsModule, SecurityModule],
   controllers: [AuthController, AuthInternalController, JobAppLinkTokensController, AuthKeysController, AuthInvitesController, AuthAccessRequestsController, ServicePrincipalsController, AccessController, AccessRolesController, AccessGroupsController],
   providers: [
     AuthService,
