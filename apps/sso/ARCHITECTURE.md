@@ -15,12 +15,13 @@ for local k3d).
 ## Routes
 
 - `GET /login`, `POST /auth/token`, `POST /auth/signup`, `POST /auth/magiclink` — login surface
-- `GET|POST /m/:wrap` — magic-link interstitial (CSRF-signed wrap tokens; expiry page)
+- `GET|POST /m/:wrap` — magic-link interstitial (SSO origin only; CSRF value bound to the wrap token and
+  this browser's flow; expiry page)
 - `GET /set-password`, `POST /auth/update-password` — invite/password flows
 - `GET /session` — cookie → token probe used by app SDKs; the API decides which origins and which
   token (`/auth/sso/check-origin`, `/auth/sso/session`)
 - `GET /callback` (fragment reader), `POST /callback` (tokens, SSO origin only, state-checked)
-- `POST /logout` (GoTrue `scope=local`), `GET /health`
+- `POST /logout` (an Origin required; GoTrue `scope=local`), `GET /health`
 
 ## Key Decisions (Why)
 
@@ -30,7 +31,9 @@ for local k3d).
   auth service; SSO calls it via the internal API. The instance security profile's session rules
   (`sso.session_origin`, `sso.app_access`, `sso.audience_token`) are decided and recorded there too.
 - **Tokens never in URLs** — pages that receive GoTrue tokens post them to `/callback`; a session is
-  set only for a flow this browser started (state cookie) or after "Continue as ...?".
+  set only when they come back with this browser's flow nonce (state cookie; carried through
+  GoTrue's `redirect_to` as `?flow=`) or after "Continue as ...?".
+- **Page scripts** — a per-response CSP script nonce; server values reach scripts as escaped JSON.
 
 ## Navigation
 
