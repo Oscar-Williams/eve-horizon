@@ -46,7 +46,9 @@ const db = vi.hoisted(() => {
     listFindings: vi.fn(async () => state.findings),
   };
 
-  return { state, settings, security };
+  const audit = { log: vi.fn(async (entry: Record<string, unknown>) => entry) };
+
+  return { state, settings, security, audit };
 });
 
 vi.mock('@eve/db', async (importOriginal) => {
@@ -55,6 +57,7 @@ vi.mock('@eve/db', async (importOriginal) => {
     ...actual,
     systemSettingsQueries: vi.fn(() => db.settings),
     securityQueries: vi.fn(() => db.security),
+    auditQueries: vi.fn(() => db.audit),
   };
 });
 
@@ -142,6 +145,25 @@ describe('SecurityService', () => {
   });
 
   describe('setProfile', () => {
+    it('records who changed a profile, and from what', async () => {
+      db.state.settings.set('security.profile', 'audit');
+      db.state.orgProfiles.set(ORG, 'audit');
+      const svc = build();
+
+      await svc.setProfile({ scope: 'org', id: ORG }, 'legacy', 'user_admin');
+      await svc.setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, null, 'user_admin');
+
+      expect(db.audit.log.mock.calls.map(([entry]) => entry)).toEqual([
+        expect.objectContaining({
+          entity_type: 'security_profile', entity_id: `org:${ORG}`, action: 'updated',
+          actor: 'user_admin', actor_type: 'user', changes: { profile: { old: 'audit', new: 'legacy' } },
+        }),
+        expect.objectContaining({ entity_id: `project:${PROJECT}`, changes: { profile: { old: null, new: 'strict' } } }),
+        expect.objectContaining({ entity_id: 'instance', changes: { profile: { old: 'audit', new: null } } }),
+      ]);
+    });
+
     it('sets the instance, an org, a project and the new-project default', async () => {
       const svc = build();
       await svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin');

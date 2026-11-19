@@ -5,6 +5,7 @@ import { AccessService } from './access.service.js';
 import { PermissionGuard } from './permission.guard.js';
 import { PERMISSION_KEY } from './permission.decorator.js';
 import { SecurityService } from '../security/security.service.js';
+import { AccessController } from './auth.access.controller.js';
 import type { AuthUser } from './auth.types.js';
 import { accessStore as store } from './__tests__/access-store.js';
 
@@ -122,6 +123,15 @@ describe('the project wall (P1-5)', () => {
       const findings = store.findings('access.implicit_project');
       expect(findings.length).toBeGreaterThan(0);
       expect(findings[0]).toMatchObject({ profile: 'audit', org_id: ORG, project_id: PROJECT, actor_id: member.user_id });
+    });
+
+    it('answers `eve access can` without recording a finding', async () => {
+      const { rbac, access } = services();
+      const controller = new AccessController(access, rbac);
+
+      await expect(controller.can(ORG, 'user', member.user_id, PROJECT, 'jobs:write', undefined, undefined, undefined, orgAdmin))
+        .resolves.toMatchObject({ allowed: true });
+      expect(store.findings()).toEqual([]);
     });
 
     it('records nothing when the request does not depend on the org member role', async () => {
