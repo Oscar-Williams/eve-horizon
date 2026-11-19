@@ -114,6 +114,11 @@ export class AccessService {
     project_id?: string;
     permission: string;
     resource?: AccessResourceContext;
+    /**
+     * false: a question about access, not an access (`eve access can`): the
+     * profiles still decide the answer, but no finding is recorded.
+     */
+    record?: boolean;
   }): Promise<AccessCanResponse> {
     this.validatePermission(params.permission);
 
@@ -141,6 +146,7 @@ export class AccessService {
         params.project_id,
         params.permission,
         params.resource,
+        params.record === false ? 'peek' : 'decide',
       );
     }
 
@@ -329,9 +335,10 @@ export class AccessService {
     projectId: string | undefined,
     permission: string,
     resource?: AccessResourceContext,
+    mode: 'decide' | 'peek' = 'decide',
   ): Promise<PermissionEvaluation> {
     const { grants, context } = await this.collectUserGrants(orgId, userId, projectId);
-    return this.evaluateUnderProfiles(permission, grants, resource, context, 'decide');
+    return this.evaluateUnderProfiles(permission, grants, resource, context, mode);
   }
 
   private async explainUser(

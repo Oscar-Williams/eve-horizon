@@ -71,6 +71,8 @@ export class AccessController {
       project_id: projectId || undefined,
       permission,
       resource,
+      // A question about someone's access is not their access: no finding.
+      record: false,
     });
   }
 
