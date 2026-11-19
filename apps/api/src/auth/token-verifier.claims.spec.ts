@@ -118,6 +118,51 @@ describe('TokenVerifierService token claims', () => {
       );
     });
 
+    // A GoTrue with no GOTRUE_JWT_AUD and no GOTRUE_JWT_DEFAULT_GROUP_NAME
+    // (the Eve base and live) creates users with an empty aud and role, and its
+    // access tokens carry those empty values.
+    it.each([
+      ['empty aud and role (GoTrue with no JWT_AUD or default group)', { aud: '', role: '' }],
+      ['empty aud, role "authenticated"', { aud: '', role: 'authenticated' }],
+      ['aud "authenticated", empty role', { aud: 'authenticated', role: '' }],
+    ])('accepts a signed-in user token with %s', async (_label, claims) => {
+      const token = hs256({ sub: GOTRUE_ID, email: eveUser.email, ...claims });
+      await expect(verifier.verifyAuthorizationHeader(`Bearer ${token}`)).resolves.toMatchObject({
+        user_id: eveUser.id,
+      });
+    });
+
+    it('accepts the empty-aud, empty-role shape at the exchange', async () => {
+      const token = hs256({ sub: GOTRUE_ID, email: eveUser.email, aud: '', role: '' });
+      await expect(verifier.resolveSupabaseTokenForExchange(token)).resolves.toMatchObject({ user_id: eveUser.id });
+    });
+
+    it.each([
+      ['role anon', { aud: '', role: 'anon' }],
+      ['role service_role', { aud: '', role: 'service_role' }],
+      ['role supabase_admin', { aud: 'authenticated', role: 'supabase_admin' }],
+      ['another non-empty audience', { aud: 'other', role: '' }],
+      ['an audience list without "authenticated"', { aud: ['other'], role: 'authenticated' }],
+      ['no role claim', { aud: '' }],
+    ])('refuses a token with a subject and %s', async (_label, claims) => {
+      const token = hs256({ sub: GOTRUE_ID, email: eveUser.email, ...claims });
+      await expect(verifier.verifyAuthorizationHeader(`Bearer ${token}`)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it.each([
+      ['the anon key', { role: 'anon', iss: 'supabase' }],
+      ['the service key', { role: 'service_role', iss: 'supabase' }],
+      ['a user-shaped token with no subject', { aud: '', role: '' }],
+    ])('refuses %s', async (_label, claims) => {
+      const token = hs256(claims);
+      await expect(verifier.verifyAuthorizationHeader(`Bearer ${token}`)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      await expect(verifier.resolveSupabaseTokenForExchange(token)).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
     it('refuses such tokens at the exchange too, before any user is created or linked', async () => {
       mocks.identities.findByFingerprint.mockResolvedValue(null);
       const token = hs256({ sub: GOTRUE_ID, email: 'new@example.com', role: 'service_role', aud: 'authenticated' });
