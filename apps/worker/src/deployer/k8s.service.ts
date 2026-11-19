@@ -546,6 +546,47 @@ export class K8sService {
     }
   }
 
+  /** Secrets in a namespace matching a label selector: names, labels and annotations only. */
+  async listSecrets(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<Array<{ name: string; labels: Record<string, string>; annotations: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: { items?: k8s.V1Secret[] } };
+    try {
+      response = await this.coreApi!.listNamespacedSecret(
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector,
+      );
+    } catch (err) {
+      throw wrapK8sError(err, 'list', { kind: 'Secret', namespace });
+    }
+    return (response.body.items ?? [])
+      .map((item) => ({
+        name: item.metadata?.name ?? '',
+        labels: item.metadata?.labels ?? {},
+        annotations: item.metadata?.annotations ?? {},
+      }))
+      .filter((item) => item.name.length > 0);
+  }
+
+  /** One key of a Secret, decoded; null when the Secret or the key is absent. */
+  async readSecretValue(namespace: string, name: string, key: string): Promise<string | null> {
+    this.ensureAvailable();
+    try {
+      const response = await this.coreApi!.readNamespacedSecret(name, namespace);
+      const value = response.body.data?.[key];
+      return value === undefined ? null : Buffer.from(value, 'base64').toString('utf8');
+    } catch (err) {
+      if (isK8sNotFound(err)) return null;
+      throw wrapK8sError(err, 'read', { kind: 'Secret', name, namespace });
+    }
+  }
+
   async deleteSecret(namespace: string, name: string): Promise<void> {
     this.ensureAvailable();
     try {

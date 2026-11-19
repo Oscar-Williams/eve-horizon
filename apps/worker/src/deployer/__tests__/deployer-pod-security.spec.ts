@@ -324,7 +324,7 @@ describe('deploy: namespace Pod Security labels', () => {
     expect(labels['pod-security.kubernetes.io/warn']).toBe('baseline');
     expect(labels['pod-security.kubernetes.io/audit']).toBe('baseline');
     expect(Object.keys(labels).filter((key) => key.startsWith('pod-security.kubernetes.io/enforce'))).toEqual([]);
-    for (const call of k8s.createNamespace.mock.calls) {
+    for (const call of k8s.createNamespace.mock.calls as unknown[][]) {
       expect(call[2]).toEqual({ ownerLabel: 'eve.env_id' });
     }
   });

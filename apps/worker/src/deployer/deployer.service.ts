@@ -13,6 +13,7 @@ import {
   storageBucketQueries,
   appLinkSubscriptionQueries,
   decideSecurityRule,
+  governingSecurityProfile,
 } from '@eve/db';
 import yaml from 'yaml';
 import {
@@ -55,6 +56,8 @@ import {
   isPublicIngress,
   type ObjectStoreBucket,
   type SecurityProfile,
+  ServiceSecuritySchema,
+  type ServiceSecurity,
   type ObjectStoreIsolation,
   type TcpIngressConfig,
 } from '@eve/shared';
@@ -72,6 +75,28 @@ import {
 import { BucketProvisioner } from './bucket-provisioner';
 import { ObjectStoreProvisioner, type EnvObjectStorePlan } from './object-store-provisioner';
 import { applyAppPlacement, resolveAppPlacement, type AppPlacement } from './app-placement';
+import {
+  POD_SECURITY_RULE,
+  applyPodSecurity,
+  describePodSecurityBlocker,
+  needsImageUser,
+  parseImageUser,
+  planPodSecurity,
+  podSecurityNamespaceLabels,
+  type PodSecurityLevel,
+  type PodSecurityPlan,
+} from './pod-security';
+import {
+  JOB_SECRETS_LABEL,
+  SECRETS_HASH_ANNOTATION,
+  SECRET_DEPLOYMENT_ANNOTATION,
+  SERVICE_SECRETS_LABEL,
+  buildWorkloadSecret,
+  holdsCredentialReference,
+  sealEnvEntries,
+  secretsHash,
+  workloadSecretName,
+} from './workload-secrets';
 import {
   createAppCredentialProvisioners,
   type AppCredentialProvisioner,
@@ -211,6 +236,10 @@ interface RenderManifestResult {
   desiredTcpIngressServices: string[];
   /** Services that get no Ingress in this render: an earlier one is removed. */
   privateServiceIngresses?: PrivateServiceIngress[];
+  /** The Secret of each service rendered; others of this env are pruned. */
+  serviceSecrets?: string[];
+  /** Under the strict pod security profile, the level every pod meets. */
+  podSecurityLevel?: PodSecurityLevel;
 }
 
 type ServiceStorageConfig = {
@@ -345,20 +374,27 @@ export class DeployerService {
     }
 
     const namespace = deriveNamespace(org.slug, project.slug, environment.name, environment.namespace);
-
-    // The namespace can be user-chosen: never adopt one another env owns.
-    await this.k8sService.createNamespace(namespace, {
+    const namespaceLabels = {
       'eve.org_id': project.org_id,
       'eve.project_id': project.id,
       'eve.env_id': envId,
       'eve.env': toK8sLabelValue(environment.name, 'env'),
-    }, { ownerLabel: 'eve.env_id' });
+    };
+
+    // The namespace can be user-chosen: never adopt one another env owns.
+    await this.k8sService.createNamespace(namespace, namespaceLabels, { ownerLabel: 'eve.env_id' });
 
     const imagePullSecret = await this.ensureImagePullSecret({
       namespace,
       projectId: project.id,
       environmentId: envId,
       manifestYaml: manifest.manifest_yaml,
+    });
+
+    const podSecurity = await governingSecurityProfile(this.db, {
+      projectId: project.id,
+      governing: 'project',
+      rule: POD_SECURITY_RULE,
     });
 
     // For file:// repo URLs, we can read local secrets directly
@@ -382,7 +418,15 @@ export class DeployerService {
       imageTag: options?.imageTag,
       repoPath,
       envOverrides: environment.overrides_json ?? undefined,
+      podSecurity,
     });
+
+    if (podSecurity === 'strict') {
+      await this.k8sService.createNamespace(namespace, {
+        ...namespaceLabels,
+        ...podSecurityNamespaceLabels(renderResult.podSecurityLevel ?? 'restricted'),
+      }, { ownerLabel: 'eve.env_id' });
+    }
 
     const aliasDocuments: string[] = [];
     const desiredBoundAliases = new Set<string>();
@@ -524,6 +568,13 @@ export class DeployerService {
 
       applyStarted = true;
       await this.k8sService.applyManifest(namespace, manifestToApply);
+
+      if (renderResult.serviceSecrets) {
+        await this.garbageCollectServiceSecrets(namespace, renderResult.serviceSecrets, {
+          projectId: project.id,
+          envId,
+        });
+      }
 
       const readinessTimeoutMs = options?.timeout ? options.timeout * 1000 : 120000;
 
@@ -714,6 +765,12 @@ export class DeployerService {
       manifestYaml: params.manifestYaml,
     });
 
+    const podSecurity = await governingSecurityProfile(this.db, {
+      projectId: project.id,
+      governing: 'project',
+      rule: POD_SECURITY_RULE,
+    });
+
     const repoPath = params.repoPath ?? this.extractLocalRepoPath(project.repo_url);
     const parsed = yaml.parse(params.manifestYaml);
     const validated = ManifestSchema.safeParse(parsed);
@@ -803,10 +860,8 @@ export class DeployerService {
       managedValues: managedDbContext.managedValues,
     };
 
-    const envEntries = this.mergeEnvEntries(
-      await this.resolveServiceEnvEntries(service, interpolationContext, objectStorePlan),
-      managedTrust.envEntries,
-    );
+    const serviceEnv = await this.resolveServiceEnvEntries(service, interpolationContext, objectStorePlan);
+    const envEntries = this.mergeEnvEntries(serviceEnv.entries, managedTrust.envEntries);
     const { command, args } = this.resolveServiceCommand(service);
 
     const envSlug = toK8sName(params.envName, 'environment');
@@ -814,6 +869,8 @@ export class DeployerService {
     const attemptSlug = toK8sName(params.attemptId.slice(-8), 'job');
     const jobSlug = toK8sName(`${serviceSlug}-${attemptSlug}`, 'job');
     const jobName = combineK8sName(envSlug, jobSlug, 'job');
+    const jobSecretName = workloadSecretName(jobName);
+    const sealed = sealEnvEntries(envEntries, serviceEnv.credentialNames, jobSecretName);
 
     const labels = {
       'eve.org_id': project.org_id,
@@ -823,6 +880,45 @@ export class DeployerService {
       'eve.component': toK8sLabelValue(params.serviceName, 'component'),
       'eve.release': params.releaseId ?? 'unknown',
     };
+
+    const imageDigest = this.resolveServiceDigest(
+      params.serviceName,
+      service,
+      services as Record<string, Service>,
+      params.imageDigests,
+    );
+    // Auto-derive image from service key when build config exists but image is not explicit
+    const derivedImage = service.image || (service.build ? params.serviceName : undefined);
+    const prefixedImage = derivedImage
+      ? this.imageResolver.resolveServiceImage(derivedImage, manifest, params.projectId)
+      : undefined;
+    const resolvedImage = this.imageResolver.resolveImageRef(
+      prefixedImage,
+      imageDigest,
+      params.imageTag,
+    );
+    const image = await this.normalizeImageForKubelet(resolvedImage);
+    if (!image || typeof image !== 'string') {
+      throw new Error(`Service ${params.serviceName} missing image`);
+    }
+
+    // Decided before anything is created for the run, so a refusal leaves nothing behind.
+    const podSecurityPlan = podSecurity === 'legacy'
+      ? null
+      : await this.planServicePodSecurity({
+          profile: podSecurity,
+          service,
+          serviceName: params.serviceName,
+          image: resolvedImage,
+          ports: [],
+          scope: { envName: params.envName, orgId: project.org_id, projectId: project.id, namespace },
+          pullSecretConfig: this.pullSecretConfigReader(namespace, imagePullSecret),
+        });
+    if (podSecurity === 'strict' && podSecurityPlan?.blocker) {
+      throw new Error(
+        `The strict pod security profile refuses this job: ${describePodSecurityBlocker(params.serviceName, podSecurityPlan)} (rule ${POD_SECURITY_RULE})`,
+      );
+    }
 
     const storage = this.resolvePersistentStorage(service, params.serviceName);
     if (storage) {
@@ -850,27 +946,6 @@ export class DeployerService {
       [...volumeMounts, ...fileMounts],
       managedTrust.volumeMounts,
     );
-
-    const imageDigest = this.resolveServiceDigest(
-      params.serviceName,
-      service,
-      services as Record<string, Service>,
-      params.imageDigests,
-    );
-    // Auto-derive image from service key when build config exists but image is not explicit
-    const derivedImage = service.image || (service.build ? params.serviceName : undefined);
-    const prefixedImage = derivedImage
-      ? this.imageResolver.resolveServiceImage(derivedImage, manifest, params.projectId)
-      : undefined;
-    const resolvedImage = this.imageResolver.resolveImageRef(
-      prefixedImage,
-      imageDigest,
-      params.imageTag,
-    );
-    const image = await this.normalizeImageForKubelet(resolvedImage);
-    if (!image || typeof image !== 'string') {
-      throw new Error(`Service ${params.serviceName} missing image`);
-    }
 
     const jobSpec: k8s.V1Job = {
       apiVersion: 'batch/v1',
@@ -900,7 +975,7 @@ export class DeployerService {
               {
                 name: jobSlug,
                 image,
-                env: envEntries,
+                env: sealed.env,
                 command: command ?? undefined,
                 args: args ?? undefined,
                 volumeMounts: allVolumeMounts.length > 0 ? allVolumeMounts : undefined,
@@ -913,8 +988,33 @@ export class DeployerService {
     };
 
     applyAppPlacement(jobSpec.spec!.template.spec!, this.resolveAppPlacementWithWarnings(loadConfig()));
+    if (podSecurity === 'strict' && podSecurityPlan) {
+      applyPodSecurity(jobSpec.spec!.template.spec! as Record<string, any>, podSecurityPlan);
+    }
 
-    const result = await this.k8sService.runJob(namespace, jobSpec, (params.timeoutSeconds ?? 300) * 1000);
+    // The run's own Secret, removed when the run ends.
+    const hasJobSecret = Object.keys(sealed.data).length > 0;
+    if (hasJobSecret) {
+      await this.k8sService.applyManifest(namespace, yaml.stringify(buildWorkloadSecret({
+        name: jobSecretName,
+        labels: { ...labels, [JOB_SECRETS_LABEL]: 'true' },
+        data: sealed.data,
+      })));
+    }
+
+    let result: Awaited<ReturnType<K8sService['runJob']>>;
+    try {
+      result = await this.k8sService.runJob(namespace, jobSpec, (params.timeoutSeconds ?? 300) * 1000);
+    } finally {
+      if (hasJobSecret) {
+        try {
+          await this.k8sService.deleteSecret(namespace, jobSecretName);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`Failed to remove Secret ${jobSecretName} after the job run: ${message}`);
+        }
+      }
+    }
 
     // Clean up ConfigMaps created for x-eve.files
     for (const cmName of configMapNames) {
@@ -1025,7 +1125,10 @@ export class DeployerService {
     imageTag?: string;
     repoPath?: string;
     envOverrides?: Record<string, unknown> | null;
+    /** The project's profile for isolation.pod_security (legacy when not given). */
+    podSecurity?: SecurityProfile;
   }): Promise<RenderManifestResult> {
+    const podSecurity = params.podSecurity ?? 'legacy';
     const parsed = yaml.parse(params.manifestYaml);
     const validated = ManifestSchema.safeParse(parsed);
     if (!validated.success) {
@@ -1099,6 +1202,10 @@ export class DeployerService {
     const aliasIngresses: AliasIngressCandidate[] = [];
     const customDomainIngresses: CustomDomainIngressCandidate[] = [];
     const desiredTcpIngressServices: string[] = [];
+    const serviceSecrets: string[] = [];
+    const podSecurityRefusals: string[] = [];
+    let podSecurityLevel: PodSecurityLevel = 'restricted';
+    const pullSecretConfig = this.pullSecretConfigReader(params.namespace, params.imagePullSecret);
     const envSlug = toK8sName(params.envName, 'environment');
 
     const serviceAccount = this.objectStoreProvisioner.buildObjectStoreServiceAccount(objectStorePlan);
@@ -1197,16 +1304,18 @@ export class DeployerService {
         managedValues: managedDbContext.managedValues,
       };
 
-      const baseEnvEntries = this.mergeEnvEntries(
-        await this.resolveServiceEnvEntries(service, interpolationContext, objectStorePlan),
-        managedTrust.envEntries,
-      );
+      const serviceEnv = await this.resolveServiceEnvEntries(service, interpolationContext, objectStorePlan);
+      const baseEnvEntries = this.mergeEnvEntries(serviceEnv.entries, managedTrust.envEntries);
       const envEntries = stableEgressPlan && stableEgressPlan.mode === 'eks'
         ? this.mergeEnvEntries(baseEnvEntries, [stableEgressPlan.appEnv])
         : baseEnvEntries;
-      const finalEnvEntries = tcpIngressPlan && tcpIngressPlan.mode !== 'noop'
+      const mergedEnvEntries = tcpIngressPlan && tcpIngressPlan.mode !== 'noop'
         ? this.mergeEnvEntries(envEntries, tcpIngressPlan.envEntries)
         : envEntries;
+      // Credentials go into the service's own Secret, read through secretKeyRef.
+      const secretName = workloadSecretName(resourceName);
+      const sealed = sealEnvEntries(mergedEnvEntries, serviceEnv.credentialNames, secretName);
+      const finalEnvEntries = sealed.env;
 
       const { volumes, volumeMounts } = this.resolveServiceVolumes(service, name);
       const allVolumes = this.mergeVolumes(volumes, managedTrust.volumes);
@@ -1264,11 +1373,14 @@ export class DeployerService {
                 'eve.env_id': params.envId,
                 'eve.release': params.releaseId,
               },
-              annotations: this.buildPodAnnotations({
-                managedDbTrustHash: managedTrust.checksum,
-                objectStorePlan,
-                serviceName: name,
-              }),
+              annotations: {
+                ...this.buildPodAnnotations({
+                  managedDbTrustHash: managedTrust.checksum,
+                  objectStorePlan,
+                  serviceName: name,
+                }),
+                [SECRETS_HASH_ANNOTATION]: secretsHash(sealed.data),
+              },
             },
             spec: {
               imagePullSecrets: params.imagePullSecret ? [{ name: params.imagePullSecret }] : undefined,
@@ -1327,6 +1439,30 @@ export class DeployerService {
         applyAppPlacement(deployment.spec.template.spec as k8s.V1PodSpec, appPlacement);
       }
 
+      if (podSecurity !== 'legacy') {
+        const plan = await this.planServicePodSecurity({
+          profile: podSecurity,
+          service,
+          serviceName: name,
+          image: resolvedImage,
+          ports,
+          scope: { envName: params.envName, orgId: params.orgId, projectId: params.projectId, namespace: params.namespace },
+          pullSecretConfig,
+        });
+        if (podSecurity === 'strict') {
+          if (plan.blocker) podSecurityRefusals.push(describePodSecurityBlocker(name, plan));
+          if (plan.level === 'baseline') podSecurityLevel = 'baseline';
+          applyPodSecurity(deployment.spec.template.spec as Record<string, any>, plan);
+        }
+      }
+
+      documents.push(yaml.stringify(buildWorkloadSecret({
+        name: secretName,
+        labels: { ...labels, [SERVICE_SECRETS_LABEL]: 'true' },
+        annotations: { [SECRET_DEPLOYMENT_ANNOTATION]: resourceName },
+        data: sealed.data,
+      })));
+      serviceSecrets.push(secretName);
       documents.push(yaml.stringify(deployment));
 
       if (ports.length > 0) {
@@ -1358,6 +1494,12 @@ export class DeployerService {
         documents.push(yaml.stringify(tcpIngressPlan.serviceManifest));
         desiredTcpIngressServices.push(tcpIngressPlan.serviceName);
       }
+    }
+
+    if (podSecurityRefusals.length > 0) {
+      throw new Error(
+        `The strict pod security profile refuses this deploy: ${podSecurityRefusals.join('; ')} (rule ${POD_SECURITY_RULE})`,
+      );
     }
 
     const domain = config.EVE_DEFAULT_DOMAIN ?? '';
@@ -1590,7 +1732,106 @@ export class DeployerService {
       customDomainIngresses,
       desiredTcpIngressServices,
       privateServiceIngresses,
+      serviceSecrets,
+      ...(podSecurity === 'strict' ? { podSecurityLevel } : {}),
     };
+  }
+
+  /**
+   * Decide isolation.pod_security for one service or service job: read its
+   * image's user when the profile needs it, plan the strict context, and
+   * record the finding (audit and strict). The caller applies the plan, and
+   * refuses on a blocker, under strict only.
+   */
+  private async planServicePodSecurity(args: {
+    profile: 'audit' | 'strict';
+    service: Service;
+    serviceName: string;
+    image: string;
+    ports: number[];
+    scope: { envName: string; orgId: string; projectId: string; namespace: string };
+    pullSecretConfig: () => Promise<string | null>;
+  }): Promise<PodSecurityPlan> {
+    // Environment overrides merge into x-eve after the manifest was validated: check again.
+    const declared = ServiceSecuritySchema.safeParse(this.resolveXeve(args.service)?.security ?? {});
+    if (!declared.success) {
+      throw new Error(`x-eve.security of ${args.serviceName} is invalid: ${this.formatZodIssues(declared.error.issues)}`);
+    }
+    const security: ServiceSecurity = declared.data;
+    // Audit reports every image's user; strict reads it only when the manifest does not settle it.
+    const readImage = args.profile === 'audit' || needsImageUser(security);
+    const imageUser = readImage
+      ? parseImageUser((await this.imageResolver.readImageConfig(args.image, {
+          dockerConfigJson: await args.pullSecretConfig(),
+        }))?.user)
+      : null;
+    const plan = planPodSecurity({
+      envName: args.scope.envName,
+      serviceName: args.serviceName,
+      security,
+      imageUser,
+      ports: args.ports,
+      stableEgress: requiresStableEgress(args.service),
+    });
+    await decideSecurityRule(this.db, POD_SECURITY_RULE, {
+      orgId: args.scope.orgId,
+      projectId: args.scope.projectId,
+      governing: 'project',
+      actorType: 'deployer',
+      actorId: `${args.scope.envName}/${args.serviceName}`,
+      detail: plan.detail,
+    });
+    return plan;
+  }
+
+  /**
+   * The env's image pull credentials as a Docker config, read once from its
+   * pull Secret when first needed; null when there is none.
+   */
+  private pullSecretConfigReader(namespace: string, pullSecret: string | null | undefined): () => Promise<string | null> {
+    let read: Promise<string | null> | undefined;
+    return () => {
+      if (!pullSecret) return Promise.resolve(null);
+      read ??= this.k8sService.readSecretValue(namespace, pullSecret, '.dockerconfigjson').catch((error) => {
+        this.logger.warn(`Could not read pull secret ${pullSecret} in ${namespace}: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
+      return read;
+    };
+  }
+
+  /**
+   * Remove the Secrets this env's services no longer use. A Secret stays while
+   * the Deployment it was written for still exists (Eve does not delete the
+   * Deployment of a service dropped from the manifest, and its pods would not
+   * restart without it). Only Secrets Eve wrote for this project and env, by
+   * label, are considered. A failure is logged: the deploy itself succeeded.
+   */
+  private async garbageCollectServiceSecrets(
+    namespace: string,
+    desired: string[],
+    scope: { projectId: string; envId: string },
+  ): Promise<void> {
+    try {
+      const keep = new Set(desired);
+      const existing = await this.k8sService.listSecrets(
+        namespace,
+        `${SERVICE_SECRETS_LABEL}=true,eve.project_id=${scope.projectId},eve.env_id=${scope.envId}`,
+      );
+      for (const secret of existing) {
+        if (keep.has(secret.name)) continue;
+        const deployment = secret.annotations[SECRET_DEPLOYMENT_ANNOTATION];
+        if (deployment && await this.k8sService.deploymentExists(namespace, deployment)) {
+          this.logger.log(`Keeping Secret ${secret.name}: Deployment ${deployment} still exists in ${namespace}`);
+          continue;
+        }
+        await this.k8sService.deleteSecret(namespace, secret.name);
+        this.logger.log(`Deleted Secret ${secret.name} of a service no longer deployed from ${namespace}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not prune service Secrets in ${namespace}: ${message}`);
+    }
   }
 
   /**
@@ -2361,8 +2602,10 @@ export class DeployerService {
       managedValues?: Map<string, string>;
     },
     objectStorePlan?: EnvObjectStorePlan,
-  ): Promise<k8s.V1EnvVar[]> {
+  ): Promise<{ entries: k8s.V1EnvVar[]; credentialNames: Set<string> }> {
     const config = loadConfig();
+    // Names whose value is a credential; they reach the pod through a Secret.
+    const credentialNames = new Set<string>();
 
     // Platform-injected env vars (can be overridden by user-defined vars)
     const platformEnvVars: k8s.V1EnvVar[] = [
@@ -2388,6 +2631,7 @@ export class DeployerService {
     });
     if (tokenResult) {
       platformEnvVars.push({ name: 'EVE_SERVICE_TOKEN', value: tokenResult.access_token });
+      credentialNames.add('EVE_SERVICE_TOKEN');
     } else {
       this.logger.warn(
         `Could not mint service token for ${context.componentName} — app won't be able to authenticate to Eve API`,
@@ -2397,6 +2641,7 @@ export class DeployerService {
     const appLinkEnvVars = await this.resolveAppLinkEnvVars(context);
     for (const entry of appLinkEnvVars) {
       platformEnvVars.push(entry);
+      if (entry.name.endsWith('_TOKEN')) credentialNames.add(entry.name);
     }
 
     // Object store bucket provisioning and env var injection
@@ -2407,10 +2652,10 @@ export class DeployerService {
 
     // User-defined env vars from manifest
     const userEnvVars = service.environment && typeof service.environment === 'object'
-      ? Object.entries(service.environment as Record<string, string>).map(([key, value]) => ({
-          name: key,
-          value: this.interpolateValue(String(value), context),
-        }))
+      ? Object.entries(service.environment as Record<string, string>).map(([key, value]) => {
+          if (holdsCredentialReference(String(value))) credentialNames.add(key);
+          return { name: key, value: this.interpolateValue(String(value), context) };
+        })
       : [];
 
     // Merge: platform vars first, then user vars (user can override platform vars)
@@ -2419,7 +2664,7 @@ export class DeployerService {
       envMap.set(entry.name, entry);
     }
 
-    return Array.from(envMap.values());
+    return { entries: Array.from(envMap.values()), credentialNames };
   }
 
   private async resolveAppLinkEnvVars(context: {

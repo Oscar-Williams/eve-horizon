@@ -1,23 +1,98 @@
 import { Logger } from '@nestjs/common';
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   loadConfig,
   isEveRegistry,
   eveRegistryImageRef,
   getRegistryConfig,
+  serviceHelperEnv,
   type Manifest,
   type Service,
 } from '@eve/shared';
 import { K8sService } from './k8s.service';
+
+/** The parts of an image's config the deployer reads. */
+export interface ImageConfig {
+  /** The image's `USER` as written; '' when it sets none (root). */
+  user: string;
+}
+
+/** Runs `crane` with these arguments and extra env; resolves to its stdout. */
+export type CraneRunner = (args: string[], env: Record<string, string | undefined>) => Promise<string>;
+
+const CRANE_TIMEOUT_MS = 30_000;
+const IMAGE_CONFIG_CACHE_MAX = 500;
+
+const runCrane: CraneRunner = (args, env) => new Promise((resolve, reject) => {
+  execFile('crane', args, {
+    env: serviceHelperEnv(env),
+    timeout: CRANE_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
+  }, (error, stdout, stderr) => {
+    if (error) {
+      reject(new Error(String(stderr || error.message).trim()));
+      return;
+    }
+    resolve(stdout);
+  });
+});
 
 /**
  * ImageResolver - Resolves image references, digests, and registry hosts for
  * rendered workloads. Extracted from DeployerService.
  */
 export class ImageResolver {
+  /** Configs of digest-pinned images, which cannot change. */
+  private readonly configCache = new Map<string, ImageConfig>();
+
   constructor(
     private readonly k8sService: K8sService,
     private readonly logger: Logger,
+    private readonly crane: CraneRunner = runCrane,
   ) {}
+
+  /**
+   * Read an image's config with `crane config`, without pulling its layers.
+   * Pull credentials, when given, go into a DOCKER_CONFIG directory made for
+   * this call and removed after it. Null when the config cannot be read.
+   */
+  async readImageConfig(image: string, options: { dockerConfigJson?: string | null } = {}): Promise<ImageConfig | null> {
+    const cached = this.configCache.get(image);
+    if (cached) return cached;
+    let dir: string | undefined;
+    try {
+      if (options.dockerConfigJson) {
+        dir = await fs.mkdtemp(join(tmpdir(), 'eve-image-config-'));
+        await fs.writeFile(join(dir, 'config.json'), options.dockerConfigJson, { mode: 0o600 });
+      }
+      const args = [...(this.isClusterLocalRegistry(image) ? ['--insecure'] : []), 'config', image];
+      const output = await this.crane(args, { DOCKER_CONFIG: dir });
+      const parsed = JSON.parse(output) as { config?: { User?: unknown } } | null;
+      const user = parsed?.config?.User;
+      const config: ImageConfig = { user: typeof user === 'string' ? user : '' };
+      if (image.includes('@sha256:')) {
+        if (this.configCache.size >= IMAGE_CONFIG_CACHE_MAX) this.configCache.clear();
+        this.configCache.set(image, config);
+      }
+      return config;
+    } catch (error) {
+      this.logger.warn(`Could not read the image config of ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    } finally {
+      if (dir) await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** An in-cluster or loopback registry, which serves plain HTTP. */
+  private isClusterLocalRegistry(image: string): boolean {
+    const firstSlash = image.indexOf('/');
+    if (firstSlash <= 0) return false;
+    const host = image.slice(0, firstSlash).replace(/:\d+$/, '');
+    return host === 'localhost' || host === '127.0.0.1' || /\.svc(\.cluster\.local)?$/.test(host);
+  }
 
   /**
    * Resolve the registry host from the manifest's registry config.

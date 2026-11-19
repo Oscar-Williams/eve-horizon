@@ -203,9 +203,9 @@ describe('DeployerService – stable egress (hostNetwork on EKS)', () => {
     expect(deployment.spec.template.spec.containers).toHaveLength(1);
     expect(deployment.spec.template.spec.volumes).toBeUndefined();
 
-    // No Secret should be emitted alongside the Deployment.
+    // No Secret beyond the service's own (its env credentials) is emitted.
     const secrets = docs.filter((d: any) => d?.kind === 'Secret');
-    expect(secrets).toHaveLength(0);
+    expect(secrets.map((d: any) => d.metadata.labels['eve.service_secrets'])).toEqual(['true']);
   });
 
   // ── Compute-model branching ──────────────────────────────────────────

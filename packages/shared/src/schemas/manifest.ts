@@ -282,6 +282,27 @@ export const ServiceNetworkingSchema = z.object({
 
 export type ServiceNetworking = z.infer<typeof ServiceNetworkingSchema>;
 
+/**
+ * Capabilities a service may add back under the strict pod security profile
+ * (`isolation.pod_security`); every other one stays dropped.
+ */
+export const SERVICE_SECURITY_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'SETUID', 'SETGID', 'DAC_OVERRIDE'] as const;
+
+/**
+ * How a service's containers run under the strict pod security profile.
+ * Strict needs a numeric user: `run_as_user` (and `run_as_group`), else the
+ * image's own `USER` when it is numeric. `run_as_root` and `capabilities` are
+ * the opt-outs. Read only under the strict profile; audit reports on them.
+ */
+export const ServiceSecuritySchema = z.object({
+  run_as_user: z.number().int().min(0).max(2147483647).optional(),
+  run_as_group: z.number().int().min(0).max(2147483647).optional(),
+  run_as_root: z.boolean().optional(),
+  capabilities: z.array(z.enum(SERVICE_SECURITY_CAPABILITIES)).optional(),
+}).strict();
+
+export type ServiceSecurity = z.infer<typeof ServiceSecuritySchema>;
+
 export const ServiceXeveSchema: z.ZodTypeAny = z.object({
   role: z.string().optional(),
   ingress: IngressConfigSchema.optional(),
@@ -303,6 +324,7 @@ export const ServiceXeveSchema: z.ZodTypeAny = z.object({
   managed: ManagedDbConfigSchema.optional(),
   object_store: ObjectStoreConfigSchema.optional(),
   networking: ServiceNetworkingSchema.optional(),
+  security: ServiceSecuritySchema.optional(),
   audit_log_table: z.string().optional(),
   request_id_column: z.string().optional(),
   /** Additional permissions for the auto-injected service token (merged with read-only defaults). */

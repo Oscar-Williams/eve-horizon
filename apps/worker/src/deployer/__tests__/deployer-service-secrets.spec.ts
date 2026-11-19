@@ -247,9 +247,9 @@ describe('DeployerService: service job Secrets', () => {
       attemptId: 'attempt_12345678',
     });
 
-    const job = k8s.runJob.mock.calls[0][1] as any;
+    const job = (k8s.runJob.mock.calls[0] as unknown[])[1] as any;
     const env = job.spec.template.spec.containers[0].env;
-    const secretDoc = yaml.parse(k8s.applyManifest.mock.calls[0][1] as string);
+    const secretDoc = yaml.parse((k8s.applyManifest.mock.calls[0] as unknown[])[1] as string);
 
     expect(JSON.stringify(job)).not.toContain('hunter2-db');
     expect(env).toEqual(expect.arrayContaining([
