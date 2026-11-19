@@ -5,6 +5,7 @@ import {
   Param,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -27,6 +28,7 @@ import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { ResourcesService } from './resources.service.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ScopedAccessService } from '../auth/scoped-access.service.js';
+import { RbacService } from '../auth/rbac.service.js';
 import { CorrelationId, CurrentUser } from '../common/request-decorators.js';
 
 @ApiTags('resources')
@@ -36,6 +38,7 @@ export class ResourcesController {
   constructor(
     private readonly resources: ResourcesService,
     private readonly scopedAccess: ScopedAccessService,
+    private readonly rbac: RbacService,
   ) {}
 
   @RequirePermission('orgdocs:read', 'jobs:read')
@@ -85,6 +88,17 @@ export class ResourcesController {
         user: caller,
         request_id: correlationId,
       });
+
+      // A job's attachments belong to its project: the caller needs jobs:read
+      // there, under the project's profile. A job that does not exist is left
+      // to the resolver, which answers 404.
+      const owner = await this.rbac.getResourceProjectContext('job', parsed.jobId).catch((error: unknown) => {
+        if (error instanceof NotFoundException) return null;
+        throw error;
+      });
+      if (owner) {
+        await this.rbac.requireProjectAccessFromOrgRoute(caller, owner.project_id, ['jobs:read'], { job: parsed.jobId });
+      }
     }
 
     return this.resources.resolveResources(orgId, body, correlationId);

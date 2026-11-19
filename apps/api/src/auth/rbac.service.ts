@@ -13,6 +13,8 @@ export const IMPLICIT_PROJECT_RULE = 'access.implicit_project';
 export const UNRESOLVED_PROJECT_RULE = 'access.unresolved_project';
 /** A chat sender with no Eve user, or no `jobs:write` on the project, started agent work (P1-5). */
 export const CHAT_SENDER_RULE = 'chat.sender_rights';
+/** An org-addressed route reached a project resource the caller holds no right to there (P1-5). */
+export const ORG_ROUTE_PROJECT_RULE = 'access.org_route_project';
 
 /** A test the caller's permissions must pass; used to tell whether a request depends on a grant. */
 export type PermissionNeed = (permissions: ReadonlySet<string>) => boolean;
@@ -249,6 +251,50 @@ export class RbacService implements TokenScopeResolver {
       if (!effective.has(perm)) {
         throw new ForbiddenException(`Missing required permission: ${perm}`);
       }
+    }
+  }
+
+  /**
+   * An org-addressed route (org threads, resource resolution, org search)
+   * that reaches a resource of a project holds the caller to the rights a
+   * project route would need there, under the project's profile: `legacy`
+   * does not look, `audit` records a refusal and allows, `strict` refuses
+   * (403). System admins pass.
+   */
+  async requireProjectAccessFromOrgRoute(
+    user: AuthUser | undefined,
+    projectId: string,
+    required: readonly Permission[],
+    detail: Record<string, string> = {},
+  ): Promise<void> {
+    if (!user || user.is_admin || !this.security) return;
+    const profile = await this.security.effectiveProfile({ projectId }, 'project');
+    if (profile === 'legacy') return;
+    try {
+      await this.requirePermissions(user, projectId, required);
+    } catch (error) {
+      if (!(error instanceof ForbiddenException)) throw error;
+      await this.security.gate(
+        ORG_ROUTE_PROJECT_RULE,
+        { governing: 'project', projectId, actor: user, detail: { ...detail, permission: required.join(',') } },
+        'This resource belongs to a project you have no access to',
+      );
+    }
+  }
+
+  /** {@link requireProjectAccessFromOrgRoute} as a test: false where it would refuse. */
+  async mayReachProjectFromOrgRoute(
+    user: AuthUser | undefined,
+    projectId: string,
+    required: readonly Permission[],
+    detail: Record<string, string> = {},
+  ): Promise<boolean> {
+    try {
+      await this.requireProjectAccessFromOrgRoute(user, projectId, required, detail);
+      return true;
+    } catch (error) {
+      if (error instanceof ForbiddenException) return false;
+      throw error;
     }
   }
 

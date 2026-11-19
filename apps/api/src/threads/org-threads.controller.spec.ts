@@ -111,7 +111,8 @@ describe('org thread routes stay within the path org', () => {
     mocks.messages.listByThread.mockResolvedValue([]);
     mocks.messages.countByThread.mockResolvedValue(0);
     mocks.events.create.mockResolvedValue(undefined);
-    controller = new OrgThreadsController(new ThreadsService(fakeDb as never));
+    // Project rights are covered in auth/org-routes.project-wall.spec.ts.
+    controller = new OrgThreadsController(new ThreadsService(fakeDb as never), { requireProjectAccessFromOrgRoute: async () => undefined } as never);
   });
 
   const message = { body: 'hello', direction: 'outbound' };

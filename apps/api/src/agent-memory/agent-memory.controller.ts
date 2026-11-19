@@ -4,6 +4,7 @@ import {
   DefaultValuePipe,
   Delete,
   Get,
+  NotFoundException,
   Param,
   ParseIntPipe,
   Post,
@@ -15,6 +16,8 @@ import { RequirePermission } from '../auth/permission.decorator.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { ScopedAccessService } from '../auth/scoped-access.service.js';
 import { AgentMemoryService } from './agent-memory.service.js';
+import { RbacService } from '../auth/rbac.service.js';
+import type { Permission } from '../auth/permissions.js';
 import { CorrelationId, CurrentUser } from '../common/request-decorators.js';
 
 function normalizePath(path: string): string {
@@ -35,6 +38,7 @@ export class AgentMemoryController {
   constructor(
     private readonly memory: AgentMemoryService,
     private readonly scopedAccess: ScopedAccessService,
+    private readonly rbac: RbacService,
   ) {}
 
   @RequirePermission('orgdocs:write')
@@ -355,11 +359,37 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
-    return this.memory.unifiedSearch(orgId, q, {
+    const result = await this.memory.unifiedSearch(orgId, q, {
       sources: parseCsv(sources),
       limit,
       agent,
     });
+    return { ...result, data: await this.withinProjectRights(result.data, caller) };
+  }
+
+  /**
+   * Results that belong to a project (job attachments, events) stay only
+   * where the caller holds the right a project route would need there, under
+   * the project's profile (see RbacService.requireProjectAccessFromOrgRoute).
+   */
+  private async withinProjectRights<T extends Record<string, unknown>>(rows: T[], caller: AuthUser | undefined): Promise<T[]> {
+    const needs: Record<string, Permission> = { attachments: 'jobs:read', events: 'events:read' };
+    const decided = new Map<string, boolean>();
+    const kept: T[] = [];
+    for (const row of rows) {
+      const permission = needs[String(row.source)];
+      const projectId = typeof row.project_id === 'string' ? row.project_id : null;
+      if (!permission || !projectId) {
+        kept.push(row);
+        continue;
+      }
+      const key = `${projectId}|${permission}`;
+      if (!decided.has(key)) {
+        decided.set(key, await this.rbac.mayReachProjectFromOrgRoute(caller, projectId, [permission], { listing: 'org_search' }));
+      }
+      if (decided.get(key)) kept.push(row);
+    }
+    return kept;
   }
 
   @RequirePermission('threads:write')
@@ -389,6 +419,15 @@ export class AgentMemoryController {
       user: caller,
       request_id: correlationId,
     });
+    // A project's thread is read with that project's rights. An org thread
+    // has no project, and an unknown thread is left to the service's 404.
+    const owner = await this.rbac.getResourceProjectContext('thread', threadId).catch((error: unknown) => {
+      if (error instanceof NotFoundException) return null;
+      throw error;
+    });
+    if (owner) {
+      await this.rbac.requireProjectAccessFromOrgRoute(caller, owner.project_id, ['threads:read'], { thread: threadId });
+    }
     return this.memory.distillThread(orgId, threadId, body, caller?.user_id, correlationId);
   }
 }

@@ -412,6 +412,7 @@ export class AgentMemoryService {
       const attRows = await this.db<Array<{
         id: string;
         job_id: string;
+        project_id: string;
         name: string;
         content: string;
         created_at: Date;
@@ -420,6 +421,7 @@ export class AgentMemoryService {
         SELECT
           a.id,
           a.job_id,
+          j.project_id,
           a.name,
           a.content,
           a.created_at,
@@ -437,6 +439,7 @@ export class AgentMemoryService {
           source: 'attachments',
           attachment_id: row.id,
           job_id: row.job_id,
+          project_id: row.project_id,
           name: row.name,
           snippet: row.content.slice(0, 240),
           score: Number(row.rank ?? 0),

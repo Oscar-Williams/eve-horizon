@@ -15,7 +15,8 @@ function controller() {
     createMessage: vi.fn(async () => ({})),
     listMessages: vi.fn(async () => ({ messages: [] })),
   };
-  return { threads, controller: new OrgThreadsController(threads as never) };
+  // Project rights are covered in auth/org-routes.project-wall.spec.ts.
+  return { threads, controller: new OrgThreadsController(threads as never, { requireProjectAccessFromOrgRoute: async () => undefined } as never) };
 }
 
 /** Calls a route handler with its arguments in order (the caller is the last one). */

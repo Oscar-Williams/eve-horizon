@@ -28,6 +28,11 @@ describe('ResourcesController', () => {
     controller = new ResourcesController(
       resources as unknown as ResourcesService,
       scopedAccess as unknown as ScopedAccessService,
+      // Project rights are covered in auth/org-routes.project-wall.spec.ts.
+      {
+        getResourceProjectContext: vi.fn(async () => ({ project_id: 'proj_1', org_id: 'org_1' })),
+        requireProjectAccessFromOrgRoute: vi.fn(async () => undefined),
+      } as never,
     );
   });
 

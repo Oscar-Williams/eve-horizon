@@ -37,12 +37,17 @@ import { CurrentUser } from '../common/request-decorators.js';
 import { isScopedToken } from '../auth/token-scope.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { ThreadsService } from './threads.service.js';
+import { RbacService } from '../auth/rbac.service.js';
+import type { Permission } from '../auth/permissions.js';
 
 @ApiTags('org-threads')
 @ApiBearerAuth()
 @Controller('orgs/:org_id/threads')
 export class OrgThreadsController {
-  constructor(private readonly threads: ThreadsService) {}
+  constructor(
+    private readonly threads: ThreadsService,
+    private readonly rbac: RbacService,
+  ) {}
 
   @RequirePermission('threads:write')
   @Post()
@@ -101,7 +106,7 @@ export class OrgThreadsController {
     @Param('thread_id') threadId: string,
     @CurrentUser() caller?: AuthUser,
   ): Promise<ThreadResponse> {
-    return this.requireThreadInOrg(orgId, threadId, caller);
+    return this.requireThreadInOrg(orgId, threadId, caller, 'threads:read');
   }
 
   @RequirePermission('threads:write')
@@ -120,7 +125,7 @@ export class OrgThreadsController {
     @Body(new ZodValidationPipe(CreateThreadMessageRequestSchema)) body: CreateThreadMessageRequest,
     @CurrentUser() caller?: AuthUser,
   ): Promise<ThreadMessageResponse> {
-    await this.requireThreadInOrg(orgId, threadId, caller);
+    await this.requireThreadInOrg(orgId, threadId, caller, 'threads:write');
     return this.threads.createMessage(threadId, body);
   }
 
@@ -142,7 +147,7 @@ export class OrgThreadsController {
     @Query('limit') limit?: string,
     @CurrentUser() caller?: AuthUser,
   ): Promise<ThreadMessageListResponse> {
-    await this.requireThreadInOrg(orgId, threadId, caller);
+    await this.requireThreadInOrg(orgId, threadId, caller, 'threads:read');
     return this.threads.listMessages(threadId, {
       since: since ? new Date(since) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
@@ -155,11 +160,24 @@ export class OrgThreadsController {
    * A job or service token, minted for one project, gets only org threads and
    * its own project's threads.
    */
-  private async requireThreadInOrg(orgId: string, threadId: string, caller?: AuthUser): Promise<ThreadResponse> {
+  /**
+   * The thread, in this org. A thread that belongs to a project also needs
+   * the right a project thread route would need there, under the project's
+   * profile (see RbacService.requireProjectAccessFromOrgRoute).
+   */
+  private async requireThreadInOrg(
+    orgId: string,
+    threadId: string,
+    caller: AuthUser | undefined,
+    permission: Permission,
+  ): Promise<ThreadResponse> {
     const thread = await this.threads.findByIdInOrg(threadId, orgId);
     const projectToken = caller && isScopedToken(caller) && caller.project_id ? caller : undefined;
     if (!thread || (projectToken && thread.project_id && thread.project_id !== projectToken.project_id)) {
       throw new NotFoundException(`Thread ${threadId} not found`);
+    }
+    if (thread.project_id) {
+      await this.rbac.requireProjectAccessFromOrgRoute(caller, thread.project_id, [permission], { thread: threadId });
     }
     return thread;
   }
