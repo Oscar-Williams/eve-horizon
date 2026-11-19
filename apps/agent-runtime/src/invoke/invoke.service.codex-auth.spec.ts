@@ -226,6 +226,21 @@ describe('agent-runtime codex auth provenance', () => {
       await fs.mkdir(jobUserHome, { recursive: true });
     });
 
+    it("is not used for a job whose credentials come from its secrets only (the project's strict profile)", async () => {
+      vi.stubEnv('EVE_RUNTIME', 'k8s');
+      vi.stubEnv('CODEX_AUTH_JSON', Buffer.from(operatorJson).toString('base64'));
+      vi.stubEnv('CODEX_OAUTH_ACCESS_TOKEN', 'operator-access-token');
+      await fs.mkdir(configDir, { recursive: true });
+      await fs.writeFile(path.join(configDir, 'auth.json'), JSON.stringify({ tokens: { access_token: 'config-dir-file' } }));
+      const { resolveCodeAuthFor } = makeService();
+
+      await expect(resolveCodeAuthFor(
+        { ...invocation, credentials_from_secrets_only: true } as HarnessInvocation,
+        [],
+        { configDir, jobUserHome } as never,
+      )).rejects.toThrow(/Missing code auth/);
+    });
+
     it("serves a job without an allowlist from the runtime's own env", async () => {
       vi.stubEnv('EVE_RUNTIME', 'k8s');
       vi.stubEnv('CODEX_AUTH_JSON', Buffer.from(operatorJson).toString('base64'));
