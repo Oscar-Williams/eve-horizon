@@ -58,6 +58,8 @@ const m = vi.hoisted(() => {
       job('a-run', { phase: 'active', review_required: 'none', review_status: null, hints: { workflow_root: true } }),
       job('a-run.1', { parent_id: 'a-run', depth: 1, step_name: 'draft' }),
       job('a-run.2', { parent_id: 'a-run', depth: 1, step_name: 'publish', phase: 'active', review_required: 'none', review_status: null }),
+      job('a-run.3', { parent_id: 'a-run', depth: 1, step_name: 'sign-off', phase: 'active', review_required: 'human', review_status: null }),
+      job('solo-h', { phase: 'active', review_required: 'human', review_status: null }),
     ];
     return new Map(rows.map((row) => [row.id, row]));
   }
@@ -102,10 +104,13 @@ vi.mock('@eve/db', async (importOriginal) => {
   };
 });
 
-/** Answers the run-root probe; every other raw query returns nothing. */
+/** Answers the run-root probe and the actor lock; every other raw query returns nothing. */
 const db = Object.assign(
   async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');
+    if (/FOR UPDATE/.test(sql)) {
+      return [{ id: values[0] }];
+    }
     if (/WHERE parent_id = \?/.test(sql) && /step_name IS NOT NULL/.test(sql)) {
       return [...m.state.jobs.values()].filter((row) => row.parent_id === values[0] && row.step_name).map((row) => ({ id: row.id }));
     }
@@ -262,3 +267,60 @@ describe('job approvals under the strict profile', () => {
     expect(m.jobQ.updatePhase).toHaveBeenCalledWith('solo-r', 'done');
   });
 });
+
+describe('changes that settle or remove a review, under the strict profile', () => {
+  beforeEach(() => {
+    m.state.projectProfile = 'strict';
+  });
+
+  it("refuse a job token lowering review_required before review, on its own job or another's", async () => {
+    const c = controller();
+    await expect(route(c, 'update', 'solo-h', { review_required: 'none' }, jobToken('solo-h'))).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'update', 'solo-h', { review_required: 'agent' }, OWNER_AGENT)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("refuse a run step's token lowering review_required on its own step or another step of the run", async () => {
+    const c = controller();
+    await expect(route(c, 'update', 'a-run.3', { review_required: 'none' }, jobToken('a-run.3'))).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'update', 'a-run.3', { review_required: 'none' }, jobToken('a-run.2'))).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('refuse a job token sending a job in review back to active, or cancelling it', async () => {
+    const c = controller();
+    await expect(route(c, 'update', 'solo-r', { phase: 'active' }, OWNER_AGENT)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(route(c, 'update', 'solo-r', { phase: 'cancelled' }, OWNER_AGENT)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(m.jobQ.updatePhase).not.toHaveBeenCalled();
+  });
+
+  it("accept a person's own token lowering review_required, and a job token raising it", async () => {
+    const c = controller();
+    await expect(route(c, 'update', 'solo-h', { review_required: 'none' }, OWNER)).resolves.toBeDefined();
+    await expect(route(c, 'update', 'solo-1', { review_required: 'human' }, OWNER_AGENT)).resolves.toBeDefined();
+  });
+});
+
+describe('changes that settle or remove a review, under the audit profile', () => {
+  beforeEach(() => {
+    m.state.projectProfile = 'audit';
+  });
+
+  it("allow a run step's token lowering review_required and record it under both rules", async () => {
+    await expect(route(controller(), 'update', 'a-run.3', { review_required: 'none' }, jobToken('a-run.2'))).resolves.toBeDefined();
+
+    expect(findingsFor('jobs.approve_token')).toEqual([
+      expect.objectContaining({ actor_type: 'job', actor_id: 'a-run.2', detail: expect.objectContaining({ job_id: 'a-run.3' }) }),
+    ]);
+    expect(findingsFor('jobs.run_step_change')).toEqual([
+      expect.objectContaining({ actor_type: 'job', actor_id: 'a-run.2', detail: expect.objectContaining({ job_id: 'a-run.3' }) }),
+    ]);
+  });
+
+  it('allow a job token sending a job in review back to active, and record it', async () => {
+    await expect(route(controller(), 'update', 'solo-r', { phase: 'active' }, OWNER_AGENT)).resolves.toBeDefined();
+
+    expect(findingsFor('jobs.approve_token')).toEqual([
+      expect.objectContaining({ actor_type: 'job', actor_id: 'solo-1', detail: expect.objectContaining({ job_id: 'solo-r', action: 'reject' }) }),
+    ]);
+  });
+});
+
