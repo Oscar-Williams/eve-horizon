@@ -949,8 +949,10 @@ Values may be literals or `${secret.KEY}` placeholders. Other `${...}`
 expressions are rejected, and the merged object must fit the job
 `env_overrides` size limit. Some names are reserved, matched in any case:
 
-- platform variables such as `EVE_*`, `PATH`, `HOME` and `NODE_OPTIONS`, and
-  model provider credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+- platform variables such as `EVE_*`, `PATH` and `HOME`; names that make a
+  process load code or libraries (`NODE_OPTIONS`, `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`, `ENV`, `PYTHONPATH`,
+  `PYTHONSTARTUP`); and model provider credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
   `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_AUTH_JSON`,
   `CODEX_OAUTH_ACCESS_TOKEN`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
   `Z_AI_API_KEY`, `ZAI_API_KEY`) cannot be overridden: a job gets provider
@@ -958,7 +960,8 @@ expressions are rejected, and the merged object must fit the job
 - model routing names (any name ending `_BASE_URL`, `OPENAI_API_BASE`,
   `ANTHROPIC_CUSTOM_HEADERS`, `CLAUDE_CODE_USE_BEDROCK`,
   `CLAUDE_CODE_USE_VERTEX`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
-  `NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`) may
+  `NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`) may
   be set only to a single `${secret.KEY}`, and at run time that secret must
   come from the project or its org. A literal value, or a user secret, is
   refused.

@@ -80,11 +80,28 @@ const MODEL_ROUTING_ENV_KEYS = new Set([
   'NODE_TLS_REJECT_UNAUTHORIZED',
   'NODE_EXTRA_CA_CERTS',
   'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
 ]);
 const MODEL_ROUTING_ENV_SUFFIX = '_BASE_URL';
 
-// Names that make a process load code before it starts.
-const CODE_LOADING_ENV_KEYS = new Set(['NODE_OPTIONS', 'LD_PRELOAD', 'BASH_ENV']);
+// Names that make a process load code or libraries before it starts.
+const CODE_LOADING_ENV_KEYS = new Set([
+  'NODE_OPTIONS',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'BASH_ENV',
+  'ENV',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+]);
+const CODE_LOADING_ENV_PREFIXES = ['DYLD_'];
+
+/** Whether a name makes a process load code or libraries before it starts. */
+function isCodeLoadingEnvKey(name: string): boolean {
+  return CODE_LOADING_ENV_KEYS.has(name) || CODE_LOADING_ENV_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
 
 // Only ${secret.KEY} placeholders are permitted inside env override values.
 // Match any ${...} and verify it starts with `secret.` with an uppercase identifier.
@@ -103,7 +120,7 @@ export function isModelRoutingEnvKey(key: string): boolean {
  * `strict` profile: the routing names, and names that load code.
  */
 export function isUserSecretWithheldKey(key: string): boolean {
-  return isModelRoutingEnvKey(key) || CODE_LOADING_ENV_KEYS.has(key.toUpperCase());
+  return isModelRoutingEnvKey(key) || isCodeLoadingEnvKey(key.toUpperCase());
 }
 
 function isEveOwnedEnvKey(name: string): boolean {
@@ -112,7 +129,7 @@ function isEveOwnedEnvKey(name: string): boolean {
 
 export function isReservedEnvKey(key: string): boolean {
   const name = key.toUpperCase();
-  return isEveOwnedEnvKey(name) || isModelRoutingEnvKey(name);
+  return isEveOwnedEnvKey(name) || isCodeLoadingEnvKey(name) || isModelRoutingEnvKey(name);
 }
 
 /**
