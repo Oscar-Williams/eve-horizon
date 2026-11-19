@@ -460,9 +460,10 @@ export class JobsController {
   })
   async addDependency(
     @Param('job_id') jobId: string,
-    @Body() body: AddDependencyRequest
+    @Body() body: AddDependencyRequest,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<{ success: boolean; message: string }> {
-    return this.jobsService.addDependency(jobId, body);
+    return this.jobsService.addDependency(jobId, body, caller);
   }
 
   @RequirePermission('jobs:write')
@@ -477,8 +478,9 @@ export class JobsController {
   async removeDependency(
     @Param('job_id') jobId: string,
     @Param('related_job_id') relatedJobId: string,
+    @CurrentUser() caller?: AuthUser,
   ): Promise<{ success: boolean; message: string }> {
-    return this.jobsService.removeDependency(jobId, relatedJobId);
+    return this.jobsService.removeDependency(jobId, relatedJobId, caller);
   }
 
   // ==========================================================================

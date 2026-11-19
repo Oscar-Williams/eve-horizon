@@ -378,7 +378,8 @@ belongs to), a job token of one of the run's compiled steps, or a project admin
 (`jobs:admin`). Anyone else gets 403, including the actor's agents outside the
 run and a no-user token of another run. Under `audit` the change is allowed and
 recorded as a finding. Under `strict`, cancelling a compiled step also cancels
-the jobs that depend on it, transitively, as a failure does.
+the steps of its own run that depend on it, transitively; edges to jobs outside
+the run are not followed.
 
 The body is validated against `UpdateJobRequest` (for example `title` is at
 most 500 characters and `priority` is 0-4); an invalid body is refused with 400.
@@ -427,8 +428,9 @@ its compiled steps, judged from the job records); or a project admin
 
 The dependencies of a compiled workflow or pipeline step (`step_name` set) come
 from its definition: adding or removing one through the dependency routes is
-refused with 409. Edges between other jobs, including a job that depends on a
-run step, are unaffected.
+refused with 409. Adding or removing a dependency of a run root is held to rule
+`jobs.run_step_change` like any other change to it. Edges between other jobs,
+including a job that depends on a run step, are unaffected.
 
 Workflow invocation creates every step in `backlog`, wires all blocking
 relations, then releases the complete graph to `ready`. A wiring failure does

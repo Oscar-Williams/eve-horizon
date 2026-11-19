@@ -1786,12 +1786,13 @@ export class JobsService {
   /**
    * Add a dependency to a job
    */
-  async addDependency(jobId: string, data: AddDependencyRequest): Promise<{ success: boolean; message: string }> {
+  async addDependency(jobId: string, data: AddDependencyRequest, caller?: AuthUser): Promise<{ success: boolean; message: string }> {
     const job = await this.jobs.findById(jobId);
     if (!job) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
     this.assertEdgesFromDefinition(job);
+    await this.guardRunJob(job, caller, 'add a dependency to');
     await this.requireJobInProject(data.related_job_id, job.project_id);
     await this.jobs.addDependency(jobId, data.related_job_id, data.relation_type ?? 'blocks');
     return { success: true, message: `Added dependency: ${jobId} depends on ${data.related_job_id}` };
@@ -1800,12 +1801,13 @@ export class JobsService {
   /**
    * Remove a dependency from a job
    */
-  async removeDependency(jobId: string, relatedJobId: string): Promise<{ success: boolean; message: string }> {
+  async removeDependency(jobId: string, relatedJobId: string, caller?: AuthUser): Promise<{ success: boolean; message: string }> {
     const job = await this.jobs.findById(jobId);
     if (!job) {
       throw new NotFoundException(`Job ${jobId} not found`);
     }
     this.assertEdgesFromDefinition(job);
+    await this.guardRunJob(job, caller, 'remove a dependency of');
     const removed = await this.jobs.removeDependency(jobId, relatedJobId);
     if (!removed) {
       throw new NotFoundException(`Dependency from ${jobId} to ${relatedJobId} not found`);
