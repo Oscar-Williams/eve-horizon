@@ -164,10 +164,11 @@ export class OrgDocumentsController {
       org_id: orgId,
       permission: 'orgdocs:read',
       user: caller,
+      reach: 'filtered',
       request_id: correlationId,
     });
     const result = await this.service.search(orgId, query, limit, mode ?? 'text', pathPrefix);
-    return { ...result, documents: await this.withinTokenScope(orgId, result.documents, caller) };
+    return { ...result, documents: await this.withinReach(orgId, result.documents, caller) };
   }
 
   @RequirePermission('orgdocs:read')
@@ -201,6 +202,7 @@ export class OrgDocumentsController {
             action: 'read',
           }
         : undefined,
+      reach: 'filtered',
       request_id: correlationId,
     });
     const stale = await this.service.listStale(orgId, {
@@ -208,7 +210,7 @@ export class OrgDocumentsController {
       prefix: scopedPrefix,
       limit,
     });
-    return { ...stale, documents: await this.withinTokenScope(orgId, stale.documents, caller) };
+    return { ...stale, documents: await this.withinReach(orgId, stale.documents, caller) };
   }
 
   @RequirePermission('orgdocs:write')
@@ -300,9 +302,11 @@ export class OrgDocumentsController {
             action: 'read',
           }
         : undefined,
+      reach: 'filtered',
       request_id: correlationId,
     });
-    return this.service.listByPrefix(orgId, scopedPath ?? '', limit);
+    const listed = await this.service.listByPrefix(orgId, scopedPath ?? '', limit);
+    return { ...listed, documents: await this.withinReach(orgId, listed.documents, caller) };
   }
 
   // --------------------------------------------------------------------------
@@ -497,9 +501,11 @@ export class OrgDocumentsController {
             action: 'read',
           }
         : undefined,
+      reach: 'filtered',
       request_id: correlationId,
     });
-    return this.service.query(orgId, body, correlationId);
+    const found = await this.service.query(orgId, body, correlationId);
+    return { ...found, documents: await this.withinReach(orgId, found.documents, caller) };
   }
 
   // --------------------------------------------------------------------------
@@ -573,17 +579,16 @@ export class OrgDocumentsController {
   }
 
   /**
-   * A job token's search and listing results stay within its declared
-   * org-docs scope, under the org's profile (see
-   * ScopedAccessService.filterToJobScope).
+   * Search, list and query results stay within what the caller reaches of
+   * org docs, under the org's profile (see ScopedAccessService.filterToReach).
    */
-  private withinTokenScope<T extends { path: string }>(orgId: string, documents: T[], caller: AuthUser | undefined): Promise<T[]> {
-    return this.scopedAccess.filterToJobScope({
+  private withinReach<T extends { path: string }>(orgId: string, documents: T[], caller: AuthUser | undefined): Promise<T[]> {
+    return this.scopedAccess.filterToReach({
       org_id: orgId,
       user: caller,
       permission: 'orgdocs:read',
       items: documents,
-      inScope: (doc) => this.scopedAccess.tokenScopeCovers(caller!, 'orgdocs:read', { type: 'orgdocs', id: doc.path, action: 'read' }),
+      resourceOf: (doc) => ({ type: 'orgdocs', id: doc.path, action: 'read' }),
     });
   }
 }

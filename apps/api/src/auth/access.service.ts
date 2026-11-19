@@ -244,6 +244,32 @@ export class AccessService {
   }
 
   /**
+   * What a person or service principal reaches of one kind of org data, as a
+   * test on one resource: their grants evaluated as {@link can} would under
+   * the org's strict profile (a built-in role's wildcard over org data
+   * withheld). For routes that filter many results at once.
+   */
+  async reachPredicate(params: {
+    org_id: string;
+    principal_type: 'user' | 'service_principal';
+    principal_id: string;
+    permission: string;
+  }): Promise<(resource: AccessResourceContext) => boolean> {
+    let grants: RawGrant[] = [];
+    if (params.principal_type === 'service_principal') {
+      const sp = await this.spQueries.getServicePrincipal(params.org_id, params.principal_id);
+      grants = sp ? await this.collectServicePrincipalGrants(params.org_id, sp.id) : [];
+    } else {
+      grants = (await this.collectUserGrants(params.org_id, params.principal_id)).grants;
+    }
+    const strict = grants.flatMap((grant) => {
+      const left = this.applyWithholds(grant, (grant.withheld ?? []).filter((w) => w.rule === ORG_DATA_ROLE_WILDCARD_RULE));
+      return left ? [left] : [];
+    });
+    return (resource) => this.evaluatePermission(params.permission, strict, resource).allowed;
+  }
+
+  /**
    * Judge the org files, docs and cloud-fs entries of a job scope a user
    * declares (P1-6), under the profile of the org that owns them. Each entry,
    * `*` included, must sit inside the user's role bindings (direct or through

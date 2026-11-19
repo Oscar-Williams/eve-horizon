@@ -32,7 +32,51 @@ export class ScopedAccessService {
     private readonly security?: SecurityService,
   ) {}
 
+  /**
+   * Whether the caller holds `permission`, on `resource` when the route names
+   * one. A route on org files, docs or cloud-fs that names no resource is
+   * judged, under a non-legacy org profile, on what it reaches (P1-6):
+   * `reach`, when the route can name the resource it acts on (a KV path, a
+   * share's path), else the org's whole data of that kind. A route that
+   * filters its results to what the caller reaches says `reach: 'filtered'`
+   * (see filterToReach). `strict` refuses what the caller does not reach,
+   * `audit` records it (access.org_data_route_scope), `legacy` does not look.
+   */
   async can(params: {
+    org_id: string;
+    permission: string;
+    user?: AuthUser;
+    project_id?: string;
+    resource?: ScopedResourceContext;
+    reach?: ScopedResourceContext | 'filtered';
+  }): Promise<boolean> {
+    const allowed = await this.canAsNamed(params);
+    const { user, permission } = params;
+    if (!allowed || params.resource || params.reach === 'filtered' || !isOrgDataPermission(permission)) {
+      return allowed;
+    }
+    if (!user || user.is_admin || !this.security || !this.authService.isEnabled()) {
+      return allowed;
+    }
+    const scope = this.orgDataScope(params.org_id, user);
+    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return allowed;
+    }
+    const resource = params.reach ?? wholeOrgData(permission);
+    if (await this.canAsNamed({ ...params, resource })) {
+      return true;
+    }
+    const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+      ...scope,
+      governing: 'org',
+      actor: user,
+      detail: { permission, resource: `${resource.type}:${resource.id}` },
+    });
+    return profile !== 'strict';
+  }
+
+  /** {@link can} for exactly the resource named (or none). */
+  private async canAsNamed(params: {
     org_id: string;
     permission: string;
     user?: AuthUser;
@@ -86,6 +130,7 @@ export class ScopedAccessService {
     user?: AuthUser;
     project_id?: string;
     resource?: ScopedResourceContext;
+    reach?: ScopedResourceContext | 'filtered';
     request_id?: string;
   }): Promise<void> {
     const allowed = await this.can(params);
@@ -190,32 +235,77 @@ export class ScopedAccessService {
   }
 
   /**
-   * For a route that names no single resource (a search or a listing): hold
-   * a job token's results to its declared scope, under the org's profile.
-   * `strict` keeps only the items `inScope` accepts, `audit` keeps them all
-   * and records what strict would hold back (access.org_data_route_scope),
-   * `legacy` keeps them all. Other callers, and a token with no scope (judged
-   * by assert), get the items as they are.
+   * What the caller reaches of one kind of org data, as a test on a resource
+   * (the strict view: a built-in role's wildcard over org data is withheld).
+   * A person or service principal reaches it through their grants, a job
+   * token through its declared scope. `everything`: the caller is not held
+   * (a system admin, a token with no scope, which assert judges, or no
+   * authentication).
    */
-  async filterToJobScope<T>(params: {
+  async reachOf(params: { org_id: string; user?: AuthUser; permission: string }): Promise<Reach> {
+    const { user, permission } = params;
+    if (!user || user.is_admin || !this.authService.isEnabled()) {
+      return { everything: true, covers: () => true };
+    }
+    if (user.is_job_token) {
+      if (!user.scope) return { everything: true, covers: () => true };
+      return {
+        everything: false,
+        jobProjectId: user.project_id,
+        covers: (resource) => this.tokenScopeCovers(user, permission, resource),
+      };
+    }
+    const principal = this.resolvePrincipal(user);
+    if (!principal) return { everything: true, covers: () => true };
+    const covers = await this.accessService.reachPredicate({
+      org_id: params.org_id,
+      principal_type: principal.principal_type,
+      principal_id: principal.principal_id,
+      permission,
+    });
+    return { everything: false, covers };
+  }
+
+  /**
+   * For a route that names no single resource (a list, query, search or
+   * stream): hold its results to what the caller reaches, under the org's
+   * profile. Each item is judged by `resourceOf` (null: not org data, kept)
+   * or by `inReach`. `strict` keeps only what the caller reaches, `audit`
+   * keeps everything and records what strict would hold back
+   * (access.org_data_route_scope), `legacy` keeps everything. Routes that
+   * filter this way call assert with `reach: 'filtered'`.
+   */
+  async filterToReach<T>(params: {
     org_id: string;
     user?: AuthUser;
     permission: string;
     items: T[];
-    inScope: (item: T) => boolean;
+    resourceOf?: (item: T) => ScopedResourceContext | null;
+    inReach?: (item: T, reach: Reach) => boolean;
   }): Promise<T[]> {
     const { user, items } = params;
-    if (!user?.is_job_token || !user.scope || !this.security || items.length === 0) {
+    if (!user || !this.security || items.length === 0) {
       return items;
     }
-    const inside = items.filter(params.inScope);
+    const scope = this.orgDataScope(params.org_id, user);
+    if ((await this.security.effectiveProfile(scope, 'org')) === 'legacy') {
+      return items;
+    }
+    const reach = await this.reachOf(params);
+    if (reach.everything) {
+      return items;
+    }
+    const judge = params.inReach ?? ((item: T, r: Reach) => {
+      const resource = params.resourceOf?.(item) ?? null;
+      return !resource || r.covers(resource);
+    });
+    const inside = items.filter((item) => judge(item, reach));
     if (inside.length === items.length) {
       return items;
     }
     const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+      ...scope,
       governing: 'org',
-      orgId: user.org_id ?? params.org_id,
-      projectId: user.project_id,
       actor: user,
       detail: { permission: params.permission, held_back: items.length - inside.length },
     });
@@ -223,38 +313,41 @@ export class ScopedAccessService {
   }
 
   /**
-   * For a route on org data whose results cannot be filtered (agent KV,
-   * thread distillation, org-fs device enrolment): a job token with a
-   * declared scope needs the resource inside it. Under the org's profile,
-   * `strict` refuses (403) a resource outside it, or a route that names
-   * none; `audit` records it (access.org_data_route_scope); `legacy` does not
-   * look. Other callers pass.
+   * For a stream that names no single resource: the test each item must
+   * pass, under the org's profile, or null when nothing is held back
+   * (`legacy`, or a caller who reaches everything). An item outside what the
+   * caller reaches is recorded (access.org_data_route_scope); `strict` drops
+   * it, `audit` keeps it.
    */
-  async assertJobRouteInScope(params: {
+  async streamReach(params: {
     org_id: string;
     user?: AuthUser;
     permission: string;
-    resource?: ScopedResourceContext;
-    request_id?: string;
-  }): Promise<void> {
-    const { user, permission, resource } = params;
-    if (!user?.is_job_token || !user.scope || !this.security) return;
-    if (resource && this.tokenScopeCovers(user, permission, resource)) return;
-    const profile = await this.security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
-      governing: 'org',
-      orgId: user.org_id ?? params.org_id,
-      projectId: user.project_id,
-      actor: user,
-      detail: { permission, resource: resource ? `${resource.type}:${resource.id}` : 'none' },
-    });
-    if (profile === 'strict') {
-      throw buildApiError(403, 'resource_access_denied', resource
-        ? `Access denied for resource: ${resource.type}:${resource.id}`
-        : `Access denied for permission: ${permission}`, {
-        requestId: params.request_id,
-        details: { permission, resource: resource ?? null },
+  }): Promise<((resource: ScopedResourceContext) => Promise<boolean>) | null> {
+    const { user } = params;
+    if (!user || !this.security) return null;
+    const security = this.security;
+    const scope = this.orgDataScope(params.org_id, user);
+    if ((await security.effectiveProfile(scope, 'org')) === 'legacy') return null;
+    const reach = await this.reachOf(params);
+    if (reach.everything) return null;
+    return async (resource) => {
+      if (reach.covers(resource)) return true;
+      const profile = await security.decide(ORG_DATA_ROUTE_SCOPE_RULE, {
+        ...scope,
+        governing: 'org',
+        actor: user,
+        detail: { permission: params.permission, stream: true },
       });
-    }
+      return profile !== 'strict';
+    };
+  }
+
+  /** The org whose profile governs org data for this caller: a job token's own org. */
+  private orgDataScope(orgId: string, user: AuthUser): { orgId: string; projectId?: string } {
+    return user.is_job_token
+      ? { orgId: user.org_id ?? orgId, projectId: user.project_id }
+      : { orgId };
   }
 
   /**
@@ -317,4 +410,20 @@ export function mountsInTokenScope<T extends { id: string }>(mounts: T[], user?:
   if (!user?.is_job_token || !user.scope || !allowed || allowed.includes('*')) return mounts;
   const allowedSet = new Set(allowed);
   return mounts.filter((mount) => allowedSet.has(mount.id));
+}
+
+/** What a caller reaches of one kind of org data (see ScopedAccessService.reachOf). */
+export type Reach = {
+  everything: boolean;
+  covers: (resource: ScopedResourceContext) => boolean;
+  /** A job token's own project. */
+  jobProjectId?: string;
+};
+
+/** The org's whole data of one kind, as one resource: what a route that names none reaches. */
+function wholeOrgData(permission: string): ScopedResourceContext {
+  const [kind, level] = permission.split(':');
+  const action = level === 'admin' ? 'admin' : level === 'write' ? 'write' : 'read';
+  if (kind === 'cloud_fs') return { type: 'cloud_fs', id: '*', action };
+  return { type: kind === 'orgfs' ? 'orgfs' : 'orgdocs', id: '/', action };
 }

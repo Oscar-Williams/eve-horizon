@@ -82,7 +82,7 @@ import {
   type OrgFsUpdateLinkRequest,
   type OrgFsUploadUrlResponse,
 } from '@eve/shared';
-import type { Observable } from 'rxjs';
+import { concatMap, from, type Observable } from 'rxjs';
 import { Public } from '../auth/auth.decorator.js';
 import type { AuthUser } from '../auth/auth.service.js';
 import { refuseProjectTokens } from '../auth/token-scope.js';
@@ -164,8 +164,6 @@ export class OrgFsSyncController {
       user: caller,
       request_id: correlationId,
     });
-    // A device syncs the whole org filesystem: no job token's scope covers it.
-    await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     return this.service.enrollDevice(orgId, body, caller?.user_id, correlationId);
   }
 
@@ -222,6 +220,7 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
 
     const visible: OrgFsListLinksResponse['data'] = [];
@@ -280,8 +279,6 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
-      // A link with no path names no resource a job token's scope could cover.
-      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.updateLink(orgId, linkId, body, correlationId);
   }
@@ -321,8 +318,6 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
-      // A link with no path names no resource a job token's scope could cover.
-      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.rotateLinkGatewayToken(orgId, linkId, correlationId);
   }
@@ -361,8 +356,6 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
-      // A link with no path names no resource a job token's scope could cover.
-      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.deleteLink(orgId, linkId, correlationId);
   }
@@ -410,6 +403,7 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
 
     const visible: OrgFsEventListResponse['data'] = [];
@@ -453,8 +447,19 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
-    return this.service.streamEvents(orgId, afterSeq);
+    // Events on paths the caller does not reach are left out, as GET /events does.
+    const visible = await this.scopedAccess.streamReach({ org_id: orgId, user: caller, permission: 'orgfs:read' });
+    const events = this.service.streamEvents(orgId, afterSeq);
+    if (!visible) return events;
+    return events.pipe(
+      concatMap(async (message) => {
+        const path = (message.data as { path?: unknown } | undefined)?.path;
+        return typeof path !== 'string' || await visible({ type: 'orgfs', id: path, action: 'read' }) ? [message] : [];
+      }),
+      concatMap((messages) => from(messages)),
+    );
   }
 
   @RequirePermission('orgfs:read')
@@ -480,6 +485,7 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
 
     const visible: OrgFsListConflictsResponse['data'] = [];
@@ -538,8 +544,6 @@ export class OrgFsSyncController {
         user: caller,
         request_id: correlationId,
       });
-      // A link with no path names no resource a job token's scope could cover.
-      await this.scopedAccess.assertJobRouteInScope({ org_id: orgId, permission: 'orgfs:write', user: caller, request_id: correlationId });
     }
     return this.service.resolveConflict(orgId, conflictId, body, caller?.user_id, correlationId);
   }
@@ -621,8 +625,19 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: prefix ? { type: 'orgfs', id: normalizeScopedPath(prefix), action: 'read' } : 'filtered',
     });
-    return this.service.listObjects(orgId, { prefix, limit, after });
+    const objects = await this.service.listObjects(orgId, { prefix, limit, after });
+    return {
+      ...objects,
+      data: await this.scopedAccess.filterToReach({
+        org_id: orgId,
+        user: caller,
+        permission: 'orgfs:read',
+        items: objects.data,
+        resourceOf: (object) => ({ type: 'orgfs', id: object.path, action: 'read' }),
+      }),
+    };
   }
 
   // --- Share tokens ---
@@ -646,6 +661,7 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: { type: 'orgfs', id: normalizeScopedPath(body.path), action: 'read' },
     });
     const actorId = caller?.user_id ?? 'system';
     return this.service.createShare(orgId, body, actorId, correlationId);
@@ -666,8 +682,20 @@ export class OrgFsSyncController {
       permission: 'orgfs:admin',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
-    return this.service.listShares(orgId);
+    // A share token is shown only for a path the caller reaches.
+    const shares = await this.service.listShares(orgId);
+    return {
+      ...shares,
+      data: await this.scopedAccess.filterToReach({
+        org_id: orgId,
+        user: caller,
+        permission: 'orgfs:admin',
+        items: shares.data,
+        resourceOf: (share) => ({ type: 'orgfs', id: share.path, action: 'admin' }),
+      }),
+    };
   }
 
   @RequirePermission('orgfs:admin')
@@ -713,6 +741,7 @@ export class OrgFsSyncController {
       permission: 'orgfs:admin',
       user: caller,
       request_id: correlationId,
+      reach: { type: 'orgfs', id: normalizeScopedPath(body.path_prefix), action: 'admin' },
     });
     const actorId = caller?.user_id ?? 'system';
     return this.service.createPublicPath(orgId, body, actorId, correlationId);
@@ -733,8 +762,19 @@ export class OrgFsSyncController {
       permission: 'orgfs:read',
       user: caller,
       request_id: correlationId,
+      reach: 'filtered',
     });
-    return this.service.listPublicPaths(orgId);
+    const published = await this.service.listPublicPaths(orgId);
+    return {
+      ...published,
+      data: await this.scopedAccess.filterToReach({
+        org_id: orgId,
+        user: caller,
+        permission: 'orgfs:read',
+        items: published.data,
+        resourceOf: (entry) => ({ type: 'orgfs', id: entry.path_prefix, action: 'read' }),
+      }),
+    };
   }
 
   @RequirePermission('orgfs:admin')

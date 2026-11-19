@@ -38,6 +38,7 @@ const threads = {
 };
 const resources = { resolveResources: vi.fn(async () => ({ data: [] })) };
 const memory = {
+  distillTargetPath: (threadId: string) => `/agents/shared/memory/decisions/thread-${threadId}.md`,
   distillThread: vi.fn(async () => ({ status: 'written' })),
   unifiedSearch: vi.fn(async () => ({
     data: [

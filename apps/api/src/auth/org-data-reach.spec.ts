@@ -119,32 +119,32 @@ async function view(caller: AuthUser) {
 type View = Awaited<ReturnType<typeof view>>;
 
 function expectHeldToTeam(v: View) {
-  expect(paths((v.list as { documents: never[] }).documents)).toEqual([inTeam]);
-  expect(paths((v.query as { documents: never[] }).documents)).toEqual([inTeam]);
-  expect(paths((v.search as { documents: never[] }).documents)).toEqual([inTeam]);
-  expect(paths((v.memory as { data: never[] }).data)).toEqual(['/team-a/memory.md']);
-  expect(paths((v.unified as { data: never[] }).data)).toEqual([inTeam]);
-  expect(paths((v.objects as { data: never[] }).data)).toEqual([inTeam]);
+  expect(paths((v.list as unknown as { documents: never[] }).documents)).toEqual([inTeam]);
+  expect(paths((v.query as unknown as { documents: never[] }).documents)).toEqual([inTeam]);
+  expect(paths((v.search as unknown as { documents: never[] }).documents)).toEqual([inTeam]);
+  expect(paths((v.memory as unknown as { data: never[] }).data)).toEqual(['/team-a/memory.md']);
+  expect(paths((v.unified as unknown as { data: never[] }).data)).toEqual([inTeam]);
+  expect(paths((v.objects as unknown as { data: never[] }).data)).toEqual([inTeam]);
   expect(v.financeObjects).toBeInstanceOf(HttpException);
   expect((v.stream as Array<{ data: { path?: string } }>).map((event) => event.data.path ?? 'checkpoint')).toEqual([inTeam, 'checkpoint']);
   expect(v.status).toBeInstanceOf(HttpException);
-  expect(paths((v.shares as { data: never[] }).data)).toEqual([inTeam]);
-  expect(paths((v.publicPaths as { data: never[] }).data)).toEqual(['/team-a/public/']);
+  expect(paths((v.shares as unknown as { data: never[] }).data)).toEqual([inTeam]);
+  expect(paths((v.publicPaths as unknown as { data: never[] }).data)).toEqual(['/team-a/public/']);
   expect(v.financeShare).toBeInstanceOf(HttpException);
 }
 
 function expectEverything(v: View) {
-  expect((v.list as { documents: never[] }).documents).toHaveLength(2);
-  expect((v.query as { documents: never[] }).documents).toHaveLength(2);
-  expect((v.search as { documents: never[] }).documents).toHaveLength(2);
-  expect((v.memory as { data: never[] }).data).toHaveLength(2);
-  expect((v.unified as { data: never[] }).data).toHaveLength(2);
-  expect((v.objects as { data: never[] }).data).toHaveLength(2);
+  expect((v.list as unknown as { documents: never[] }).documents).toHaveLength(2);
+  expect((v.query as unknown as { documents: never[] }).documents).toHaveLength(2);
+  expect((v.search as unknown as { documents: never[] }).documents).toHaveLength(2);
+  expect((v.memory as unknown as { data: never[] }).data).toHaveLength(2);
+  expect((v.unified as unknown as { data: never[] }).data).toHaveLength(2);
+  expect((v.objects as unknown as { data: never[] }).data).toHaveLength(2);
   expect(v.financeObjects).not.toBeInstanceOf(Error);
   expect(v.stream).toHaveLength(3);
   expect(v.status).not.toBeInstanceOf(Error);
-  expect((v.shares as { data: never[] }).data).toHaveLength(2);
-  expect((v.publicPaths as { data: never[] }).data).toHaveLength(2);
+  expect((v.shares as unknown as { data: never[] }).data).toHaveLength(2);
+  expect((v.publicPaths as unknown as { data: never[] }).data).toHaveLength(2);
   expect(v.financeShare).not.toBeInstanceOf(Error);
 }
 
