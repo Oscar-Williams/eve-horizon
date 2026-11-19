@@ -29,7 +29,7 @@ export function renderInterstitialHtml(opts: {
   const action = `/m/${encodeURIComponent(opts.wrapToken)}`;
 
   const head = `  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
+  <meta name="referrer" content="same-origin">
   <title>${escapeHtml(heading)}</title>`;
 
   const css = `    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

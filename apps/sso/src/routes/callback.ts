@@ -58,7 +58,9 @@ export function registerCallbackRoutes(app: Express): void {
 
   app.post('/callback', express.urlencoded({ extended: false }), async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    // same-origin, not no-referrer: the "Continue as" page posts back here,
+    // and a browser sends Origin: null from a no-referrer page.
+    res.setHeader('Referrer-Policy', 'same-origin');
 
     if (req.headers.origin !== ssoOrigin(req)) {
       res.status(403).type('text').send('Forbidden');

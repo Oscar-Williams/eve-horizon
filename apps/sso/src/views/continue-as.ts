@@ -13,7 +13,7 @@ export function continueAsHtml(opts: { email: string | null; fields: Record<stri
     .join('\n');
 
   const head = `  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
+  <meta name="referrer" content="same-origin">
   <title>Eve - Continue signing in</title>`;
 
   const css = `    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

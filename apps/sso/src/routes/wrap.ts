@@ -21,9 +21,15 @@ import { wrapExpiredHtml } from '../views/wrap-expired.js';
 // action_link. See docs/plans/magic-link-confirmation-interstitial-plan.md.
 // ---------------------------------------------------------------------------
 
-function setWrapResponseHeaders(res: express.Response): void {
+/**
+ * Headers for /m/:wrap. The URL holds the wrap token, so no referrer leaves
+ * the SSO. The interstitial posts its form back here, so it uses
+ * same-origin (a browser sends Origin: null from a no-referrer page); every
+ * other /m/ response posts nowhere and keeps no-referrer.
+ */
+function setWrapResponseHeaders(res: express.Response, referrerPolicy: 'no-referrer' | 'same-origin' = 'no-referrer'): void {
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Referrer-Policy', referrerPolicy);
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
 }
 
@@ -89,6 +95,7 @@ export function registerWrapRoutes(app: Express): void {
     }
 
     const csrfNonce = signWrapCsrf(wrap);
+    setWrapResponseHeaders(res, 'same-origin');
     res.status(200).type('html').send(renderInterstitialHtml({
       kind: inspect.kind,
       appName,
