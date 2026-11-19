@@ -130,3 +130,31 @@ describe('env override names reserved for model credentials and routing', () => 
     expect(parsed).not.toHaveProperty('env_overrides');
   });
 });
+
+describe('names that load code or set TLS trust', () => {
+  const LOADERS = [
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'DYLD_INSERT_LIBRARIES',
+    'DYLD_LIBRARY_PATH',
+    'BASH_ENV',
+    'ENV',
+    'NODE_OPTIONS',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+  ];
+  const TLS_TRUST = ['SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'];
+
+  it.each(LOADERS)('refuses %s as an override, literal or secret', (key) => {
+    expect(isReservedEnvKey(key)).toBe(true);
+    expect(jobAccepts({ [key]: '/tmp/x' })).toBe(false);
+    expect(jobAccepts({ [key]: '${secret.LOADER}' })).toBe(false);
+  });
+
+  it.each(TLS_TRUST)('takes %s only from a single ${secret.KEY}', (key) => {
+    expect(isReservedEnvKey(key)).toBe(true);
+    expect(jobAccepts({ [key]: '/etc/ssl/custom' })).toBe(false);
+    expect(jobAccepts({ [key]: '${secret.CA_BUNDLE}' })).toBe(true);
+  });
+});
+
