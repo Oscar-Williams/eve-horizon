@@ -124,8 +124,22 @@ describe('RegistryPullSecretsService.resign', () => {
     expect((service as any).environments.listRegistryKeyCandidates).toHaveBeenCalledWith(registryKeyVersion(KEY));
   });
 
-  it('refuses to run without the registry credential key', async () => {
+  it('moves pull secrets back to the internal key when no credential key is set (the way back for a rollback)', async () => {
     vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
+    candidates = [candidate('env_current', 7, 'shop-current')];
+    const report = await service.resign();
+    expect((service as any).environments.listRegistryKeyCandidates).toHaveBeenCalledWith('internal');
+    const [, manifest] = applyManifest.mock.calls[0] as [string, string];
+    const entry = JSON.parse(Buffer.from((yaml.parse(manifest) as { data: Record<string, string> }).data['.dockerconfigjson'], 'base64')
+      .toString('utf8')).auths[HOST];
+    expect(verifyRegistryPullCredential(entry.password, INTERNAL)).toMatchObject({ environmentId: 'env_current', epoch: 8 });
+    expect(recordRegistryKeyVersion).toHaveBeenCalledWith('env_current', 'internal', 8);
+    expect(report).toMatchObject({ key_version: 'internal', resigned: 1 });
+  });
+
+  it('refuses to run with no registry key at all', async () => {
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
     await expect(service.resign()).rejects.toThrow(/EVE_REGISTRY_CREDENTIAL_KEY/);
     expect(applyManifest).not.toHaveBeenCalled();
   });
