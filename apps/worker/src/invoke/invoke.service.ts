@@ -1416,7 +1416,7 @@ export class InvokeService implements OnModuleInit {
   private async decidedRuleProfile(projectId: string, rule: string): Promise<SecurityProfile> {
     if (!this.runner) return governingSecurityProfile(this.db, { projectId, governing: 'project', rule });
     const profile = this.runner.prepared.rule_profiles?.[rule];
-    if (!profile) throw new Error(`The worker sent no decision for rule ${rule}`);
+    if (!profile) throw new Error(`${rule}: the worker sent no decision for this rule, so the runner does not start the harness`);
     return profile;
   }
 
@@ -2392,18 +2392,14 @@ export class InvokeService implements OnModuleInit {
     repoPath: string,
     env?: Record<string, string | undefined>,
   ): Promise<Record<string, string>> {
-    const scope = { projectId: invocation.projectId, governing: 'project' as const };
+    // In a runner pod (no database) the worker decided the profile and the
+    // finding goes through the attempt's events route.
     return holdCheckoutSettings({
       harness,
       workspace: repoPath,
       configDir: env?.CLAUDE_CONFIG_DIR ?? env?.CODEX_HOME,
-      profile: () => governingSecurityProfile(this.db, { ...scope, rule: CHECKOUT_SETTINGS_RULE }),
-      record: (detail) => decideSecurityRule(this.db, CHECKOUT_SETTINGS_RULE, {
-        ...scope,
-        actorType: 'job',
-        actorId: invocation.jobId,
-        detail: { job_id: invocation.jobId, ...detail },
-      }),
+      profile: () => this.decidedRuleProfile(invocation.projectId, CHECKOUT_SETTINGS_RULE),
+      record: (detail) => this.recordRuleFinding(invocation, CHECKOUT_SETTINGS_RULE, detail),
     });
   }
 
