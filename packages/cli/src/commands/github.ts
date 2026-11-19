@@ -41,9 +41,9 @@ async function setupGithub(
 ): Promise<void> {
   const regenerate = getBooleanFlag(flags, ['regenerate']) ?? false;
 
-  const result = await requestJson<{
+  const response = await requestJson<{
     webhook_url: string;
-    secret: string;
+    secret: string | null;
     project_id: string;
     repo_url: string;
     events: string[];
@@ -53,9 +53,20 @@ async function setupGithub(
   });
 
   if (json) {
-    outputJson(result, true);
+    outputJson(response, true);
     return;
   }
+
+  if (response.secret === null) {
+    // Under a strict project the secret is write-only: shown only when made.
+    console.log('GITHUB_WEBHOOK_SECRET exists and is not shown under this project\'s security profile.');
+    console.log(`  Webhook URL: ${response.webhook_url}`);
+    console.log('');
+    console.log('If the GitHub webhook is already set up, nothing more is needed.');
+    console.log(`To make a new secret and set the webhook again: eve github setup --project ${projectId} --regenerate`);
+    return;
+  }
+  const result = { ...response, secret: response.secret };
 
   // Try to auto-create webhook via gh CLI
   const ownerRepo = extractOwnerRepo(result.repo_url);

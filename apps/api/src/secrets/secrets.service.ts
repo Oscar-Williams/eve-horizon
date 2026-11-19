@@ -1,16 +1,36 @@
 import { Injectable, Inject, Logger, BadRequestException, NotFoundException, InternalServerErrorException, Optional } from '@nestjs/common';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { Db } from '@eve/db';
-import { secretQueries, projectQueries, orgQueries, projectManifestQueries, type SecretScopeType, type SecretType } from '@eve/db';
-import { ManifestSchema, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isUserSecretWithheldKey, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretValidationResult, type UpdateSecretRequest, loadConfig } from '@eve/shared';
+import {
+  integrationQueries,
+  oauthAppConfigQueries,
+  orgQueries,
+  projectManifestQueries,
+  projectQueries,
+  secretQueries,
+  systemSettingsQueries,
+  type SecretScopeType,
+  type SecretType,
+} from '@eve/db';
+import { ManifestSchema, getManifestRequiredSecrets, generateSecretId, findClosestMatches, isUserSecretWithheldKey, type CreateSecretRequest, type SecretListResponse, type SecretMaskedResponse, type SecretResponse, type SecretStorageCounts, type SecretValidationResult, type SecretsReencryptResponse, type UpdateSecretRequest } from '@eve/shared';
 import * as yaml from 'yaml';
 import { SecurityService } from '../security/security.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import {
+  SECRETS_CIPHERTEXT_FORMAT_SETTING,
+  SecretCipher,
+  maskSecretValue,
+  type SecretLocation,
+} from './secret-cipher.js';
 
-const MASK_VISIBLE_CHARS = 4;
+export { maskSecretValue } from './secret-cipher.js';
+
 const SAFE_SECRET_ALLOWLIST = new Set(['GITHUB_WEBHOOK_SECRET']);
+/** Project rule: under `strict`, secret values are write-only through the API. */
+const VALUE_READ_RULE = 'secrets.value_read';
+const REENCRYPT_BATCH = 200;
 
 @Injectable()
 export class SecretsService {
@@ -19,7 +39,7 @@ export class SecretsService {
   private projects: ReturnType<typeof projectQueries>;
   private orgs: ReturnType<typeof orgQueries>;
   private manifests: ReturnType<typeof projectManifestQueries>;
-  private masterKey: Buffer | null;
+  private readonly cipher: SecretCipher;
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -29,16 +49,13 @@ export class SecretsService {
     this.projects = projectQueries(this.db);
     this.orgs = orgQueries(this.db);
     this.manifests = projectManifestQueries(this.db);
-    const config = loadConfig();
-    this.masterKey = config.EVE_SECRETS_MASTER_KEY
-      ? createHash('sha256').update(config.EVE_SECRETS_MASTER_KEY).digest()
-      : null;
+    this.cipher = new SecretCipher(this.db, this.security);
   }
 
   async create(scopeType: SecretScopeType, scopeId: string, data: CreateSecretRequest): Promise<SecretResponse> {
     this.ensureConfigured();
     await this.ensureScopeExists(scopeType, scopeId);
-    const encrypted = this.encrypt(data.value);
+    const encrypted = await this.encrypt(data.value, { scope_type: scopeType, scope_id: scopeId, key: data.key });
     const existing = await this.secrets.findByScopeAndKey(scopeType, scopeId, data.key);
     if (existing) {
       const updated = await this.secrets.updateByKey(scopeType, scopeId, data.key, {
@@ -87,10 +104,13 @@ export class SecretsService {
     if (!secret) {
       throw new NotFoundException(`Secret ${key} not found`);
     }
-    const decrypted = this.decrypt(secret.value_encrypted);
+    const location = { scope_type: scopeType, scope_id: scopeId, key };
+    const decrypted = await this.decrypt(secret.value_encrypted, location);
     return {
       ...this.toResponse(secret),
       masked_value: maskSecretValue(decrypted),
+      length: decrypted.length,
+      fingerprint: this.cipher.fingerprint(location, decrypted),
     };
   }
 
@@ -105,7 +125,9 @@ export class SecretsService {
     if (!updates.value && !updates.type) {
       throw new BadRequestException('No updates provided');
     }
-    const encrypted = updates.value ? this.encrypt(updates.value) : undefined;
+    const encrypted = updates.value
+      ? await this.encrypt(updates.value, { scope_type: scopeType, scope_id: scopeId, key })
+      : undefined;
     const updated = await this.secrets.updateByKey(scopeType, scopeId, key, {
       value_encrypted: encrypted,
       type: updates.type,
@@ -122,7 +144,7 @@ export class SecretsService {
    */
   async updateIfExists(scopeType: 'user' | 'org' | 'project' | 'system', scopeId: string, key: string, value: string): Promise<boolean> {
     this.ensureConfigured();
-    const encrypted = this.encrypt(value);
+    const encrypted = await this.encrypt(value, { scope_type: scopeType, scope_id: scopeId, key });
     const updated = await this.secrets.updateByKey(scopeType as SecretScopeType, scopeId, key, { value_encrypted: encrypted });
     return updated !== null && updated !== undefined;
   }
@@ -203,11 +225,11 @@ export class SecretsService {
 
     // 1. Load system secrets
     const systemSecrets = await this.secrets.listByScope('system', 'system', { limit: 500, offset: 0 });
-    this.decryptSecrets(systemSecrets, resolved, 'system', 'system');
+    await this.decryptSecrets(systemSecrets, resolved, 'system', 'system');
 
     // 2. Layer org secrets on top (org overrides system)
     const orgSecrets = await this.secrets.listByScope('org', orgId, { limit: 500, offset: 0 });
-    this.decryptSecrets(orgSecrets, resolved, 'org', orgId);
+    await this.decryptSecrets(orgSecrets, resolved, 'org', orgId);
 
     return Array.from(resolved.entries()).map(([key, entry]) => ({
       key,
@@ -231,21 +253,21 @@ export class SecretsService {
 
     // 1. Load system secrets (overrides host env)
     const systemSecrets = await this.secrets.listByScope('system', 'system', { limit: 500, offset: 0 });
-    this.decryptSecrets(systemSecrets, resolved, 'system', 'system');
+    await this.decryptSecrets(systemSecrets, resolved, 'system', 'system');
 
     // 2. Layer org secrets on top (org overrides system)
     const orgSecrets = await this.secrets.listByScope('org', orgId, { limit: 500, offset: 0 });
-    this.decryptSecrets(orgSecrets, resolved, 'org', orgId);
+    await this.decryptSecrets(orgSecrets, resolved, 'org', orgId);
 
     // 3. Layer user secrets on top (user overrides org)
     if (userId) {
       const userSecrets = await this.secrets.listByScope('user', userId, { limit: 500, offset: 0 });
-      this.decryptSecrets(await this.withholdUserRoutingSecrets(projectId, userId, userSecrets), resolved, 'user', userId);
+      await this.decryptSecrets(await this.withholdUserRoutingSecrets(projectId, userId, userSecrets), resolved, 'user', userId);
     }
 
     // 4. Layer project secrets on top (highest priority, project wins)
     const projectSecrets = await this.secrets.listByScope('project', projectId, { limit: 500, offset: 0 });
-    this.decryptSecrets(projectSecrets, resolved, 'project', projectId);
+    await this.decryptSecrets(projectSecrets, resolved, 'project', projectId);
 
     return Array.from(resolved.entries()).map(([key, entry]) => ({
       key,
@@ -327,7 +349,7 @@ export class SecretsService {
   }
 
   async resolveProjectSecretValue(projectId: string, key: string): Promise<string | null> {
-    if (!this.masterKey) {
+    if (!this.cipher.configured) {
       return null;
     }
     await this.ensureScopeExists('project', projectId);
@@ -335,10 +357,18 @@ export class SecretsService {
     if (!secret) {
       return null;
     }
-    return this.decrypt(secret.value_encrypted);
+    return this.decrypt(secret.value_encrypted, { scope_type: 'project', scope_id: projectId, key });
   }
 
-  async ensureSafeSecrets(projectId: string, keys: string[]): Promise<{ created: string[]; existing: string[] }> {
+  /**
+   * Create the safe secrets that are missing, with generated values. The
+   * values made here are returned once, in this response: under a project's
+   * strict profile (`secrets.value_read`) it is the only way to see them.
+   */
+  async ensureSafeSecrets(
+    projectId: string,
+    keys: string[],
+  ): Promise<{ created: string[]; existing: string[]; values: Array<{ key: string; value: string }> }> {
     this.ensureConfigured();
     await this.ensureScopeExists('project', projectId);
 
@@ -351,6 +381,7 @@ export class SecretsService {
 
     const created: string[] = [];
     const existing: string[] = [];
+    const values: Array<{ key: string; value: string }> = [];
 
     for (const key of unique) {
       const current = await this.secrets.findByScopeAndKey('project', projectId, key);
@@ -361,12 +392,22 @@ export class SecretsService {
       const value = randomBytes(32).toString('base64url');
       await this.create('project', projectId, { key, value, type: 'env_var' });
       created.push(key);
+      values.push({ key, value });
     }
 
-    return { created, existing };
+    return { created, existing, values };
   }
 
-  async exportSafeSecrets(projectId: string, keys: string[]): Promise<Array<{ key: string; value: string }>> {
+  /**
+   * Return the values of safe secrets. Under the project's strict profile
+   * (`secrets.value_read`) values are write-only: 403. Under `audit` the
+   * read is recorded.
+   */
+  async exportSafeSecrets(
+    projectId: string,
+    keys: string[],
+    actor?: AuthUser | null,
+  ): Promise<Array<{ key: string; value: string }>> {
     this.ensureConfigured();
     await this.ensureScopeExists('project', projectId);
 
@@ -377,16 +418,122 @@ export class SecretsService {
       }
     }
 
+    await this.security?.gate(
+      VALUE_READ_RULE,
+      { projectId, governing: 'project', actor, detail: { keys: unique.join(',') } },
+      "Secret values are write-only under this project's security profile; ensure returns a generated value once",
+    );
+
     const exports: Array<{ key: string; value: string }> = [];
     for (const key of unique) {
       const secret = await this.secrets.findByScopeAndKey('project', projectId, key);
       if (!secret) {
         throw new NotFoundException(`Secret ${key} not found`);
       }
-      exports.push({ key, value: this.decrypt(secret.value_encrypted) });
+      exports.push({ key, value: await this.decrypt(secret.value_encrypted, { scope_type: 'project', scope_id: projectId, key }) });
     }
 
     return exports;
+  }
+
+  /**
+   * Move stored credentials to `v2` (`eve system secrets reencrypt`). New
+   * writes use `v2` from here on: this process at once, other replicas
+   * within half a minute. Then `v1` secrets, plain integration tokens and
+   * plain OAuth client secrets are sealed in batches, each row by
+   * compare-and-set on the value read, so a row written meanwhile keeps its
+   * new value and is left for the next pass. A dry run only counts.
+   * After this, a release that reads only `v1` cannot read these rows.
+   */
+  async reencrypt(options: { actor: string; dryRun?: boolean }): Promise<SecretsReencryptResponse> {
+    this.ensureConfigured();
+    const before = await this.storageCounts();
+    const reencrypted = { secrets: 0, integration_tokens: 0, oauth_client_secrets: 0 };
+    const skipped = { changed: 0, unreadable: 0 };
+    if (options.dryRun) {
+      return {
+        dry_run: true,
+        write_format: await this.cipher.writeFormat(),
+        before,
+        after: before,
+        reencrypted,
+        skipped,
+        remaining: legacyRows(before),
+      };
+    }
+
+    await systemSettingsQueries(this.db).set(
+      SECRETS_CIPHERTEXT_FORMAT_SETTING,
+      'v2',
+      options.actor,
+      'Format of new credential writes: v2 after eve system secrets reencrypt',
+    );
+    this.cipher.forgetWriteFormat();
+
+    for (let after = ''; ;) {
+      const rows = await this.secrets.listInFormat('v1', after, REENCRYPT_BATCH);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        after = row.id;
+        let sealed: string;
+        try {
+          sealed = this.cipher.resealSecret(row, row.value_encrypted);
+        } catch {
+          skipped.unreadable += 1;
+          continue;
+        }
+        if (await this.secrets.swapCiphertext(row.id, row.value_encrypted, sealed)) reencrypted.secrets += 1;
+        else skipped.changed += 1;
+      }
+    }
+
+    const integrations = integrationQueries(this.db);
+    for (let after = ''; ;) {
+      const rows = await integrations.listPlainTokens(after, REENCRYPT_BATCH);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        after = row.id;
+        const sealed = await this.cipher.sealTokens(row.id, row.tokens_json, 'v2');
+        if (await integrations.swapTokens(row.id, row.tokens_json, sealed)) reencrypted.integration_tokens += 1;
+        else skipped.changed += 1;
+      }
+    }
+
+    const configs = oauthAppConfigQueries(this.db);
+    for (let after = ''; ;) {
+      const rows = await configs.listPlainClientSecrets(after, REENCRYPT_BATCH);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        after = row.id;
+        const sealed = await this.cipher.sealColumn(
+          { table: 'oauth_app_configs', id: row.id, field: 'client_secret' },
+          row.client_secret,
+          'v2',
+        );
+        if (await configs.swapClientSecret(row.id, row.client_secret, sealed)) reencrypted.oauth_client_secrets += 1;
+        else skipped.changed += 1;
+      }
+    }
+
+    const afterCounts = await this.storageCounts();
+    return {
+      dry_run: false,
+      write_format: 'v2',
+      before,
+      after: afterCounts,
+      reencrypted,
+      skipped,
+      remaining: legacyRows(afterCounts),
+    };
+  }
+
+  private async storageCounts(): Promise<SecretStorageCounts> {
+    const { v1 = 0, v2 = 0, ...others } = await this.secrets.countByFormat();
+    return {
+      secrets: { v1, v2, other: Object.values(others).reduce((sum, n) => sum + n, 0) },
+      integration_tokens: await integrationQueries(this.db).countTokenFormats(),
+      oauth_client_secrets: await oauthAppConfigQueries(this.db).countClientSecretFormats(),
+    };
   }
 
   private toResponse(secret: { id: string; scope_type: SecretScopeType; scope_id: string; key: string; type: SecretType; created_at: Date; updated_at: Date }): SecretResponse {
@@ -406,15 +553,16 @@ export class SecretsService {
    * (e.g. encrypted with a rotated master key). This prevents a single stale
    * secret from crashing the entire resolution pipeline.
    */
-  private decryptSecrets(
+  private async decryptSecrets(
     secrets: Array<{ key: string; value_encrypted: string; type: SecretType }>,
     resolved: Map<string, { value: string; type: SecretType; scope_type: 'user' | 'org' | 'project' | 'system'; scope_id: string }>,
     scope: 'user' | 'org' | 'project' | 'system',
     scopeId: string,
-  ): void {
+  ): Promise<void> {
     for (const secret of secrets) {
       try {
-        resolved.set(secret.key, { value: this.decrypt(secret.value_encrypted), type: secret.type, scope_type: scope, scope_id: scopeId });
+        const value = await this.decrypt(secret.value_encrypted, { scope_type: scope, scope_id: scopeId, key: secret.key });
+        resolved.set(secret.key, { value, type: secret.type, scope_type: scope, scope_id: scopeId });
       } catch (err) {
         this.logger.warn(
           `Failed to decrypt ${scope} secret "${secret.key}" — skipping (likely encrypted with a previous master key). ` +
@@ -425,7 +573,7 @@ export class SecretsService {
   }
 
   private ensureConfigured(): void {
-    if (!this.masterKey) {
+    if (!this.cipher.configured) {
       throw new InternalServerErrorException('Secrets master key is required to use secrets');
     }
   }
@@ -482,46 +630,17 @@ export class SecretsService {
     return keys;
   }
 
-  private encrypt(value: string): string {
-    if (!this.masterKey) {
-      throw new InternalServerErrorException('Secrets master key not configured');
-    }
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.masterKey, iv);
-    const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${ciphertext.toString('base64')}`;
+  private encrypt(value: string, location: SecretLocation): Promise<string> {
+    return this.cipher.sealSecret(location, value);
   }
 
-  private decrypt(payload: string): string {
-    if (!this.masterKey) {
-      throw new InternalServerErrorException('Secrets master key not configured');
-    }
-    const [version, ivB64, tagB64, dataB64] = payload.split(':');
-    if (version !== 'v1' || !ivB64 || !tagB64 || !dataB64) {
-      throw new BadRequestException('Invalid secret payload');
-    }
-    const iv = Buffer.from(ivB64, 'base64');
-    const tag = Buffer.from(tagB64, 'base64');
-    const data = Buffer.from(dataB64, 'base64');
-    const decipher = createDecipheriv('aes-256-gcm', this.masterKey, iv);
-    decipher.setAuthTag(tag);
-    const plaintext = Buffer.concat([decipher.update(data), decipher.final()]);
-    return plaintext.toString('utf8');
+  /** Open a stored value; a `v2` ciphertext opens only at its own scope and key. */
+  private decrypt(payload: string, location: SecretLocation): Promise<string> {
+    return this.cipher.openSecret(location, payload);
   }
 }
 
-export function maskSecretValue(value: string): string {
-  if (!value) return '';
-  if (value.length <= 2) {
-    return '*'.repeat(value.length);
-  }
-  if (value.length <= MASK_VISIBLE_CHARS * 2) {
-    const first = value.slice(0, 1);
-    const last = value.slice(-1);
-    return `${first}${'*'.repeat(value.length - 2)}${last}`;
-  }
-  const first = value.slice(0, MASK_VISIBLE_CHARS);
-  const last = value.slice(-MASK_VISIBLE_CHARS);
-  return `${first}${'*'.repeat(value.length - MASK_VISIBLE_CHARS * 2)}${last}`;
+/** v1 secrets and plain OAuth columns: what re-encryption has still to take. */
+function legacyRows(counts: SecretStorageCounts): number {
+  return counts.secrets.v1 + counts.integration_tokens.plain + counts.oauth_client_secrets.plain;
 }

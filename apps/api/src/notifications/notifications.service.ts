@@ -5,9 +5,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import type { NotificationSendRequest, NotificationSendResponse } from '@eve/shared';
+import { SecurityService } from '../security/security.service.js';
+import { SecretCipher } from '../secrets/secret-cipher.js';
 
 type ProjectRow = { id: string; org_id: string };
 
@@ -15,7 +18,8 @@ type SlackIntegrationRow = {
   id: string;
   org_id: string;
   account_id: string;
-  tokens_json: Record<string, unknown> | null;
+  /** As stored: plain, or a sealed envelope. */
+  tokens_json: Record<string, unknown> | string | null;
 };
 
 type SlackConversation = {
@@ -41,8 +45,14 @@ type SlackPostResponse = {
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
+  private readonly cipher: SecretCipher;
 
-  constructor(@Inject('DB') private readonly db: Db) {}
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    @Optional() security?: SecurityService,
+  ) {
+    this.cipher = new SecretCipher(db, security);
+  }
 
   async sendForProject(
     projectInput: string,
@@ -55,7 +65,7 @@ export class NotificationsService {
     }
 
     const integration = await this.resolveSlackIntegration(project.org_id, request.integration_id);
-    const token = extractSlackToken(integration.tokens_json);
+    const token = extractSlackToken(await this.cipher.openTokens(integration.id, integration.tokens_json));
     if (!token) {
       throw new BadRequestException(`Slack integration ${integration.id} has no bot token`);
     }

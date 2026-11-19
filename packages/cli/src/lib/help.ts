@@ -362,7 +362,7 @@ export const HELP: Record<string, CommandHelp> = {
         ],
       },
       ensure: {
-        description: 'Ensure safe secrets exist at project scope',
+        description: 'Ensure safe secrets exist at project scope; a generated value is shown once, here',
         usage: 'eve secrets ensure --project <id> --keys <k1,k2>',
         options: [
           '--project <id>       Project ID (uses profile default)',
@@ -370,7 +370,7 @@ export const HELP: Record<string, CommandHelp> = {
         ],
       },
       export: {
-        description: 'Export safe secrets for external configuration',
+        description: 'Export safe secrets for external configuration (refused under a strict project)',
         usage: 'eve secrets export --project <id> --keys <k1,k2> [--json]',
         options: [
           '--project <id>       Project ID (uses profile default)',
@@ -2259,7 +2259,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
         options: [
           'legacy        Today\'s behaviour; hardening rules are not checked',
           'audit         Today\'s behaviour, plus a finding for what strict would refuse',
-          'strict        Hardening rules are enforced',
+          'strict        Hardening rules are enforced: those of the current rule set; rules from later releases run under audit until strict is set again',
           'clear         Remove an override so the level above applies; on the instance, the profile becomes legacy',
           '--org <id>    Set an org (overrides the instance)',
           '--project <id> Set a project (overrides its org)',
@@ -2270,6 +2270,17 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
           'eve system security profile strict --project proj_xxx',
           'eve system security profile strict --new-projects',
           'eve doctor security --project proj_xxx',
+        ],
+      },
+      secrets: {
+        description: 'Move stored credentials to the v2 format, bound to where each value lives (system admins only). After it, releases below 0.1.327 cannot read them: run it once the release has soaked.',
+        usage: 'eve system secrets reencrypt [--dry-run] [--json]',
+        options: [
+          '--dry-run     Count stored secrets, integration tokens and OAuth client secrets by format; change nothing',
+        ],
+        examples: [
+          'eve system secrets reencrypt --dry-run',
+          'eve system secrets reencrypt',
         ],
       },
       orchestrator: {

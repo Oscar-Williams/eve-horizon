@@ -1,11 +1,18 @@
 import type { Db } from '../client.js';
 
+/**
+ * Integration tokens as stored: the token object (plain), or a JSON string
+ * holding a `v2` envelope once the instance seals credentials at rest. Only
+ * the API opens an envelope.
+ */
+export type StoredIntegrationTokens = Record<string, unknown> | string | null;
+
 export interface Integration {
   id: string;
   org_id: string;
   provider: string;
   account_id: string;
-  tokens_json: Record<string, unknown> | null;
+  tokens_json: StoredIntegrationTokens;
   settings_json: Record<string, unknown>;
   status: string;
   created_at: Date;
@@ -61,6 +68,42 @@ export function integrationQueries(db: Db) {
       return row;
     },
 
+    async listActive(): Promise<Integration[]> {
+      return db<Integration[]>`
+        SELECT * FROM integrations WHERE status = 'active' ORDER BY created_at
+      `;
+    },
+
+    /** Integrations by how their tokens are stored: a plain object or a sealed string. */
+    async countTokenFormats(): Promise<{ plain: number; sealed: number }> {
+      const [row] = await db<{ plain: number; sealed: number }[]>`
+        SELECT
+          COUNT(*) FILTER (WHERE jsonb_typeof(tokens_json) = 'object')::int AS plain,
+          COUNT(*) FILTER (WHERE jsonb_typeof(tokens_json) = 'string')::int AS sealed
+        FROM integrations
+      `;
+      return { plain: row?.plain ?? 0, sealed: row?.sealed ?? 0 };
+    },
+
+    /** Up to `limit` integrations whose tokens are stored plain, after `afterId`, in id order. */
+    async listPlainTokens(afterId: string, limit: number): Promise<Array<{ id: string; tokens_json: Record<string, unknown> }>> {
+      return db<Array<{ id: string; tokens_json: Record<string, unknown> }>>`
+        SELECT id, tokens_json FROM integrations
+        WHERE jsonb_typeof(tokens_json) = 'object' AND id > ${afterId}
+        ORDER BY id
+        LIMIT ${limit}
+      `;
+    },
+
+    /** Replace stored tokens only while they still equal `from`. */
+    async swapTokens(id: string, from: Record<string, unknown>, to: StoredIntegrationTokens): Promise<boolean> {
+      const result = await db`
+        UPDATE integrations SET tokens_json = ${to === null ? null : db.json(to as never)}
+        WHERE id = ${id} AND tokens_json = ${db.json(from as never)}
+      `;
+      return result.count > 0;
+    },
+
     async insert(integration: Omit<Integration, 'created_at' | 'updated_at'>): Promise<Integration> {
       const [row] = await db<Integration[]>`
         INSERT INTO integrations (
@@ -86,7 +129,7 @@ export function integrationQueries(db: Db) {
 
     async updateTokens(
       id: string,
-      tokensJson: Record<string, unknown> | null,
+      tokensJson: StoredIntegrationTokens,
       status?: string,
     ): Promise<Integration | undefined> {
       const statusValue = status ?? null;

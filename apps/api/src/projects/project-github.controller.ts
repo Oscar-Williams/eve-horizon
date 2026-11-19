@@ -4,6 +4,7 @@ import {
   Post,
   Param,
   Body,
+  ForbiddenException,
   HttpCode,
   HttpStatus,
   NotFoundException,
@@ -16,6 +17,8 @@ import {
 } from '@nestjs/swagger';
 import { loadConfig } from '@eve/shared';
 import { RequirePermission } from '../auth/permission.decorator.js';
+import { CurrentUser } from '../common/request-decorators.js';
+import type { AuthUser } from '../auth/auth.types.js';
 import { ProjectsService } from './projects.service.js';
 import { SecretsService } from '../secrets/secrets.service.js';
 import { EventsService } from '../events/events.service.js';
@@ -36,15 +39,18 @@ export class ProjectGithubController {
   @ApiOperation({
     summary: 'Set up GitHub webhook integration',
     description:
-      'Ensures GITHUB_WEBHOOK_SECRET exists, returns webhook URL and secret for configuring GitHub.',
+      'Ensures GITHUB_WEBHOOK_SECRET exists, returns webhook URL and secret for configuring GitHub. ' +
+      'Under a strict project (secrets.value_read) the secret is returned only when this call creates it; ' +
+      'otherwise it is null, and regenerate makes a new one.',
   })
   @ApiResponse({ status: 200, description: 'Setup info returned' })
   async setup(
     @Param('id') projectId: string,
     @Body() body: { regenerate?: boolean },
+    @CurrentUser() caller?: AuthUser,
   ): Promise<{
     webhook_url: string;
-    secret: string;
+    secret: string | null;
     project_id: string;
     repo_url: string;
     events: string[];
@@ -60,9 +66,17 @@ export class ProjectGithubController {
       }
     }
 
-    await this.secretsService.ensureSafeSecrets(projectId, ['GITHUB_WEBHOOK_SECRET']);
-    const exported = await this.secretsService.exportSafeSecrets(projectId, ['GITHUB_WEBHOOK_SECRET']);
-    const secret = exported[0].value;
+    const ensured = await this.secretsService.ensureSafeSecrets(projectId, ['GITHUB_WEBHOOK_SECRET']);
+    let secret = ensured.values.find((item) => item.key === 'GITHUB_WEBHOOK_SECRET')?.value ?? null;
+    if (secret === null) {
+      try {
+        const exported = await this.secretsService.exportSafeSecrets(projectId, ['GITHUB_WEBHOOK_SECRET'], caller);
+        secret = exported[0].value;
+      } catch (error) {
+        // Write-only under the project's strict profile: the secret stays unseen.
+        if (!(error instanceof ForbiddenException)) throw error;
+      }
+    }
 
     const webhookUrl = buildWebhookUrl(projectId);
 

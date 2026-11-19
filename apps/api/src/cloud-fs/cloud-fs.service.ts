@@ -1,6 +1,8 @@
-import { Inject, Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Optional } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import { cloudFsMountQueries, integrationQueries, oauthAppConfigQueries } from '@eve/db';
+import { SecurityService } from '../security/security.service.js';
+import { SecretCipher } from '../secrets/secret-cipher.js';
 import {
   generateCloudFsMountId,
   createJsonLogger,
@@ -67,12 +69,17 @@ export class CloudFsService {
   private integrations: ReturnType<typeof integrationQueries>;
   private oauthAppConfigs: ReturnType<typeof oauthAppConfigQueries>;
   private providers = new Map<string, CloudFsProvider>();
+  private readonly cipher: SecretCipher;
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    @Optional() security?: SecurityService,
+  ) {
     this.mounts = cloudFsMountQueries(db);
     this.integrations = integrationQueries(db);
     this.oauthAppConfigs = oauthAppConfigQueries(db);
     this.providers.set('google_drive', new GoogleDriveProvider());
+    this.cipher = new SecretCipher(db, security);
   }
 
   // ── Mount CRUD ──────────────────────────────────────────────────────────
@@ -544,7 +551,7 @@ export class CloudFsService {
     const integration = await this.integrations.findById(mount.integration_id);
     if (!integration) throw new NotFoundException(`Integration ${mount.integration_id} not found`);
 
-    const tokens = integration.tokens_json as Record<string, unknown> | null;
+    const tokens = await this.cipher.openTokens(integration.id, integration.tokens_json);
     if (!tokens?.access_token || !tokens?.refresh_token) {
       throw new BadRequestException('Integration missing required OAuth tokens');
     }
@@ -562,15 +569,19 @@ export class CloudFsService {
         );
       }
 
-      const refreshed = await provider.refreshAccessToken(appConfig.client_id, appConfig.client_secret, tokens.refresh_token as string);
+      const clientSecret = await this.cipher.openColumn(
+        { table: 'oauth_app_configs', id: appConfig.id, field: 'client_secret' },
+        appConfig.client_secret,
+      );
+      const refreshed = await provider.refreshAccessToken(appConfig.client_id, clientSecret, tokens.refresh_token as string);
       accessToken = refreshed.access_token;
 
       // Persist the refreshed token
-      await this.integrations.updateTokens(integration.id, {
+      await this.integrations.updateTokens(integration.id, await this.cipher.sealTokens(integration.id, {
         ...tokens,
         access_token: refreshed.access_token,
         expiry_date: Date.now() + refreshed.expires_in * 1000,
-      });
+      }));
     }
 
     return { provider, accessToken };

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CloudFsService } from './cloud-fs.service.js';
+import { SecretCipher } from '../secrets/secret-cipher.js';
 import { DriveApiError, type CloudFsEntry, type CloudFsProvider } from '@eve/shared';
 
 function entry(overrides: Partial<CloudFsEntry>): CloudFsEntry {
@@ -82,6 +83,7 @@ function createService(fakeProvider: CloudFsProvider) {
     findByOrgAndProvider: vi.fn(),
   };
   (cloudFsService as any).providers = new Map([['google_drive', fakeProvider]]);
+  (cloudFsService as any).cipher = new SecretCipher(null);
 
   return cloudFsService;
 }

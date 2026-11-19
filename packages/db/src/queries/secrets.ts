@@ -14,6 +14,13 @@ export interface Secret {
   updated_at: Date;
 }
 
+/**
+ * A whole `v2` envelope (`v2:iv:tag:data`, a 12-byte IV and 16-byte tag in
+ * base64), as a pattern both Postgres and JavaScript read the same way. A
+ * credential column holding anything else is plain.
+ */
+export const SEALED_ENVELOPE_PATTERN = '^v2:[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22}==:[A-Za-z0-9+/]*={0,2}$';
+
 export interface ListSecretsOptions {
   limit?: number;
   offset?: number;
@@ -89,6 +96,38 @@ export function secretQueries(db: Db) {
       const result = await db`
         DELETE FROM secrets
         WHERE scope_type = ${scopeType} AND scope_id = ${scopeId} AND key = ${key}
+      `;
+      return result.count > 0;
+    },
+
+    /** Secrets by stored format (the text before the first colon: v1, v2). */
+    async countByFormat(): Promise<Record<string, number>> {
+      const rows = await db<{ format: string; count: number }[]>`
+        SELECT split_part(value_encrypted, ':', 1) AS format, COUNT(*)::int AS count
+        FROM secrets GROUP BY 1
+      `;
+      return Object.fromEntries(rows.map((r) => [r.format, r.count]));
+    },
+
+    /** Up to `limit` secrets stored in a format, after `afterId`, in id order. */
+    async listInFormat(format: string, afterId: string, limit: number): Promise<Secret[]> {
+      return db<Secret[]>`
+        SELECT * FROM secrets
+        WHERE value_encrypted LIKE ${`${format}:%`} AND id > ${afterId}
+        ORDER BY id
+        LIMIT ${limit}
+      `;
+    },
+
+    /**
+     * Replace a secret's ciphertext only while it still holds `from`: a row
+     * written in between keeps its new value. Leaves updated_at alone, since
+     * the value is the same.
+     */
+    async swapCiphertext(id: string, from: string, to: string): Promise<boolean> {
+      const result = await db`
+        UPDATE secrets SET value_encrypted = ${to}
+        WHERE id = ${id} AND value_encrypted = ${from}
       `;
       return result.count > 0;
     },

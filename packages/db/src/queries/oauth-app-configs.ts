@@ -1,10 +1,12 @@
 import type { Db } from '../client.js';
+import { SEALED_ENVELOPE_PATTERN } from './secrets.js';
 
 export interface OAuthAppConfig {
   id: string;
   org_id: string;
   provider: string;
   client_id: string;
+  /** Plain, or a `v2` envelope once the instance seals credentials at rest. */
   client_secret: string;
   config_json: Record<string, unknown>;
   label: string | null;
@@ -62,6 +64,43 @@ export function oauthAppConfigQueries(db: Db) {
         RETURNING *
       `;
       return row;
+    },
+
+    async updateClientSecret(id: string, clientSecret: string): Promise<boolean> {
+      const result = await db`
+        UPDATE oauth_app_configs SET client_secret = ${clientSecret} WHERE id = ${id}
+      `;
+      return result.count > 0;
+    },
+
+    /** Client secrets by how they are stored: plain or a whole `v2` envelope. */
+    async countClientSecretFormats(): Promise<{ plain: number; sealed: number }> {
+      const [row] = await db<{ plain: number; sealed: number }[]>`
+        SELECT
+          COUNT(*) FILTER (WHERE client_secret !~ ${SEALED_ENVELOPE_PATTERN})::int AS plain,
+          COUNT(*) FILTER (WHERE client_secret ~ ${SEALED_ENVELOPE_PATTERN})::int AS sealed
+        FROM oauth_app_configs
+      `;
+      return { plain: row?.plain ?? 0, sealed: row?.sealed ?? 0 };
+    },
+
+    /** Up to `limit` configs whose client secret is plain, after `afterId`, in id order. */
+    async listPlainClientSecrets(afterId: string, limit: number): Promise<Array<{ id: string; client_secret: string }>> {
+      return db<Array<{ id: string; client_secret: string }>>`
+        SELECT id, client_secret FROM oauth_app_configs
+        WHERE client_secret !~ ${SEALED_ENVELOPE_PATTERN} AND id > ${afterId}
+        ORDER BY id
+        LIMIT ${limit}
+      `;
+    },
+
+    /** Replace a client secret only while it still holds `from`. */
+    async swapClientSecret(id: string, from: string, to: string): Promise<boolean> {
+      const result = await db`
+        UPDATE oauth_app_configs SET client_secret = ${to}
+        WHERE id = ${id} AND client_secret = ${from}
+      `;
+      return result.count > 0;
     },
 
     async remove(orgId: string, provider: string): Promise<boolean> {

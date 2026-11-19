@@ -113,7 +113,11 @@ export async function handleSecrets(
       if (keys.length === 0) {
         throw new Error('Usage: eve secrets ensure --project <id> --keys <key1,key2>');
       }
-      const response = await requestJson<{ created: string[]; existing: string[] }>(
+      const response = await requestJson<{
+        created: string[];
+        existing: string[];
+        values?: Array<{ key: string; value: string }>;
+      }>(
         context,
         `/projects/${projectId}/secrets/ensure`,
         {
@@ -121,7 +125,15 @@ export async function handleSecrets(
           body: { keys },
         },
       );
-      outputJson(response, json, `✓ Secrets ensured (${response.created.length} created)`);
+      if (json) {
+        outputJson(response, json);
+        return;
+      }
+      console.log(`✓ Secrets ensured (${response.created.length} created)`);
+      if (response.values?.length) {
+        console.log('Generated values, shown once (handle carefully):');
+        response.values.forEach((item) => console.log(`${item.key}=${item.value}`));
+      }
       return;
     }
     case 'export': {

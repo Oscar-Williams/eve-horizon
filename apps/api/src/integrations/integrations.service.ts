@@ -1,8 +1,10 @@
-import { Inject, Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, ConflictException, BadRequestException, Optional } from '@nestjs/common';
 import * as crypto from 'crypto';
-import type { Db } from '@eve/db';
+import type { Db, Integration } from '@eve/db';
 import { integrationQueries, externalIdentityQueries, membershipRequestQueries, userQueries, membershipQueries, oauthAppConfigQueries } from '@eve/db';
 import type { OAuthAppConfig } from '@eve/db';
+import { SecurityService } from '../security/security.service.js';
+import { SecretCipher } from '../secrets/secret-cipher.js';
 import {
   generateIntegrationId,
   generateExternalIdentityId,
@@ -29,6 +31,8 @@ export class IntegrationsService {
   private users: ReturnType<typeof userQueries>;
   private memberships: ReturnType<typeof membershipQueries>;
   private oauthAppConfigs: ReturnType<typeof oauthAppConfigQueries>;
+  /** Integration tokens and OAuth client secrets are sealed at rest once the instance writes v2. */
+  private readonly cipher: SecretCipher;
 
   /** Track redeemed link token JTIs (in-memory, sufficient for pre-MVP). */
   private redeemedJtis = new Set<string>();
@@ -36,13 +40,17 @@ export class IntegrationsService {
   /** OAuth state tokens: state → { orgId, expiresAt } */
   private oauthStates = new Map<string, { orgId: string; expiresAt: number }>();
 
-  constructor(@Inject('DB') private readonly db: Db) {
+  constructor(
+    @Inject('DB') private readonly db: Db,
+    @Optional() security?: SecurityService,
+  ) {
     this.integrations = integrationQueries(db);
     this.externalIdentities = externalIdentityQueries(db);
     this.membershipRequests = membershipRequestQueries(db);
     this.users = userQueries(db);
     this.memberships = membershipQueries(db);
     this.oauthAppConfigs = oauthAppConfigQueries(db);
+    this.cipher = new SecretCipher(db, security);
   }
 
   // ---------------------------------------------------------------------------
@@ -68,21 +76,24 @@ export class IntegrationsService {
       if (existing.org_id !== orgId) {
         throw new NotFoundException('Slack integration belongs to a different org');
       }
-      const nextTokens = payload.tokens_json === undefined ? existing.tokens_json : payload.tokens_json ?? null;
+      const nextTokens = payload.tokens_json === undefined
+        ? await this.cipher.openTokens(existing.id, existing.tokens_json)
+        : payload.tokens_json ?? null;
       const updated = await this.integrations.updateTokens(
         existing.id,
-        nextTokens ?? null,
+        await this.cipher.sealTokens(existing.id, nextTokens ?? null),
         payload.status ?? existing.status,
       );
       return this.toResponse(updated ?? existing);
     }
 
+    const id = generateIntegrationId();
     const created = await this.integrations.insert({
-      id: generateIntegrationId(),
+      id,
       org_id: orgId,
       provider: 'slack',
       account_id: payload.team_id,
-      tokens_json: payload.tokens_json ?? null,
+      tokens_json: await this.cipher.sealTokens(id, payload.tokens_json ?? null),
       settings_json: {},
       status: payload.status ?? 'active',
     });
@@ -102,20 +113,22 @@ export class IntegrationsService {
       if (existing.org_id !== orgId) {
         throw new NotFoundException(`${provider} integration belongs to a different org`);
       }
+      const nextTokens = tokensJson ?? (await this.cipher.openTokens(existing.id, existing.tokens_json));
       const updated = await this.integrations.updateTokens(
         existing.id,
-        tokensJson ?? existing.tokens_json ?? null,
+        await this.cipher.sealTokens(existing.id, nextTokens ?? null),
         status,
       );
       return this.toResponse(updated ?? existing);
     }
 
+    const id = generateIntegrationId();
     const created = await this.integrations.insert({
-      id: generateIntegrationId(),
+      id,
       org_id: orgId,
       provider,
       account_id: accountId,
-      tokens_json: tokensJson,
+      tokens_json: await this.cipher.sealTokens(id, tokensJson),
       settings_json: {},
       status,
     });
@@ -133,8 +146,10 @@ export class IntegrationsService {
     }
 
     // For Slack: verify the bot token is active via auth.test
-    if (existing.provider === 'slack' && existing.tokens_json) {
-      const tokens = existing.tokens_json as Record<string, unknown>;
+    const tokens = existing.provider === 'slack'
+      ? await this.cipher.openTokens(existing.id, existing.tokens_json)
+      : null;
+    if (existing.provider === 'slack' && tokens) {
       const token = (typeof tokens.access_token === 'string' && tokens.access_token)
         || (typeof tokens.bot_token === 'string' && tokens.bot_token);
       if (token) {
@@ -163,11 +178,23 @@ export class IntegrationsService {
     account_id: string; tokens_json: Record<string, unknown> | null;
     settings_json: Record<string, unknown>; status: string;
   }>> {
-    const rows = await this.db<Array<{
+    const stored = await this.integrations.listActive();
+    const rows: Array<{
       id: string; org_id: string; provider: string;
       account_id: string; tokens_json: Record<string, unknown> | null;
       settings_json: Record<string, unknown>; status: string;
-    }>>`SELECT id, org_id, provider, account_id, tokens_json, settings_json, status FROM integrations WHERE status = 'active'`;
+    }> = [];
+    for (const row of stored) {
+      rows.push({
+        id: row.id,
+        org_id: row.org_id,
+        provider: row.provider,
+        account_id: row.account_id,
+        tokens_json: await this.openTokensOrNull(row),
+        settings_json: row.settings_json ?? {},
+        status: row.status,
+      });
+    }
 
     // Enrich Slack integrations with the per-org signing secret from oauth_app_configs
     for (const row of rows) {
@@ -193,12 +220,27 @@ export class IntegrationsService {
     return { integration_id: integration.id, org_id: integration.org_id };
   }
 
+  /** An integration's tokens, opened: the internal routes decrypt before replying. */
   async getIntegrationTokens(integrationId: string): Promise<Record<string, unknown> | null> {
     const integration = await this.integrations.findById(integrationId);
     if (!integration) {
       throw new NotFoundException(`Integration ${integrationId} not found`);
     }
-    return integration.tokens_json ?? null;
+    return this.cipher.openTokens(integration.id, integration.tokens_json);
+  }
+
+  /** For listings: one row whose tokens cannot be opened must not hide the rest. */
+  private async openTokensOrNull(row: Integration): Promise<Record<string, unknown> | null> {
+    try {
+      return await this.cipher.openTokens(row.id, row.tokens_json);
+    } catch (error) {
+      logger.warn({
+        event: 'integrations.tokens_unreadable',
+        integrationId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -583,12 +625,20 @@ export class IntegrationsService {
   // OAuth app configs (per-org BYOA credentials)
   // ---------------------------------------------------------------------------
 
+  /** An org's OAuth app config, with its client secret opened. */
   async getOAuthAppConfig(orgId: string, provider: string): Promise<OAuthAppConfig | undefined> {
-    return this.oauthAppConfigs.findByOrgAndProvider(orgId, provider);
+    const config = await this.oauthAppConfigs.findByOrgAndProvider(orgId, provider);
+    return config ? this.openClientSecret(config) : undefined;
   }
 
   async listOAuthAppConfigs(orgId: string): Promise<OAuthAppConfig[]> {
-    return this.oauthAppConfigs.listByOrg(orgId);
+    const configs = await this.oauthAppConfigs.listByOrg(orgId);
+    return Promise.all(configs.map((config) => this.openClientSecret(config)));
+  }
+
+  private async openClientSecret(config: OAuthAppConfig): Promise<OAuthAppConfig> {
+    const location = { table: 'oauth_app_configs' as const, id: config.id, field: 'client_secret' as const };
+    return { ...config, client_secret: await this.cipher.openColumn(location, config.client_secret) };
   }
 
   async upsertOAuthAppConfig(
@@ -597,17 +647,29 @@ export class IntegrationsService {
     payload: CreateOAuthAppConfigRequest,
     createdBy?: string,
   ): Promise<OAuthAppConfigResponse> {
+    // The envelope is bound to the row id: an existing config keeps its own.
+    const existing = await this.oauthAppConfigs.findByOrgAndProvider(orgId, provider);
+    const id = existing?.id ?? generateOAuthAppConfigId();
+    const seal = (rowId: string) => this.cipher.sealColumn(
+      { table: 'oauth_app_configs', id: rowId, field: 'client_secret' },
+      payload.client_secret,
+    );
+    const sealed = await seal(id);
     const config = await this.oauthAppConfigs.upsert({
-      id: generateOAuthAppConfigId(),
+      id,
       org_id: orgId,
       provider,
       client_id: payload.client_id,
-      client_secret: payload.client_secret,
+      client_secret: sealed,
       config_json: payload.config ?? {},
       label: payload.label ?? null,
       status: 'active',
       created_by: createdBy ?? null,
     });
+    if (config.id !== id && sealed !== payload.client_secret) {
+      // Another write created the row first: seal again for the row that stands.
+      await this.oauthAppConfigs.updateClientSecret(config.id, await seal(config.id));
+    }
     return this.toOAuthAppConfigResponse(config);
   }
 

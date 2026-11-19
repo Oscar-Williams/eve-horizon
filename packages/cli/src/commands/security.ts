@@ -152,3 +152,68 @@ export async function handleSystemSecurity(
     : '';
   console.log(`Security profile for ${target}: ${result.profile ?? cleared}${covers}`);
 }
+
+interface StorageCounts {
+  secrets: { v1: number; v2: number; other: number };
+  integration_tokens: { plain: number; sealed: number };
+  oauth_client_secrets: { plain: number; sealed: number };
+}
+
+interface ReencryptReport {
+  dry_run: boolean;
+  write_format: 'v1' | 'v2';
+  before: StorageCounts;
+  after: StorageCounts;
+  reencrypted: { secrets: number; integration_tokens: number; oauth_client_secrets: number };
+  skipped: { changed: number; unreadable: number };
+  remaining: number;
+}
+
+/**
+ * `eve system secrets reencrypt [--dry-run]`: move stored credentials to v2.
+ * Attended: after it, releases that read only v1 cannot read them.
+ */
+export async function handleSystemSecrets(
+  positionals: string[],
+  flags: Record<string, FlagValue>,
+  context: ResolvedContext,
+  json: boolean,
+): Promise<void> {
+  const [action] = positionals;
+  if (action !== 'reencrypt') {
+    throw new Error('Usage: eve system secrets reencrypt [--dry-run] [--json]');
+  }
+  const dryRun = getBooleanFlag(flags, ['dry-run']) ?? false;
+  const report = await requestJson<ReencryptReport>(context, '/system/secrets/reencrypt', {
+    method: 'POST',
+    body: { dry_run: dryRun },
+  });
+  if (json) {
+    outputJson(report, json);
+    return;
+  }
+  const counts = (label: string, c: StorageCounts) => {
+    console.log(`${label}:`);
+    console.log(`  secrets               v1 ${c.secrets.v1}  v2 ${c.secrets.v2}${c.secrets.other ? `  other ${c.secrets.other}` : ''}`);
+    console.log(`  integration tokens    plain ${c.integration_tokens.plain}  sealed ${c.integration_tokens.sealed}`);
+    console.log(`  OAuth client secrets  plain ${c.oauth_client_secrets.plain}  sealed ${c.oauth_client_secrets.sealed}`);
+  };
+  counts(report.dry_run ? 'Stored now' : 'Before', report.before);
+  if (report.dry_run) {
+    console.log(`New writes use ${report.write_format}. Nothing was changed.`);
+    console.log(`${report.remaining} row(s) would be re-encrypted. After that, releases below 0.1.327 cannot read them.`);
+    return;
+  }
+  counts('After', report.after);
+  const r = report.reencrypted;
+  console.log(`Re-encrypted: ${r.secrets} secret(s), ${r.integration_tokens} integration token set(s), ${r.oauth_client_secrets} OAuth client secret(s).`);
+  if (report.skipped.changed) {
+    console.log(`${report.skipped.changed} row(s) changed during the pass kept their new value; run again to take them.`);
+  }
+  if (report.skipped.unreadable) {
+    console.log(`${report.skipped.unreadable} secret(s) do not open with the master key; set them again or delete them.`);
+  }
+  console.log(report.remaining === 0
+    ? 'No v1 or plain rows are left. New writes use v2.'
+    : `${report.remaining} v1 or plain row(s) left. New writes use v2.`);
+}

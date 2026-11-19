@@ -21,6 +21,8 @@ import {
   SecretEnsureResponseSchema,
   SecretExportRequestSchema,
   SecretExportResponseSchema,
+  SecretsReencryptRequestSchema,
+  SecretsReencryptResponseSchema,
   type CreateSecretRequest,
   type UpdateSecretRequest,
   type SecretListResponse,
@@ -32,6 +34,8 @@ import {
   type SecretEnsureResponse,
   type SecretExportRequest,
   type SecretExportResponse,
+  type SecretsReencryptRequest,
+  type SecretsReencryptResponse,
 } from '@eve/shared';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe.js';
 import { Endpoint } from '../common/endpoint.decorator.js';
@@ -158,7 +162,7 @@ export class ProjectSecretsController {
     path: 'ensure',
     permission: 'secrets:write',
     status: HttpStatus.OK,
-    summary: 'Ensure safe secrets exist for a project',
+    summary: 'Ensure safe secrets exist for a project (a generated value is returned once, here)',
     body: SecretEnsureRequestSchema,
     bodyName: 'SecretEnsureRequest',
     response: SecretEnsureResponseSchema,
@@ -176,7 +180,7 @@ export class ProjectSecretsController {
     path: 'export',
     permission: 'secrets:read',
     status: HttpStatus.OK,
-    summary: 'Export safe secrets for external configuration',
+    summary: 'Export safe secrets for external configuration (refused under a strict project: secrets.value_read)',
     body: SecretExportRequestSchema,
     bodyName: 'SecretExportRequest',
     response: SecretExportResponseSchema,
@@ -193,7 +197,7 @@ export class ProjectSecretsController {
     if (withheld.length > 0) {
       throw new ForbiddenException(`Secret(s) ${withheld.join(', ')} are outside this job's secrets allowlist`);
     }
-    const data = await this.secretsService.exportSafeSecrets(projectId, body.keys);
+    const data = await this.secretsService.exportSafeSecrets(projectId, body.keys, caller);
     return { data };
   }
 
@@ -300,6 +304,28 @@ export class OrgSecretsController {
 @Controller('system/secrets')
 export class SystemSecretsController {
   constructor(private readonly secretsService: SecretsService) {}
+
+  @Endpoint({
+    method: 'POST',
+    path: 'reencrypt',
+    permission: 'system:admin',
+    status: HttpStatus.OK,
+    summary: 'Move stored credentials to the v2 format (system_admin only; after it, older releases cannot read them)',
+    body: SecretsReencryptRequestSchema,
+    bodyName: 'SecretsReencryptRequest',
+    response: SecretsReencryptResponseSchema,
+    responseName: 'SecretsReencryptResponse',
+  })
+  async reencrypt(
+    @Body(new ZodValidationPipe(SecretsReencryptRequestSchema)) body: SecretsReencryptRequest,
+    @CurrentUser() caller?: AuthUser,
+  ): Promise<SecretsReencryptResponse> {
+    // No caller means authentication is disabled (local development).
+    if (caller && (!(caller.is_admin || caller.role === 'system_admin') || caller.bound_org_id)) {
+      throw new ForbiddenException('System admin scope required');
+    }
+    return this.secretsService.reencrypt({ actor: caller?.user_id ?? 'admin', dryRun: body.dry_run ?? false });
+  }
 
   @Endpoint({
     method: 'POST',

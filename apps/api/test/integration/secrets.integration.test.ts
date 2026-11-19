@@ -70,8 +70,9 @@ describe('integration secrets', () => {
     expect(list.data.some((item) => item.key === 'GITHUB_TOKEN')).toBe(true);
 
     const showRaw = await runEve(['secrets', 'show', 'GITHUB_TOKEN', '--project', project.id, '--json']);
-    const show = JSON.parse(showRaw) as { masked_value: string };
-    expect(show.masked_value).toMatch(/^ghp_\*+alue$/);
+    const show = JSON.parse(showRaw) as { masked_value: string; length: number; fingerprint: string };
+    expect(show.masked_value).toBe('••••••••');
+    expect(show.fingerprint).toMatch(/^[0-9a-f]{12}$/);
 
     const internalToken = process.env.EVE_INTERNAL_API_KEY || 'test-internal-key';
     const resolveResponse = await fetch(`${apiUrl}/internal/projects/${project.id}/secrets/resolve`, {
@@ -121,8 +122,9 @@ describe('integration secrets', () => {
     const shortKey = `SHORT_SECRET_${Date.now()}`;
     await runEve(['secrets', 'set', shortKey, 'xy', '--system', '--json']);
     const shortMaskedRaw = await runEve(['secrets', 'show', shortKey, '--system', '--json']);
-    const shortMasked = JSON.parse(shortMaskedRaw) as { masked_value: string };
-    expect(shortMasked.masked_value).toBe('**');
+    const shortMasked = JSON.parse(shortMaskedRaw) as { masked_value: string; length: number };
+    expect(shortMasked.masked_value).toBe('••••••••');
+    expect(shortMasked.length).toBe(2);
 
     const internalToken = process.env.EVE_INTERNAL_API_KEY || 'test-internal-key';
     const resolveResponse = await fetch(`${apiUrl}/internal/projects/${project.id}/secrets/resolve`, {
