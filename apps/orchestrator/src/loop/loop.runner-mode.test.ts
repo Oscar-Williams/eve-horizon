@@ -17,7 +17,7 @@ vi.mock('@eve/db', async (importOriginal) => ({
   recordRunnerModeFinding: vi.fn(async (_db: unknown, finding: Record<string, unknown>) => { m.findings.push(finding); }),
 }));
 
-import { agentJobTarget } from './loop.service';
+import { agentJobTarget, agentTargetFor } from './loop.service';
 
 const invocation = {
   jobId: 'shop-1', attemptId: 'att-1', projectId: 'proj_shop', text: 'review',
@@ -62,5 +62,14 @@ describe('agent job dispatch target', () => {
     m.mode = { profile: 'audit', podsOnly: false, required: false };
     expect(await agentJobTarget({} as never, invocation, { agentRuntimeConfigured: false })).toBe('worker');
     expect(m.findings).toEqual([]);
+  });
+});
+
+describe('the routing log target', () => {
+  it('names where an agent job will run, as dispatch decides it', () => {
+    expect(agentTargetFor({ profile: 'strict', podsOnly: false, required: true } as never, true)).toBe('worker');
+    expect(agentTargetFor({ profile: 'audit', podsOnly: true, required: true } as never, true)).toBe('worker');
+    expect(agentTargetFor({ profile: 'audit', podsOnly: false, required: false } as never, true)).toBe('agent-runtime');
+    expect(agentTargetFor({ profile: 'legacy', podsOnly: false, required: false } as never, false)).toBe('worker');
   });
 });
