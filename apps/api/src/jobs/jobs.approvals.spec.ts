@@ -370,3 +370,12 @@ describe('a PATCH decided on a job that changed before it was applied', () => {
   });
 });
 
+describe('a PATCH that sends a job in review back to active', () => {
+  it('is a rejection: it records the caller as the decider and starts a new attempt, as reject does', async () => {
+    await route(controller(), 'update', 'solo-r', { phase: 'active' }, OWNER);
+
+    expect(m.jobQ.rejectReview).toHaveBeenCalledWith('solo-r', 'user_owner', expect.any(String), 'user');
+    expect(m.jobQ.updatePhase).not.toHaveBeenCalled();
+  });
+});
+
