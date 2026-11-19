@@ -10015,7 +10015,7 @@
             "bearer": []
           }
         ],
-        "summary": "Get presigned download URL for snapshot",
+        "summary": "Get presigned download URL for snapshot (needs envdb:export under a strict project)",
         "tags": [
           "managed-db-snapshots"
         ]

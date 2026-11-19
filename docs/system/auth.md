@@ -1,7 +1,7 @@
 # Auth & Governance
 
 > Status: Current
-> Last Updated: 2026-11-05
+> Last Updated: 2026-11-19
 
 ## Overview
 
@@ -40,6 +40,43 @@ The `scope` claim uses the same shape as access binding `scope_json`:
 Workflow step jobs persist the resolved value on `jobs.token_scope`. The
 orchestrator uses that same value to build the workspace `.org` mount and to
 mint the job token, so the on-disk view and API authority match.
+
+## Operator Rights
+
+Two permissions guard what a caller may take out of a project rather than
+read in it:
+
+| Permission | Lets the caller | Held by |
+|---|---|---|
+| `secrets:use` | start work (job create, workflow invoke, chat) that receives a secret beyond its harness credential | admin and owner roles; bindings and custom roles may grant it |
+| `envdb:export` | download a managed database snapshot (`GET .../db/snapshots/:id/download`) | admin and owner roles; bindings and custom roles may grant it |
+
+No member role and no default token set (agent, script, `action: run`,
+service) carries either. The project's security profile decides where they
+come from (rule `access.operator_rights`, see
+[security profiles](security-profiles.md#rule-set-2-01327)):
+
+- **`legacy` and `audit`:** `secrets:read` stands for `secrets:use` and
+  `envdb:read` for `envdb:export`, so members and default job tokens keep
+  doing what they do today; `audit` records each such use. The member role
+  and the default agent permissions carry `jobs:harness_override`.
+- **`strict`:** only the permissions themselves count, and
+  `jobs:harness_override` leaves the member role and the default job
+  permissions. A job token keeps it only when its agent's `access.permissions`
+  or the job's own token permissions declare it; a person needs an admin or
+  owner role, a binding or a custom role.
+
+What counts as bound work is described under `secrets.use`: the declared
+allowlists (agent `access.secrets`, step `secrets:`, the starting job's
+allowlist) and the keys env overrides reference, less the harness's provider
+keys. A clone credential is never declared, so it never counts. Before
+setting a project `strict`, grant `secrets:use` (and `envdb:export`) to the
+people and agents that need them, for example with a custom role:
+
+```bash
+eve access roles create operator --org <org_id> --scope project --permissions secrets:use,envdb:export,jobs:harness_override
+eve access bind --org <org_id> --project <project_id> --user <user_id> --role operator
+```
 
 ## Configuration
 
