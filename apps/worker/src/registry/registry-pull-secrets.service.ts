@@ -31,6 +31,10 @@ export interface RegistryResignReport {
  * recorded on the current key version, at its current pull epoch, which is
  * what the instance's strict flip and the removal of the legacy internal key
  * wait for. Run by `eve system security reconcile`.
+ *
+ * With no credential key set, it re-signs with the internal key instead (the
+ * `internal` version): the way back before rolling back to a release that
+ * verifies only credentials the internal key signed.
  */
 @Injectable()
 export class RegistryPullSecretsService {
@@ -46,10 +50,10 @@ export class RegistryPullSecretsService {
   }
 
   async resign(): Promise<RegistryResignReport> {
-    if (!process.env.EVE_REGISTRY_CREDENTIAL_KEY) {
-      throw new Error('EVE_REGISTRY_CREDENTIAL_KEY is not set on the worker: there is no current registry key to re-sign with');
+    const signer = registryCredentialKey();
+    if (!signer) {
+      throw new Error('Neither EVE_REGISTRY_CREDENTIAL_KEY nor EVE_INTERNAL_API_KEY is set on the worker: there is no registry key to re-sign with');
     }
-    const signer = registryCredentialKey()!;
     const report: RegistryResignReport = {
       key_version: signer.version,
       resigned: 0,

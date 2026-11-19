@@ -159,6 +159,14 @@ Upgrading: set `EVE_REGISTRY_CREDENTIAL_KEY` on the API and the worker (new
 credentials are signed with it at once; old ones keep working), then run
 `eve system security reconcile`.
 
+Rolling back to a release that knows only the internal key (0.1.326 and
+earlier): it cannot verify credentials the credential key signed. First unset
+`EVE_REGISTRY_CREDENTIAL_KEY` on the API and the worker and run
+`eve system security reconcile`, which then re-signs every pull secret with
+the internal key (version `internal`); then roll back. Keep
+`EVE_INTERNAL_API_KEY` set on every service until no rollback below 0.1.327 is
+possible.
+
 **Upgrading from un-prefixed images.** Images pushed before project prefixes
 (`<host>/<image>`) are outside every project's prefix, so no project
 credential can pull them. After upgrading, run each environment's pipeline

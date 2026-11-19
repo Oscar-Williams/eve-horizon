@@ -180,5 +180,6 @@ while it is set; the SSO keys its sign-in forms with its own key the same way.
 `eve system security reconcile` (`POST /system/security/reconcile`, system
 admins) brings environments in line with the profiles without restarting
 anything. In 0.1.327 it re-signs each environment's registry pull secret with
-the current registry credential key and records the key version (see
+the current registry credential key (the internal key when none is set, the
+way back before a rollback) and records the key version (see
 [container registry](container-registry.md#credential-key)).

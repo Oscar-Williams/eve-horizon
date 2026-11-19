@@ -5,13 +5,16 @@ import { RegistryPullSecretsService, type RegistryResignReport } from './registr
 export class RegistryController {
   constructor(private readonly pullSecrets: RegistryPullSecretsService) {}
 
-  /** Re-sign stale environments' registry pull secrets with the current registry credential key. */
+  /**
+   * Re-sign stale environments' registry pull secrets with the current
+   * registry credential key (the internal key when none is set).
+   */
   @Post('pull-secrets/resign')
   @HttpCode(200)
   async resign(): Promise<RegistryResignReport> {
-    if (!process.env.EVE_REGISTRY_CREDENTIAL_KEY) {
+    if (!process.env.EVE_REGISTRY_CREDENTIAL_KEY && !process.env.EVE_INTERNAL_API_KEY) {
       throw new ConflictException(
-        'EVE_REGISTRY_CREDENTIAL_KEY is not set on the worker: there is no current registry key to re-sign with',
+        'Neither EVE_REGISTRY_CREDENTIAL_KEY nor EVE_INTERNAL_API_KEY is set on the worker: there is no registry key to re-sign with',
       );
     }
     return this.pullSecrets.resign();
