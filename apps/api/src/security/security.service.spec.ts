@@ -9,6 +9,8 @@ const db = vi.hoisted(() => {
     settings: new Map<string, string>(),
     orgProfiles: new Map<string, string | null>(),
     projectProfiles: new Map<string, string | null>(),
+    orgRulesets: new Map<string, number | null>(),
+    projectRulesets: new Map<string, number | null>(),
     projectOrgs: new Map<string, string>(),
     findings: [] as Array<Record<string, unknown>>,
   };
@@ -29,17 +31,36 @@ const db = vi.hoisted(() => {
       return {
         org_id: orgId ?? null,
         org_profile: orgId ? state.orgProfiles.get(orgId) ?? null : null,
+        org_ruleset: orgId ? state.orgRulesets.get(orgId) ?? null : null,
         project_profile: scope.projectId ? state.projectProfiles.get(scope.projectId) ?? null : null,
+        project_ruleset: scope.projectId ? state.projectRulesets.get(scope.projectId) ?? null : null,
       };
     }),
-    setOrgProfile: vi.fn(async (orgId: string, profile: string | null) => {
+    setOrgProfile: vi.fn(async (orgId: string, profile: string | null, ruleset?: number | null) => {
       state.orgProfiles.set(orgId, profile);
+      state.orgRulesets.set(orgId, ruleset ?? null);
       return true;
     }),
-    setProjectProfile: vi.fn(async (projectId: string, profile: string | null) => {
+    setProjectProfile: vi.fn(async (projectId: string, profile: string | null, ruleset?: number | null) => {
       state.projectProfiles.set(projectId, profile);
+      state.projectRulesets.set(projectId, ruleset ?? null);
       return true;
     }),
+    listOrgProfiles: vi.fn(async () =>
+      [...state.orgProfiles.keys()].map((id) => ({
+        id,
+        slug: id,
+        security_profile: state.orgProfiles.get(id) ?? null,
+        security_profile_ruleset: state.orgRulesets.get(id) ?? null,
+      }))),
+    listProjectProfiles: vi.fn(async () =>
+      [...state.projectProfiles.keys()].map((id) => ({
+        id,
+        slug: id,
+        org_id: state.projectOrgs.get(id),
+        security_profile: state.projectProfiles.get(id) ?? null,
+        security_profile_ruleset: state.projectRulesets.get(id) ?? null,
+      }))),
     recordFinding: vi.fn(async (finding: Record<string, unknown>) => {
       state.findings.push(finding);
     }),
@@ -75,6 +96,8 @@ describe('SecurityService', () => {
     db.state.settings.clear();
     db.state.orgProfiles.clear();
     db.state.projectProfiles.clear();
+    db.state.orgRulesets.clear();
+    db.state.projectRulesets.clear();
     db.state.projectOrgs = new Map([[PROJECT, ORG]]);
     db.state.findings = [];
   });
@@ -227,6 +250,85 @@ describe('SecurityService', () => {
     it('leaves the project to inherit when no default is set', async () => {
       await build().applyNewProjectProfile(PROJECT);
       expect(db.security.setProjectProfile).not.toHaveBeenCalled();
+    });
+  });
+  describe('profile stamps', () => {
+    const P1_RULE = 'jobs.run_step_change';
+    const P2_RULE = 'isolation.runner_mode';
+
+    it('runs a rule newer than the project stamp under audit, and older rules under strict', async () => {
+      db.state.projectProfiles.set(PROJECT, 'strict');
+      db.state.projectRulesets.set(PROJECT, 1);
+      const svc = build();
+      const ctx = { projectId: PROJECT, governing: 'project' as const, actor: member };
+
+      expect(await svc.decide(P2_RULE, ctx)).toBe('audit');
+      await expect(svc.gate(P2_RULE, ctx)).resolves.toBe('recorded');
+      await expect(svc.gate(P1_RULE, ctx)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(await svc.effectiveProfile({ projectId: PROJECT }, 'project', P2_RULE)).toBe('audit');
+      expect(await svc.effectiveProfile({ projectId: PROJECT }, 'project', P1_RULE)).toBe('strict');
+      expect(db.state.findings.find((f) => f.rule === P2_RULE)).toMatchObject({ profile: 'audit' });
+    });
+
+    it('reads a strict profile with no stamp as rule set 1', async () => {
+      db.state.orgProfiles.set(ORG, 'strict');
+      const svc = build();
+      expect(await svc.decide(P2_RULE, { projectId: PROJECT, governing: 'project' })).toBe('audit');
+      expect(await svc.decide(P1_RULE, { projectId: PROJECT, governing: 'project' })).toBe('strict');
+    });
+
+    it('honours the instance stamp for instance rules', async () => {
+      db.state.settings.set('security.profile', 'strict');
+      db.state.settings.set('security.profile_ruleset', '1');
+      const svc = build();
+      expect(await svc.decide('secrets.legacy_ciphertext', { governing: 'instance' })).toBe('audit');
+      expect(await svc.decide('sso.app_access', { governing: 'instance' })).toBe('strict');
+    });
+
+    it('stamps the current rule set when strict is set again, which takes the new rules', async () => {
+      db.state.projectProfiles.set(PROJECT, 'strict');
+      db.state.projectRulesets.set(PROJECT, 1);
+      const svc = build();
+      await svc.setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'org', id: ORG }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin');
+
+      expect(db.state.projectRulesets.get(PROJECT)).toBe(2);
+      expect(db.state.orgRulesets.get(ORG)).toBe(2);
+      expect(db.state.settings.get('security.profile_ruleset')).toBe('2');
+      expect(await svc.decide(P2_RULE, { projectId: PROJECT, governing: 'project' })).toBe('strict');
+    });
+
+    it('clears the stamp when a profile other than strict is set', async () => {
+      db.state.settings.set('security.profile_ruleset', '1');
+      const svc = build();
+      await svc.setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin');
+      await svc.setProfile({ scope: 'project', id: PROJECT }, 'audit', 'user_admin');
+      await svc.setProfile({ scope: 'instance' }, 'audit', 'user_admin');
+      expect(db.state.projectRulesets.get(PROJECT)).toBeNull();
+      expect(db.state.settings.has('security.profile_ruleset')).toBe(false);
+    });
+
+    it('stamps a new project created under new_project_profile=strict with the current rule set', async () => {
+      db.state.settings.set('security.new_project_profile', 'strict');
+      await build().applyNewProjectProfile(PROJECT);
+      expect(db.state.projectProfiles.get(PROJECT)).toBe('strict');
+      expect(db.state.projectRulesets.get(PROJECT)).toBe(2);
+    });
+
+    it('reports the rule set each strict profile covers', async () => {
+      db.state.projectProfiles.set(PROJECT, 'strict');
+      db.state.projectRulesets.set(PROJECT, 1);
+      db.state.orgProfiles.set(ORG, 'audit');
+      const report = await build().report({});
+      expect(report.current_ruleset).toBe(2);
+      expect(report.projects.find((p) => p.id === PROJECT)).toMatchObject({
+        profile: 'strict',
+        ruleset: 1,
+        effective: 'strict',
+        effective_ruleset: 1,
+      });
+      expect(report.orgs.find((o) => o.id === ORG)).toMatchObject({ effective: 'audit', effective_ruleset: null });
     });
   });
 });
