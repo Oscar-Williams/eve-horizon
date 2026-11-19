@@ -66,7 +66,7 @@ const PROJECT = 'proj_a';
 const member: AuthUser = { user_id: 'user_m' };
 
 function build(): SecurityService {
-  return new SecurityService({} as never);
+  return new SecurityService({ begin: async (work: (tx: unknown) => Promise<unknown>) => work({}) } as never);
 }
 
 describe('SecurityService', () => {

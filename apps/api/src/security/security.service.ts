@@ -52,15 +52,13 @@ export class SecurityService {
   private readonly logger = new Logger(SecurityService.name);
   private readonly settings: ReturnType<typeof systemSettingsQueries>;
   private readonly security: ReturnType<typeof securityQueries>;
-  private readonly audit: ReturnType<typeof auditQueries>;
   private readonly settingCache = new Map<string, { value: string | null; at: number }>();
   private readonly scopeCache = new Map<string, { row: SecurityProfileRow; at: number }>();
   private readonly recorded = new Map<string, number>();
 
-  constructor(@Inject('DB') db: Db) {
+  constructor(@Inject('DB') private readonly db: Db) {
     this.settings = systemSettingsQueries(db);
     this.security = securityQueries(db);
-    this.audit = auditQueries(db);
   }
 
   /** The profile that governs a rule for this scope. */
@@ -104,50 +102,52 @@ export class SecurityService {
       throw new BadRequestException(`Security profile must be legacy, audit or strict, not "${String(profile)}"`);
     }
 
-    if (target.scope === 'instance' || target.scope === 'new_projects') {
-      const key = target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING;
-      const previous = (await this.settings.get(key))?.value ?? null;
-      // Clearing the instance profile leaves it unset, which resolves to legacy.
-      if (profile === null) {
-        await this.settings.delete(key);
-      } else {
-        await this.settings.set(key, profile, actorUserId);
-      }
-      this.settingCache.delete(key);
-      await this.recordChange(target.scope, previous, profile, actorUserId);
-      return { scope: target.scope, id: null, profile };
-    }
-
-    if (!target.id) {
+    if ((target.scope === 'org' || target.scope === 'project') && !target.id) {
       throw new BadRequestException(`A ${target.scope} security profile needs the ${target.scope} id`);
     }
-    const before = target.scope === 'org'
-      ? await this.security.getProfiles({ orgId: target.id })
-      : await this.security.getProfiles({ projectId: target.id });
-    const previous = target.scope === 'org' ? before.org_profile : before.project_profile;
-    const updated = target.scope === 'org'
-      ? await this.security.setOrgProfile(target.id, profile)
-      : await this.security.setProjectProfile(target.id, profile);
-    if (!updated) {
-      throw new NotFoundException(`${target.scope === 'org' ? 'Org' : 'Project'} ${target.id} not found`);
+    // The change and its audit record commit together, or neither does.
+    const result = await this.db.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      const settings = systemSettingsQueries(tx);
+      const security = securityQueries(tx);
+      const audit = auditQueries(tx);
+
+      if (target.scope === 'instance' || target.scope === 'new_projects') {
+        const key = target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING;
+        const previous = (await settings.get(key))?.value ?? null;
+        // Clearing the instance profile leaves it unset, which resolves to legacy.
+        if (profile === null) {
+          await settings.delete(key);
+        } else {
+          await settings.set(key, profile, actorUserId);
+        }
+        await recordProfileChange(audit, target.scope, previous, profile, actorUserId);
+        return { scope: target.scope, id: null, profile };
+      }
+
+      const id = target.id!;
+      const before = target.scope === 'org'
+        ? await security.getProfiles({ orgId: id })
+        : await security.getProfiles({ projectId: id });
+      const previous = target.scope === 'org' ? before.org_profile : before.project_profile;
+      const updated = target.scope === 'org'
+        ? await security.setOrgProfile(id, profile)
+        : await security.setProjectProfile(id, profile);
+      if (!updated) {
+        throw new NotFoundException(`${target.scope === 'org' ? 'Org' : 'Project'} ${id} not found`);
+      }
+      await recordProfileChange(audit, `${target.scope}:${id}`, previous, profile, actorUserId);
+      return { scope: target.scope, id, profile };
+    });
+    if (result.id === null) {
+      this.settingCache.delete(target.scope === 'instance' ? SECURITY_PROFILE_SETTING : SECURITY_NEW_PROJECT_PROFILE_SETTING);
+    } else {
+      this.scopeCache.clear();
     }
-    this.scopeCache.clear();
-    await this.recordChange(`${target.scope}:${target.id}`, previous, profile, actorUserId);
-    return { scope: target.scope, id: target.id, profile };
+    return result;
   }
 
-  /** Who changed a profile, from what to what: an audit log entry. */
-  private async recordChange(entityId: string, previous: string | null, profile: string | null, actorUserId: string): Promise<void> {
-    await this.audit.log({
-      entity_type: 'security_profile',
-      entity_id: entityId,
-      action: 'updated',
-      actor: actorUserId,
-      actor_type: 'user',
-      changes: { profile: { old: previous, new: profile } },
-      context: {},
-    });
-  }
+
 
   /** Write the instance's profile for new projects onto a project just created. */
   async applyNewProjectProfile(projectId: string): Promise<void> {
@@ -304,4 +304,23 @@ export function describeActor(actor: AuthUser | null | undefined): [string, stri
   if (actor.is_service_principal) return ['service_principal', actor.user_id];
   if (actor.is_app_link_token) return ['app_link', actor.subscription_id ?? actor.user_id];
   return ['user', actor.user_id];
+}
+
+/** Who changed a profile, from what to what: an audit log entry. */
+async function recordProfileChange(
+  audit: ReturnType<typeof auditQueries>,
+  entityId: string,
+  previous: string | null,
+  profile: string | null,
+  actorUserId: string,
+): Promise<void> {
+  await audit.log({
+    entity_type: 'security_profile',
+    entity_id: entityId,
+    action: 'updated',
+    actor: actorUserId,
+    actor_type: 'user',
+    changes: { profile: { old: previous, new: profile } },
+    context: {},
+  });
 }
