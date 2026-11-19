@@ -9,7 +9,7 @@ import { buildApiError } from '../system/api-errors.js';
 import { JobLogsService } from './job-logs.service.js';
 import { JobReceiptsService } from './job-receipts.service.js';
 import { JobBatchService } from './job-batch.service.js';
-import { assertCanGrantJobPermissions, assertCanUseJobScope, workStartOptions, type WorkStartOptions } from '../auth/token-scope.js';
+import { assertCanGrantJobPermissions, judgeJobScope, workStartOptions, type WorkStartOptions } from '../auth/token-scope.js';
 import { AccessService } from '../auth/access.service.js';
 import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -1058,7 +1058,15 @@ export class JobsService {
     const result = await this.db.begin(async (rawTx) => {
       const tx = rawTx as unknown as Db;
       await this.lockJudgedActor(tx, job);
-      if (nextActor) {
+      if (nextActor && nextActor.scopeJudgedAt !== undefined) {
+        // A new actor keeps the judged scope mark only when the scope was
+        // judged again for them (P1-6).
+        await tx`
+          UPDATE jobs
+          SET actor_user_id = ${nextActor.actorUserId}, user_secrets_excluded = ${nextActor.userSecretsExcluded}, secrets_allowlist = ${nextActor.secretsAllowlist}, token_scope_judged_at = ${nextActor.scopeJudgedAt}, updated_at = NOW()
+          WHERE id = ${job.id}
+        `;
+      } else if (nextActor) {
         await tx`
           UPDATE jobs
           SET actor_user_id = ${nextActor.actorUserId}, user_secrets_excluded = ${nextActor.userSecretsExcluded}, secrets_allowlist = ${nextActor.secretsAllowlist}, updated_at = NOW()
@@ -1328,7 +1336,13 @@ export class JobsService {
   private async actorForChange(
     job: Job,
     caller: AuthUser,
-  ): Promise<{ actorUserId: string | null; userSecretsExcluded: boolean; secretsAllowlist: string[] | null } | null> {
+  ): Promise<{
+    actorUserId: string | null;
+    userSecretsExcluded: boolean;
+    secretsAllowlist: string[] | null;
+    /** The judged scope mark after the change: undefined leaves it as it is. */
+    scopeJudgedAt?: Date | null;
+  } | null> {
     const { userSecretsExcluded, secretsAllowlist: callerAllowlist } = workStartOptions(caller);
     // No actor and the 'system' actor of a no-user job token are the same actor.
     const sameActor = isSameActor(job.actor_user_id, caller.user_id);
@@ -1356,7 +1370,7 @@ export class JobsService {
       permissions: job.token_permissions,
       context: `Job ${job.id} job-token permissions`,
     });
-    await assertCanUseJobScope(this.accessService, {
+    const { judged } = await judgeJobScope(this.accessService, {
       orgId: project.org_id,
       projectId: job.project_id,
       userId: caller.user_id,
@@ -1365,7 +1379,12 @@ export class JobsService {
     });
     // Work no user started is recorded as no actor, never as 'system'.
     const actorUserId = sameActor ? job.actor_user_id : hasUserActor(caller.user_id) ? caller.user_id : null;
-    return { actorUserId, userSecretsExcluded: nextExcluded, secretsAllowlist: nextAllowlist };
+    return {
+      actorUserId,
+      userSecretsExcluded: nextExcluded,
+      secretsAllowlist: nextAllowlist,
+      scopeJudgedAt: job.token_scope ? (judged ? new Date() : null) : undefined,
+    };
   }
 
   /**
