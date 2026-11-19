@@ -6,6 +6,10 @@
 -- check. The orchestrator then decides, under the org's profile, whether the
 -- job's workspace and token may carry org files, docs or cloud-fs.
 
+-- Fail fast rather than queue behind a long transaction on jobs; the runner
+-- applies each migration in its own transaction, so this holds for it only.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS token_scope_judged_at TIMESTAMPTZ;
 
 COMMENT ON COLUMN jobs.token_scope_judged_at IS 'When the declared token scope was judged against the starting user and found inside the org strict profile (NULL: not judged)';
