@@ -56,6 +56,7 @@ import {
   serviceIngressBlock,
   findUndeclaredHarnessNames,
   describeHarnessNameGaps,
+  alwaysRefusedEnvKeys,
   type AppLinks,
   type Service,
 } from '@eve/shared';
@@ -66,6 +67,7 @@ import { ensureManifestEnvironment } from '../environments/manifest-environment.
 import type { AuthUser } from '../auth/auth.types.js';
 import { assertMayDeclareAuthOrgReferences } from './app-auth-org-references.js';
 import { SecurityService } from '../security/security.service.js';
+import { holdReservedEnvOverrides } from '../security/reserved-env.js';
 
 type PreparedAppLinkGrant = {
   producer_project_id: string;
@@ -318,6 +320,7 @@ export class ManifestService {
       authEnabled: loadConfig().EVE_AUTH_ENABLED,
     });
 
+    await this.checkReservedEnvOverrides(projectId, validatedManifest, caller);
     const profileWarnings = await this.checkWorkflowHarnessProfiles(projectId, validatedManifest, caller);
     const privateDomainWarnings = this.privateServiceDomainWarnings(validatedManifest);
     if (profileWarnings.length > 0 || privateDomainWarnings.length > 0) {
@@ -416,6 +419,44 @@ export class ManifestService {
       }
     }
     return warnings;
+  }
+
+  /**
+   * Env overrides in the manifest's workflows and pipelines. Stored
+   * definitions are read later without these checks, so they are made here:
+   * names reserved on every profile are refused (400), and names the
+   * project's profile holds are refused under `strict` and recorded under
+   * `audit` (rule harness.reserved_env).
+   */
+  private async checkReservedEnvOverrides(projectId: string, manifest: Manifest, caller?: AuthUser): Promise<void> {
+    const sources: Array<{ where: string; overrides: Record<string, string> }> = [];
+    const collect = (kind: string, definitions: unknown) => {
+      if (!definitions || typeof definitions !== 'object') return;
+      for (const [name, definition] of Object.entries(definitions as Record<string, unknown>)) {
+        const record = definition as { env_overrides?: Record<string, string>; steps?: Array<{ name?: string; env_overrides?: Record<string, string> }> } | null;
+        if (record?.env_overrides) sources.push({ where: `${kind} "${name}"`, overrides: record.env_overrides });
+        (Array.isArray(record?.steps) ? record!.steps : []).forEach((step, index) => {
+          if (step?.env_overrides) {
+            sources.push({ where: `${kind} "${name}" step "${step.name ?? `step-${index + 1}`}"`, overrides: step.env_overrides });
+          }
+        });
+      }
+    };
+    collect('workflow', (manifest as { workflows?: unknown }).workflows);
+    collect('pipeline', (manifest as { pipelines?: unknown }).pipelines);
+
+    for (const { where, overrides } of sources) {
+      const refused = alwaysRefusedEnvKeys(overrides);
+      if (refused.length > 0) {
+        throw new BadRequestException(
+          `Invalid ${where} env_overrides: ${refused.join(', ')} ${refused.length === 1 ? 'is' : 'are'} reserved by Eve ` +
+          '(a model routing name may be a single ${secret.KEY} held by the project or org)',
+        );
+      }
+    }
+    for (const { where, overrides } of sources) {
+      await holdReservedEnvOverrides(this.security, { projectId, actor: caller, where }, overrides);
+    }
   }
 
   /**

@@ -14,6 +14,7 @@ import { AccessService } from '../auth/access.service.js';
 import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
+import { holdReservedEnvOverrides } from '../security/reserved-env.js';
 import { APPROVE_TOKEN_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
@@ -638,6 +639,16 @@ export class JobsService {
   // --------------------------------------------------------------------------
   // Project-scoped operations
   // --------------------------------------------------------------------------
+
+  /**
+   * Hold a new job's env overrides to the project's profile (rule
+   * harness.reserved_env): code-loading names and the added TLS trust names
+   * are refused under `strict` and recorded under `audit`.
+   */
+  async holdReservedEnvOverrides(projectId: string, overrides: Record<string, string>, caller?: AuthUser): Promise<void> {
+    const project = await this.resolveProject(projectId);
+    await holdReservedEnvOverrides(this.security, { projectId: project, actor: caller, where: 'a new job' }, overrides);
+  }
 
   /**
    * Refuse (403) a caller who may not add a job under `parentId` in the

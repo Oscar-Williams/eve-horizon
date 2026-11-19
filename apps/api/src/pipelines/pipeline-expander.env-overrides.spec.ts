@@ -152,7 +152,7 @@ name: test
 pipelines:
   bad:
     env_overrides:
-      PATH: "/evil"
+      JOB_HOME: "\${env.HOME}"
     steps:
       - name: run
         action:
@@ -163,7 +163,7 @@ pipelines:
     await expect(service.expandPipeline('proj_test123', {
       pipeline_name: 'bad',
       git_sha: 'abc123',
-    })).rejects.toThrow(/env key PATH is reserved/);
+    })).rejects.toThrow(/unsupported expression/);
     expect(createRun).not.toHaveBeenCalled();
     expect(allCreatedJobs).toHaveLength(0);
   });

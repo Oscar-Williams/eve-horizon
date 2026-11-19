@@ -1,3 +1,4 @@
+import { reservedEnvOverridesStrict } from '../execution/reserved-env.js';
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { execFile } from 'child_process';
 import * as crypto from 'crypto';
@@ -1226,6 +1227,7 @@ export class ActionExecutorService {
         envOverrides,
         resolvedSecrets,
         baseEnv: env,
+        strictReserved: job ? await reservedEnvOverridesStrict(this.db, job) : false,
         onMissingSecrets: (missing) =>
           deliverProvisioningError(this.buildRelayDb(), {
             jobId,

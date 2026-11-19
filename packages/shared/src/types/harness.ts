@@ -91,6 +91,12 @@ export interface HarnessInvocation {
    * or credential files.
    */
   credentials_from_secrets_only?: boolean;
+  /**
+   * Set under the project's `strict` profile: env overrides lose the names
+   * that profile holds (code-loading and the added TLS trust names) as well
+   * as those reserved on every profile.
+   */
+  strict_env_overrides?: boolean;
 
   /** Profile provenance — recorded on routing log and job_attempts for audit/analytics. */
   harness_profile_source?: HarnessProfileSource;

@@ -850,7 +850,7 @@ workflows:
         agent:
           prompt: "Run"
         env_overrides:
-          EVE_JOB_TOKEN: \${secret.TOKEN}
+          JOB_HOME: \${env.HOME}
 `);
 
       await expect(service.invoke('proj_test123', 'invalid-env')).rejects.toThrow(/workflows\.invalid-env\.steps\.0\.env_overrides/);

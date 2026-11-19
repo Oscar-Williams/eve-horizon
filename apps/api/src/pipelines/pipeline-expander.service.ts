@@ -14,7 +14,7 @@ import {
 } from '@eve/db';
 import {
   AccessBindingScopeSchema,
-  EnvOverridesSchema,
+  StoredEnvOverridesSchema,
   VALID_TOOLCHAINS,
   generatePipelineRunId,
   getScriptConfig,
@@ -246,9 +246,14 @@ export class PipelineExpanderService {
     return [...new Set(toolchains)];
   }
 
+  /**
+   * Env overrides from a stored pipeline definition: format only. Reserved
+   * names were refused at sync, and the run time strips any a definition
+   * synced earlier still carries.
+   */
   private parseEnvOverrides(value: unknown, path: string): EnvOverrides | undefined {
     if (value === undefined || value === null) return undefined;
-    const parsed = EnvOverridesSchema.safeParse(value);
+    const parsed = StoredEnvOverridesSchema.safeParse(value);
     if (!parsed.success) {
       throw new BadRequestException(`Invalid ${path}: ${parsed.error.issues.map((issue) => {
         const prefix = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';

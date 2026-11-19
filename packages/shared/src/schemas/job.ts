@@ -80,15 +80,17 @@ const MODEL_ROUTING_ENV_KEYS = new Set([
   'NODE_TLS_REJECT_UNAUTHORIZED',
   'NODE_EXTRA_CA_CERTS',
   'SSL_CERT_FILE',
-  'SSL_CERT_DIR',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
 ]);
 const MODEL_ROUTING_ENV_SUFFIX = '_BASE_URL';
 
-// Names that make a process load code or libraries before it starts.
-const CODE_LOADING_ENV_KEYS = new Set([
-  'NODE_OPTIONS',
+// More TLS trust names, held by the project's security profile (rule
+// harness.reserved_env): refused under strict unless one secret reference.
+const PROFILE_ROUTING_ENV_KEYS = new Set(['SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE']);
+
+// Names that make a process load code or libraries before it starts, held by
+// the project's security profile (rule harness.reserved_env). NODE_OPTIONS is
+// Eve's own and refused on every profile.
+const PROFILE_CODE_LOADING_ENV_KEYS = new Set([
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
   'BASH_ENV',
@@ -96,11 +98,11 @@ const CODE_LOADING_ENV_KEYS = new Set([
   'PYTHONPATH',
   'PYTHONSTARTUP',
 ]);
-const CODE_LOADING_ENV_PREFIXES = ['DYLD_'];
+const PROFILE_CODE_LOADING_ENV_PREFIXES = ['DYLD_'];
 
-/** Whether a name makes a process load code or libraries before it starts. */
-function isCodeLoadingEnvKey(name: string): boolean {
-  return CODE_LOADING_ENV_KEYS.has(name) || CODE_LOADING_ENV_PREFIXES.some((prefix) => name.startsWith(prefix));
+function isProfileCodeLoadingEnvKey(name: string): boolean {
+  return PROFILE_CODE_LOADING_ENV_KEYS.has(name)
+    || PROFILE_CODE_LOADING_ENV_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
 // Only ${secret.KEY} placeholders are permitted inside env override values.
@@ -112,7 +114,9 @@ const WHOLE_SECRET_REF = /^\$\{secret\.([A-Z_][A-Z0-9_]*)\}$/;
 /** Whether a name sets where model traffic goes or which TLS it trusts. */
 export function isModelRoutingEnvKey(key: string): boolean {
   const name = key.toUpperCase();
-  return MODEL_ROUTING_ENV_KEYS.has(name) || name.endsWith(MODEL_ROUTING_ENV_SUFFIX);
+  return MODEL_ROUTING_ENV_KEYS.has(name)
+    || PROFILE_ROUTING_ENV_KEYS.has(name)
+    || name.endsWith(MODEL_ROUTING_ENV_SUFFIX);
 }
 
 /**
@@ -120,16 +124,32 @@ export function isModelRoutingEnvKey(key: string): boolean {
  * `strict` profile: the routing names, and names that load code.
  */
 export function isUserSecretWithheldKey(key: string): boolean {
-  return isModelRoutingEnvKey(key) || isCodeLoadingEnvKey(key.toUpperCase());
+  const name = key.toUpperCase();
+  return isModelRoutingEnvKey(name) || name === 'NODE_OPTIONS' || isProfileCodeLoadingEnvKey(name);
 }
 
 function isEveOwnedEnvKey(name: string): boolean {
   return RESERVED_ENV_KEYS.has(name) || RESERVED_ENV_PREFIXES.some(prefix => name.startsWith(prefix));
 }
 
-export function isReservedEnvKey(key: string): boolean {
+/**
+ * Names reserved on every profile: Eve's own, provider credentials and the
+ * model routing names (a routing name may still be one secret reference).
+ */
+export function isAlwaysReservedEnvKey(key: string): boolean {
   const name = key.toUpperCase();
-  return isEveOwnedEnvKey(name) || isCodeLoadingEnvKey(name) || isModelRoutingEnvKey(name);
+  return isEveOwnedEnvKey(name) || (isModelRoutingEnvKey(name) && !PROFILE_ROUTING_ENV_KEYS.has(name));
+}
+
+/** Names reserved only under the project's `strict` profile (rule harness.reserved_env). */
+export function isProfileReservedEnvKey(key: string): boolean {
+  const name = key.toUpperCase();
+  return PROFILE_ROUTING_ENV_KEYS.has(name) || isProfileCodeLoadingEnvKey(name);
+}
+
+/** Every reserved name: what the `strict` profile refuses. */
+export function isReservedEnvKey(key: string): boolean {
+  return isAlwaysReservedEnvKey(key) || isProfileReservedEnvKey(key);
 }
 
 /**
@@ -147,26 +167,34 @@ export function routingOverrideSecretRef(key: string, value: string): string | n
 /** Secret scopes a routing override may draw from. */
 export const ROUTING_OVERRIDE_SECRET_SCOPES: ReadonlySet<string> = new Set(['project', 'org']);
 
+/** Override names refused on every profile, as given. */
+export function alwaysRefusedEnvKeys(overrides: Record<string, string> | null | undefined): string[] {
+  return Object.entries(overrides ?? {})
+    .filter(([key, value]) => isAlwaysReservedEnvKey(key) && !routingOverrideSecretRef(key, value))
+    .map(([key]) => key);
+}
+
+/**
+ * Override names the project's `strict` profile refuses and `audit` records
+ * (rule harness.reserved_env): code-loading names, and the added TLS trust
+ * names unless one secret reference.
+ */
+export function profileHeldEnvKeys(overrides: Record<string, string> | null | undefined): string[] {
+  return Object.entries(overrides ?? {})
+    .filter(([key, value]) => isProfileReservedEnvKey(key) && !routingOverrideSecretRef(key, value))
+    .map(([key]) => key);
+}
+
 const EnvOverridesShape = z.record(
   z.string().regex(/^[A-Z_][A-Z0-9_]*$/, 'env key must be UPPER_SNAKE_CASE'),
   z.string().max(2048, 'env value exceeds 2048 chars'),
 );
 
-export const EnvOverridesSchema = EnvOverridesShape.superRefine((raw, ctx) => {
+function checkEnvOverrideFormat(raw: Record<string, string>, ctx: z.RefinementCtx): void {
   if (JSON.stringify(raw).length > 4096) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'env_overrides exceeds 4KB' });
   }
   for (const [key, value] of Object.entries(raw)) {
-    if (isReservedEnvKey(key) && !routingOverrideSecretRef(key, value)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: isModelRoutingEnvKey(key)
-          ? `env key ${key} is reserved by Eve: set it to a single \${secret.KEY} held by the project or org`
-          : `env key ${key} is reserved by Eve and cannot be overridden`,
-      });
-      continue;
-    }
     let match: RegExpExecArray | null;
     EXPR_SCAN.lastIndex = 0;
     while ((match = EXPR_SCAN.exec(value)) !== null) {
@@ -179,6 +207,31 @@ export const EnvOverridesSchema = EnvOverridesShape.superRefine((raw, ctx) => {
         });
       }
     }
+  }
+}
+
+/**
+ * Env overrides as stored in a workflow or pipeline definition: format only.
+ * Reserved names are refused at sync (see ManifestService) and stripped at
+ * run time, so re-reading a stored definition never fails on them.
+ */
+export const StoredEnvOverridesSchema = EnvOverridesShape.superRefine(checkEnvOverrideFormat);
+
+/**
+ * Env overrides in a request (job create, workflow invoke, chat hints): the
+ * format, and the names reserved on every profile. Names the project's
+ * profile holds are judged by the API (rule harness.reserved_env).
+ */
+export const EnvOverridesSchema = EnvOverridesShape.superRefine((raw, ctx) => {
+  checkEnvOverrideFormat(raw, ctx);
+  for (const key of alwaysRefusedEnvKeys(raw)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [key],
+      message: isModelRoutingEnvKey(key)
+        ? `env key ${key} is reserved by Eve: set it to a single \${secret.KEY} held by the project or org`
+        : `env key ${key} is reserved by Eve and cannot be overridden`,
+    });
   }
 });
 
@@ -202,7 +255,7 @@ export function mergeEnvOverrides(
     ...(invocationEnv ?? {}),
   };
   if (Object.keys(merged).length === 0) return null;
-  return EnvOverridesSchema.parse(merged);
+  return StoredEnvOverridesSchema.parse(merged);
 }
 
 export const HarnessProfileSourceSchema = z.enum([

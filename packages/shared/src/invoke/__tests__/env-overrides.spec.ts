@@ -110,6 +110,7 @@ describe('applyEnvOverrides', () => {
       env: { BASE: '1' },
       appliedKeys: [],
       strippedKeys: [],
+      heldKeys: [],
     });
     expect(result.env).not.toBe(baseEnv);
     expect(baseEnv).toEqual({ BASE: '1' });

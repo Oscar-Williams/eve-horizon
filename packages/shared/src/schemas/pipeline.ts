@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { JobGitSchema } from './git-controls.js';
-import { EnvOverridesSchema } from './job.js';
+import { StoredEnvOverridesSchema } from './job.js';
 import { AccessBindingScopeSchema } from './access-scope.js';
 import { ToolchainsSchema } from './agent-config.js';
 
@@ -64,7 +64,7 @@ export const PipelineStepSchema = z.object({
   }).passthrough().optional(),
   git: JobGitSchema.partial().optional(),
   resource_refs: WorkflowResourceRefsPolicySchema.optional(),
-  env_overrides: EnvOverridesSchema.optional(),
+  env_overrides: StoredEnvOverridesSchema.optional(),
   scope: AccessBindingScopeSchema.optional(),
   permissions: z.array(z.string().min(1)).optional(),
   toolchains: ToolchainsSchema.optional(),
@@ -122,7 +122,7 @@ export type WorkflowInputDeclaration = z.infer<typeof WorkflowInputDeclarationSc
 export const PipelineDefinitionSchema = z.object({
   steps: z.array(PipelineStepSchema).optional(),
   resource_refs: WorkflowResourceRefsPolicySchema.optional(),
-  env_overrides: EnvOverridesSchema.optional(),
+  env_overrides: StoredEnvOverridesSchema.optional(),
   scope: AccessBindingScopeSchema.optional(),
   permissions: z.array(z.string().min(1)).optional(),
   toolchains: ToolchainsSchema.optional(),

@@ -1526,6 +1526,7 @@ export class InvokeService implements OnModuleInit {
           envOverrides: envOverridesRaw,
           resolvedSecrets,
           baseEnv: harnessEnv,
+          strictReserved: effectiveInvocation.strict_env_overrides === true,
           onMissingSecrets: (missing) =>
             deliverProvisioningError(this.buildRelayDb(), {
               jobId: effectiveInvocation.jobId,

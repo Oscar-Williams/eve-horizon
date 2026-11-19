@@ -1,4 +1,4 @@
-import { Injectable, Inject, BadRequestException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
+import { Optional, Injectable, Inject, BadRequestException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
 import type { Db } from '@eve/db';
 import {
   agentConfigQueries,
@@ -29,6 +29,8 @@ import {
   type InlineProfileBundle,
   type ThreadChatRequest,
 } from '@eve/shared';
+import { SecurityService } from '../security/security.service.js';
+import { holdReservedEnvOverrides } from '../security/reserved-env.js';
 import { JobsService } from '../jobs/jobs.service.js';
 import { RbacService } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.service.js';
@@ -101,6 +103,7 @@ export class ChatService {
     @Inject('DB') private readonly db: Db,
     private readonly jobsService: JobsService,
     private readonly rbac: RbacService,
+    @Optional() private readonly security?: SecurityService,
   ) {
     this.agentConfigs = agentConfigQueries(db);
     this.agents = agentQueries(db);
@@ -1008,6 +1011,7 @@ export class ChatService {
             if (refsAnySecret) needs.push('secrets:read');
           }
           await this.rbac.requirePermissions(user, projectId, needs);
+          await holdReservedEnvOverrides(this.security, { projectId, actor: user, where: 'chat hints' }, overrideHints.env_overrides);
         }
       }
 
@@ -1474,6 +1478,7 @@ export class ChatService {
       if (refsAnySecret) needs.push('secrets:read');
     }
     await this.rbac.requirePermissions(user, projectId, needs);
+    await holdReservedEnvOverrides(this.security, { projectId, actor: user, where: 'chat hints' }, hints.env_overrides);
   }
 
   /**

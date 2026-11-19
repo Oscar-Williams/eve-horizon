@@ -1,6 +1,7 @@
 import type { SecretResolveItem } from '../schemas/secret.js';
 import {
-  isReservedEnvKey,
+  isAlwaysReservedEnvKey,
+  isProfileReservedEnvKey,
   routingOverrideSecretRef,
   ROUTING_OVERRIDE_SECRET_SCOPES,
 } from '../schemas/job.js';
@@ -11,12 +12,20 @@ export interface ApplyEnvOverridesOptions {
   resolvedSecrets: SecretResolveItem[];
   baseEnv: NodeJS.ProcessEnv;
   onMissingSecrets?: (missing: string[]) => Promise<void>;
+  /**
+   * The project's `strict` profile: also strip the names it holds
+   * (code-loading names and the added TLS trust names). Otherwise they are
+   * applied and reported in `heldKeys`.
+   */
+  strictReserved?: boolean;
 }
 
 export interface ApplyEnvOverridesResult {
   env: NodeJS.ProcessEnv;
   appliedKeys: string[];
   strippedKeys: string[];
+  /** Names the project's profile holds, applied because it is not `strict`. */
+  heldKeys: string[];
 }
 
 export class MissingSecretOverrideError extends Error {
@@ -34,7 +43,7 @@ export async function applyEnvOverrides(
   const env: NodeJS.ProcessEnv = { ...opts.baseEnv };
   const envOverrides = opts.envOverrides;
   if (!envOverrides || Object.keys(envOverrides).length === 0) {
-    return { env, appliedKeys: [], strippedKeys: [] };
+    return { env, appliedKeys: [], strippedKeys: [], heldKeys: [] };
   }
 
   const { resolved, missing } = interpolateEnvOverrides(envOverrides, opts.resolvedSecrets);
@@ -50,16 +59,25 @@ export async function applyEnvOverrides(
 
   const appliedKeys: string[] = [];
   const strippedKeys: string[] = [];
+  const heldKeys: string[] = [];
   for (const [key, value] of Object.entries(resolved)) {
-    if (isReservedEnvKey(key) && !isSharedSecretRouting(key, envOverrides[key], secretScopes)) {
+    const sharedSecretRouting = isSharedSecretRouting(key, envOverrides[key], secretScopes);
+    if (isAlwaysReservedEnvKey(key) && !sharedSecretRouting) {
       strippedKeys.push(key);
       continue;
+    }
+    if (isProfileReservedEnvKey(key) && !sharedSecretRouting) {
+      if (opts.strictReserved) {
+        strippedKeys.push(key);
+        continue;
+      }
+      heldKeys.push(key);
     }
     env[key] = value;
     appliedKeys.push(key);
   }
 
-  return { env, appliedKeys, strippedKeys };
+  return { env, appliedKeys, strippedKeys, heldKeys };
 }
 
 /**

@@ -148,6 +148,9 @@ export class JobsController {
     if (caller && body.parent_id) {
       await this.jobsService.assertMayCreateUnder(projectId, body.parent_id, caller);
     }
+    if (body.env_overrides) {
+      await this.jobsService.holdReservedEnvOverrides(projectId, body.env_overrides, caller);
+    }
     return this.jobsService.create(projectId, body, caller?.user_id, correlationId, workStartOptions(caller));
   }
 

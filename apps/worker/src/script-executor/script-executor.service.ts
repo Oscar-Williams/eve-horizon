@@ -1,3 +1,4 @@
+import { reservedEnvOverridesStrict } from '../execution/reserved-env.js';
 import { watchJobCancellation, JOB_CANCELLED, type JobCancellationMonitor } from '@eve/shared';
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { execFile } from 'child_process';
@@ -377,6 +378,7 @@ export class ScriptExecutorService {
         scriptHome,
         toolchains: getJobToolchains(job),
         envOverrides,
+        strictEnvOverrides: await reservedEnvOverridesStrict(this.db, job),
         ...(appLinkEnv ? { appLinkEnv } : {}),
         resolvedSecrets,
         parentJobId: job.parent_id ?? null,
@@ -777,6 +779,8 @@ export class ScriptExecutorService {
       scriptHome?: string;
       toolchains?: string[];
       envOverrides?: Record<string, string> | null;
+      /** The project's strict profile: also strip the env override names it holds. */
+      strictEnvOverrides?: boolean;
       appLinkEnv?: Record<string, string>;
       resolvedSecrets?: SecretResolveItem[];
       parentJobId?: string | null;
@@ -831,6 +835,7 @@ export class ScriptExecutorService {
         resolvedSecrets: context.resolvedSecrets ?? [],
         baseEnv: env,
         onMissingSecrets: context.relayMissingSecrets,
+        strictReserved: context.strictEnvOverrides === true,
       });
       env = overridesResult.env;
       if (overridesResult.appliedKeys.length > 0) {

@@ -1,11 +1,12 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException, Optional } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
 import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
 import { intersectScopes } from './scope-algebra.js';
 import { SecurityService } from '../security/security.service.js';
+import { holdReservedEnvOverrides } from '../security/reserved-env.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import * as yaml from 'yaml';
 
@@ -135,9 +136,16 @@ export class WorkflowsService {
     return undefined;
   }
 
-  private parseEnvOverrides(value: unknown, path: string): EnvOverrides | undefined {
+  /**
+   * Env overrides from a stored workflow definition (`stored`) or an
+   * invocation. A stored definition is checked for format only: reserved
+   * names were refused at sync, and the run time strips any a definition
+   * synced earlier still carries. An invocation also refuses the names
+   * reserved on every profile.
+   */
+  private parseEnvOverrides(value: unknown, path: string, source: 'stored' | 'request' = 'stored'): EnvOverrides | undefined {
     if (value === undefined || value === null) return undefined;
-    const parsed = EnvOverridesSchema.safeParse(value);
+    const parsed = (source === 'stored' ? StoredEnvOverridesSchema : EnvOverridesSchema).safeParse(value);
     if (!parsed.success) {
       throw new BadRequestException(`Invalid ${path}: ${this.formatEnvOverrideIssues(parsed.error.issues)}`);
     }
@@ -906,6 +914,16 @@ export class WorkflowsService {
     const invocationEnvOverrides = this.parseEnvOverrides(
       request?.env_overrides,
       `Workflow "${workflowName}" invocation env_overrides`,
+      'request',
+    );
+    await holdReservedEnvOverrides(
+      this.security,
+      {
+        projectId: project.id,
+        actor: hasUserActor(userId) ? ({ user_id: userId } as AuthUser) : null,
+        where: `workflow "${workflowName}" invocation`,
+      },
+      invocationEnvOverrides,
     );
     const workflowTokenScope = this.parseTokenScope(
       workflow.definition.scope,

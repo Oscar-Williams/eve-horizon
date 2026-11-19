@@ -14,6 +14,8 @@ import {
   resolveHarnessName,
   selectAvailableHarness,
   getHarnessAuthStatus,
+  alwaysRefusedEnvKeys,
+  profileHeldEnvKeys,
   findHarnessProfile,
   SecretResolveResponseSchema,
   type SecretResolveItem,
@@ -455,6 +457,8 @@ interface HarnessRouting {
   profileSource: string | null;
   /** Under the project's strict profile: credentials only from the job's secrets. */
   credentialsFromSecretsOnly?: boolean;
+  /** Under the project's strict profile: env overrides lose the names it holds too. */
+  envOverridesStrict?: boolean;
 }
 
 export function secretsUserIdForJob(job: Pick<Job, 'actor_user_id' | 'user_secrets_excluded'>): string | undefined {
@@ -2102,6 +2106,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
     // the worker's (rule harness.missing_credential).
     const secretsOnly = (await governingSecurityProfile(this.db, { projectId: job.project_id, governing: 'project' })) === 'strict';
     const actorUserId = secretsUserIdForJob(job);
+    await this.recordReservedEnvOverrides(job);
 
     // Resolve secrets from all scopes (system -> org -> project, and the job
     // actor's under strict) for harness selection
@@ -2165,7 +2170,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       },
     }).catch(err => this.logger.warn(`Failed to log routing decision: ${err}`));
 
-    return { harnessSpec, profileHash, profileSource, credentialsFromSecretsOnly: secretsOnly };
+    return { harnessSpec, profileHash, profileSource, credentialsFromSecretsOnly: secretsOnly, envOverridesStrict: secretsOnly };
   }
 
   /**
@@ -2211,6 +2216,25 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
         ? `harness profile "${name}" is not declared in x-eve.agents.profiles`
         : `harness profile "${name}" could not be read: ${lookup.message}`,
     );
+  }
+
+  /**
+   * Reserved env override names a stored job still carries are recorded under
+   * the project's profile (rule harness.reserved_env). The run strips those
+   * reserved on every profile, and under `strict` those the profile holds.
+   */
+  private async recordReservedEnvOverrides(job: Job): Promise<void> {
+    const overrides = (job as { env_overrides?: Record<string, string> | null }).env_overrides ?? null;
+    const keys = [...new Set([...alwaysRefusedEnvKeys(overrides), ...profileHeldEnvKeys(overrides)])].sort();
+    if (keys.length === 0) return;
+    const actorUserId = hasUserActor(job.actor_user_id) ? job.actor_user_id : null;
+    await decideSecurityRule(this.db, 'harness.reserved_env', {
+      projectId: job.project_id,
+      governing: 'project',
+      actorType: actorUserId ? 'user' : 'none',
+      actorId: actorUserId ?? 'none',
+      detail: { job_id: job.id, keys: keys.join(',') },
+    });
   }
 
   /**
@@ -2333,6 +2357,7 @@ export class LoopService implements OnModuleInit, OnModuleDestroy {
       ...(envOverrides && Object.keys(envOverrides).length > 0 ? { env_overrides: envOverrides } : {}),
       ...(secretsAllowlist ? { secrets_allowlist: secretsAllowlist } : {}),
       ...(routing.credentialsFromSecretsOnly ? { credentials_from_secrets_only: true } : {}),
+      ...(routing.envOverridesStrict ? { strict_env_overrides: true } : {}),
       ...(profileSource ? { harness_profile_source: profileSource as HarnessProfileSource } : {}),
       ...(profileHash ? { harness_profile_hash: profileHash } : {}),
       ...(job.harness_profile ? { harness_profile_name: job.harness_profile } : {}),
