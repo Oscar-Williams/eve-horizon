@@ -61,14 +61,28 @@ describe('a workflow step condition', () => {
     expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
   });
 
-  it('fails the step when its source step was cancelled, whatever that step last reported', async () => {
+  it('skips the step when its source step was cancelled, whatever that step last reported', async () => {
     const outcome = await loop().evaluateStepCondition(
       jobsWith(research('cancelled'), { status: 'cancelled', result_json: { eve: { status: 'ok' } } }),
       writeStep("research.status == 'ok'"),
     );
 
-    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
     expect(outcome?.reason).toMatch(/research/);
+  });
+
+  it('skips the step when its source step was skipped by its own condition', async () => {
+    const skipped = { ...research('done'), close_reason: 'condition_not_met', condition_skipped_at: new Date('2026-11-19T09:00:00Z') };
+    const outcome = await loop().evaluateStepCondition(jobsWith(skipped, null), writeStep("research.status == 'ok'"));
+
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
+  });
+
+  it('fails the step when its source was closed as skipped by a PATCH rather than by its condition', async () => {
+    const closed = { ...research('done'), close_reason: 'condition_not_met', condition_skipped_at: null };
+    const outcome = await loop().evaluateStepCondition(jobsWith(closed, null), writeStep("research.status != 'pass'"));
+
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
   });
 
   it('fails the step when its source step was closed as done with no attempt', async () => {
@@ -92,16 +106,16 @@ describe('a workflow step condition', () => {
     expect(outcome).toMatchObject({ shouldRun: false, action: 'wait' });
   });
 
-  it('fails the step when its source step cannot be found', async () => {
+  it('skips the step when its source step cannot be found', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(null, null), writeStep("research.status != 'skip'"));
 
-    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
   });
 
-  it('fails the step when it cannot be read', async () => {
+  it('skips the step when it cannot be read', async () => {
     const outcome = await loop().evaluateStepCondition(jobsWith(research('done'), SAID_OK), writeStep('research is fine'));
 
-    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
   });
 });
 
@@ -140,3 +154,19 @@ describe('a step whose condition decides it before it is claimed', () => {
     await expect(loop().conditionAllowsClaim(jobsWith(research('done'), SAID_OK), writeStep("research.status == 'ok'"))).resolves.toBe(true);
   });
 });
+
+describe('a step skipped by its condition', () => {
+  it('is marked as skipped by its condition, which a PATCH cannot set', async () => {
+    const service = loop();
+    const statements: string[] = [];
+    service.db.mockImplementation(async (strings: TemplateStringsArray) => {
+      statements.push(strings.join('?'));
+      return [];
+    });
+
+    await expect(service.conditionAllowsClaim(jobsWith(research('done'), SAID_OK), writeStep("research.status != 'ok'"))).resolves.toBe(false);
+
+    expect(statements.some((sql) => /condition_skipped_at = NOW\(\)/.test(sql))).toBe(true);
+  });
+});
+

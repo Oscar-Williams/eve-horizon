@@ -167,7 +167,7 @@ describe('workflow step conditions', () => {
     expect(outcome?.shouldRun).toBe(false);
   });
 
-  it('fails the step when the named step now runs as someone other than the step or the run', async () => {
+  it('skips the step when the named step now runs as someone other than the step or the run', async () => {
     const jobs = jobsWith(
       [done('run1.1', 'run1', 'research', 'user_mate')],
       { 'run1.1': { status: 'succeeded', result_json: { eve: { status: 'ok' } } } },
@@ -175,7 +175,7 @@ describe('workflow step conditions', () => {
 
     const outcome = await loop().evaluateStepCondition(jobs, CONDITIONAL_STEP);
 
-    expect(outcome).toMatchObject({ shouldRun: false, action: 'fail' });
+    expect(outcome).toMatchObject({ shouldRun: false, action: 'skip' });
     expect(outcome?.reason).toMatch(/research/);
   });
 
