@@ -252,13 +252,15 @@ export function eveAuthMe(options?: {
           res.status(200).json(data);
           return;
         }
-        if (appAudienceToken) {
-          res.status(200).json({ authenticated: false });
-          return;
-        }
       } catch {
         // Fall through to local resolution
       }
+    }
+
+    // Only Eve can say who an app audience token is for: it has no orgs claim.
+    if (appAudienceToken) {
+      res.status(200).json({ authenticated: false });
+      return;
     }
 
     let claims: EveTokenClaims;

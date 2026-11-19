@@ -164,4 +164,13 @@ describe('middleware with an app audience token', () => {
     assert.equal(me?.headers['x-eve-audience'], OWN);
     assert.deepEqual(res.body?.memberships, [{ org_id: 'org_a', role: 'admin' }]);
   });
+
+  it('eveAuthMe answers signed out when Eve refuses the token, rather than reading it locally', async () => {
+    const realStub = globalThis.fetch;
+    globalThis.fetch = async (url, init) =>
+      new URL(String(url)).pathname === '/auth/me' ? new Response('no', { status: 401 }) : realStub(url, init);
+    const req = { headers: { authorization: `Bearer ${appToken()}` }, query: {} };
+    const res = await run(eveAuthMe(), req);
+    assert.deepEqual(res.body, { authenticated: false });
+  });
 });
