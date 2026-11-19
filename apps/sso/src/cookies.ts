@@ -78,14 +78,35 @@ function clearLegacyRefreshCookie(res: express.Response): void {
   });
 }
 
-export type SignInState = { kind: 'flow' } | { kind: 'confirm'; nonce: string };
+export type SignInState = { kind: 'flow'; nonce: string } | { kind: 'confirm'; nonce: string };
 
-/** Record that the SSO started a sign-in flow in this browser (/login, a sign-in link). */
-export function startSignInFlow(res: express.Response): void {
-  res.cookie(STATE_COOKIE, `flow.${randomBytes(16).toString('base64url')}`, {
+/**
+ * Start (or keep) a sign-in flow in this browser (/login, a sign-in link, a
+ * dashboard magic link) and return its nonce. The nonce goes out in GoTrue's
+ * redirect_to as `flow=<nonce>` and must come back with the tokens. A flow
+ * already in progress keeps its nonce, so a second tab does not orphan a link
+ * sent from the first.
+ */
+export function startSignInFlow(req: express.Request, res: express.Response): string {
+  const current = readSignInState(req);
+  const nonce = current?.kind === 'flow' ? current.nonce : randomBytes(16).toString('base64url');
+  res.cookie(STATE_COOKIE, `flow.${nonce}`, {
     ...stateCookieOptions(),
     maxAge: STATE_MAX_AGE_MS,
   });
+  return nonce;
+}
+
+/** This browser's flow nonce, when a sign-in flow is in progress. */
+export function currentFlowNonce(req: express.Request): string | undefined {
+  const state = readSignInState(req);
+  return state?.kind === 'flow' ? state.nonce : undefined;
+}
+
+/** True when the flow posted with the tokens is this browser's flow. */
+export function flowMatches(state: SignInState | null, flow: unknown): boolean {
+  if (state?.kind !== 'flow' || typeof flow !== 'string') return false;
+  return safeEqualText(state.nonce, flow);
 }
 
 /** Record a pending "Continue as ...?" question; returns the nonce its form must send back. */
@@ -102,7 +123,8 @@ export function clearSignInState(res: express.Response): void {
 export function readSignInState(req: express.Request): SignInState | null {
   const value: unknown = req.cookies?.[STATE_COOKIE];
   if (typeof value !== 'string') return null;
-  if (/^flow\.[A-Za-z0-9_-]{16,}$/.test(value)) return { kind: 'flow' };
+  const flow = /^flow\.([A-Za-z0-9_-]{16,})$/.exec(value);
+  if (flow) return { kind: 'flow', nonce: flow[1]! };
   const confirm = /^confirm\.([A-Za-z0-9_-]{16,})$/.exec(value);
   return confirm ? { kind: 'confirm', nonce: confirm[1]! } : null;
 }
@@ -110,7 +132,11 @@ export function readSignInState(req: express.Request): SignInState | null {
 /** True when the form's confirmation matches the pending question's nonce. */
 export function confirmationMatches(state: SignInState | null, confirm: unknown): boolean {
   if (state?.kind !== 'confirm' || typeof confirm !== 'string') return false;
-  const expected = Buffer.from(state.nonce);
-  const given = Buffer.from(confirm);
-  return expected.length === given.length && timingSafeEqual(expected, given);
+  return safeEqualText(state.nonce, confirm);
+}
+
+function safeEqualText(expected: string, given: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(given);
+  return a.length === b.length && timingSafeEqual(a, b);
 }

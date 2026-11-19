@@ -5,6 +5,7 @@ import {
   askToConfirm,
   clearSignInState,
   confirmationMatches,
+  flowMatches,
   readSignInState,
   setSessionCookies,
 } from '../cookies.js';
@@ -82,11 +83,12 @@ export function registerCallbackRoutes(app: Express): void {
       return;
     }
 
-    // Set a session only for a sign-in this browser started, or one the
-    // person has just confirmed. Otherwise ask, so a planted link cannot sign
-    // a browser in as someone else.
+    // Set a session only for tokens that come back with this browser's flow
+    // nonce (a sign-in started here), or that the person has just confirmed.
+    // Otherwise ask, so a planted link cannot sign a browser in as someone
+    // else.
     const state = readSignInState(req);
-    if (state?.kind !== 'flow' && !confirmationMatches(state, req.body?.confirm)) {
+    if (!flowMatches(state, req.body?.flow) && !confirmationMatches(state, req.body?.confirm)) {
       const email = decodeJwtPayload(accessToken)?.email;
       const confirm = askToConfirm(res);
       res.status(200).type('html').send(continueAsHtml({

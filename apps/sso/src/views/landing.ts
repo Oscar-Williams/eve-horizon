@@ -87,6 +87,7 @@ ${POST_TO_CALLBACK_SCRIPT}
         type: hashParams.get('type') || '',
         redirect_to: REDIRECT_TO,
         project_id: PROJECT_ID,
+        flow: flowFromUrl(),
       });
     })();
 

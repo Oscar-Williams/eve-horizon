@@ -8,6 +8,7 @@ import {
   refreshSupabaseSession,
 } from '../gotrue-client.js';
 import { admitSessionOrigin } from '../security.js';
+import { ssoOrigin } from '../urls.js';
 
 function requestOrigin(origin: string | string[] | undefined): string | null {
   return typeof origin === 'string' && origin ? origin : null;
@@ -81,7 +82,15 @@ export function registerSessionRoutes(app: Express): void {
   });
 
   app.post('/logout', async (req, res) => {
-    if (!await admitSessionOrigin(req, res, 'logout')) return;
+    // A sign-out comes from a browser page: the SSO's own, or an origin the
+    // instance profile admits (rule sso.session_origin). No Origin, no
+    // sign-out.
+    const origin = requestOrigin(req.headers.origin);
+    if (!origin) {
+      res.status(403).json({ error: 'Origin required' });
+      return;
+    }
+    if (origin !== ssoOrigin(req) && !await admitSessionOrigin(req, res, 'logout')) return;
 
     // End this GoTrue session, not just the cookies. GoTrue's logout needs an
     // access token, so refresh once first.

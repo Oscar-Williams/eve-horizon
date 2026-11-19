@@ -91,19 +91,22 @@ export function isSignupEmailAllowed(email: string): boolean {
   return !!domain && SIGNUP_ALLOWED_DOMAINS.includes(domain);
 }
 
-export function signWrapCsrf(wrapToken: string): string {
-  // Stateless CSRF: HMAC-SHA256 of the wrap_token using the internal API key.
-  // Stored in a hidden form field. Defends against accidental cross-origin
-  // form submissions; the wrap_token itself remains the bearer credential.
+/**
+ * The CSRF value for a sign-in link form: HMAC-SHA256, keyed with the
+ * internal API key, of the wrap token and this browser's flow nonce (from its
+ * host-only state cookie). A value read in one browser does not work in
+ * another; the wrap token itself remains the bearer credential.
+ */
+export function signWrapCsrf(wrapToken: string, flowNonce: string): string {
   if (!EVE_INTERNAL_API_KEY) {
     throw new Error('EVE_INTERNAL_API_KEY is required to sign sign-in link forms');
   }
-  return createHmac('sha256', EVE_INTERNAL_API_KEY).update(wrapToken).digest('hex');
+  return createHmac('sha256', EVE_INTERNAL_API_KEY).update(`${wrapToken}\n${flowNonce}`).digest('hex');
 }
 
-export function verifyWrapCsrf(wrapToken: string, nonce: string): boolean {
-  if (!nonce || nonce.length !== 64 || !EVE_INTERNAL_API_KEY) return false;
-  const expected = signWrapCsrf(wrapToken);
+export function verifyWrapCsrf(wrapToken: string, flowNonce: string | undefined, nonce: string): boolean {
+  if (!flowNonce || !nonce || nonce.length !== 64 || !EVE_INTERNAL_API_KEY) return false;
+  const expected = signWrapCsrf(wrapToken, flowNonce);
   try {
     return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(nonce, 'hex'));
   } catch {

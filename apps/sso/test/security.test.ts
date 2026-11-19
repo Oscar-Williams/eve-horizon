@@ -195,52 +195,56 @@ describe('isSignupEmailAllowed', () => {
 
 describe('wrap CSRF signing', () => {
   const WRAP = 'mlw_0123456789abcdefghjkmnpqrs';
+  const FLOW = 'this-browsers-flow-nonce';
 
   it('produces a 64-char hex signature that round-trips', async () => {
     const sec = await loadSecurity({ EVE_INTERNAL_API_KEY: 'test-key' });
-    const nonce = sec.signWrapCsrf(WRAP);
+    const nonce = sec.signWrapCsrf(WRAP, FLOW);
     expect(nonce).toMatch(/^[0-9a-f]{64}$/);
-    expect(sec.verifyWrapCsrf(WRAP, nonce)).toBe(true);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, nonce)).toBe(true);
   });
 
-  it('is deterministic per key and differs across keys and tokens', async () => {
+  it('is deterministic per key and differs across keys, tokens and flows', async () => {
     const sec1 = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-one' });
-    const a = sec1.signWrapCsrf(WRAP);
-    expect(sec1.signWrapCsrf(WRAP)).toBe(a);
-    expect(sec1.signWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz')).not.toBe(a);
+    const a = sec1.signWrapCsrf(WRAP, FLOW);
+    expect(sec1.signWrapCsrf(WRAP, FLOW)).toBe(a);
+    expect(sec1.signWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz', FLOW)).not.toBe(a);
+    expect(sec1.signWrapCsrf(WRAP, 'another-browsers-flow')).not.toBe(a);
     const sec2 = await loadSecurity({ EVE_INTERNAL_API_KEY: 'key-two' });
-    expect(sec2.signWrapCsrf(WRAP)).not.toBe(a);
+    expect(sec2.signWrapCsrf(WRAP, FLOW)).not.toBe(a);
   });
 
   it('refuses to sign when EVE_INTERNAL_API_KEY is unset', async () => {
     const sec = await loadSecurity();
-    expect(() => sec.signWrapCsrf(WRAP)).toThrow();
+    expect(() => sec.signWrapCsrf(WRAP, FLOW)).toThrow();
   });
 
   it('accepts no nonce when EVE_INTERNAL_API_KEY is unset', async () => {
     const keyed = await loadSecurity({ EVE_INTERNAL_API_KEY: 'test-key' });
-    const nonce = keyed.signWrapCsrf(WRAP);
+    const nonce = keyed.signWrapCsrf(WRAP, FLOW);
     const sec = await loadSecurity();
-    expect(sec.verifyWrapCsrf(WRAP, nonce)).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, nonce)).toBe(false);
   });
 
   it('rejects tampered, truncated, and non-hex nonces', async () => {
     const sec = await loadSecurity({ EVE_INTERNAL_API_KEY: 'test-key' });
-    const nonce = sec.signWrapCsrf(WRAP);
+    const nonce = sec.signWrapCsrf(WRAP, FLOW);
     const flipped = (nonce[0] === 'a' ? 'b' : 'a') + nonce.slice(1);
-    expect(sec.verifyWrapCsrf(WRAP, flipped)).toBe(false);
-    expect(sec.verifyWrapCsrf(WRAP, '')).toBe(false);
-    expect(sec.verifyWrapCsrf(WRAP, nonce.slice(0, 63))).toBe(false);
-    expect(sec.verifyWrapCsrf(WRAP, nonce + '0')).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, flipped)).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, '')).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, nonce.slice(0, 63))).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, nonce + '0')).toBe(false);
     // 64 chars but not hex: Buffer.from(..., 'hex') yields a shorter buffer,
     // timingSafeEqual throws, and the catch returns false.
-    expect(sec.verifyWrapCsrf(WRAP, 'z'.repeat(64))).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, FLOW, 'z'.repeat(64))).toBe(false);
   });
 
-  it('binds the nonce to the wrap token', async () => {
+  it('binds the nonce to the wrap token and to this browser\'s flow', async () => {
     const sec = await loadSecurity({ EVE_INTERNAL_API_KEY: 'test-key' });
-    const nonce = sec.signWrapCsrf(WRAP);
-    expect(sec.verifyWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz', nonce)).toBe(false);
+    const nonce = sec.signWrapCsrf(WRAP, FLOW);
+    expect(sec.verifyWrapCsrf('mlw_zzzzzzzzzzzzzzzzzzzzzzzzzz', FLOW, nonce)).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, 'another-browsers-flow', nonce)).toBe(false);
+    expect(sec.verifyWrapCsrf(WRAP, undefined, nonce)).toBe(false);
   });
 });
 

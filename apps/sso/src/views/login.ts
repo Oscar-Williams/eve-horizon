@@ -10,6 +10,8 @@ export function loginPageHtml(
   page: {
     /** This response's CSP script nonce. */
     scriptNonce?: string;
+    /** This browser's sign-in flow nonce, posted with a password sign-in. */
+    flow?: string;
   } = {},
 ): string {
   const escapedError = error ? escapeHtml(error) : '';
@@ -246,6 +248,7 @@ export function loginPageHtml(
     const MAGIC_ONLY = ${magicOnly ? 'true' : 'false'};
     const ALLOW_SIGNUP = ${allowSignup ? 'true' : 'false'};
     const APP_SCOPED_MAGIC_LINK = ${appScopedMagicLink ? 'true' : 'false'};
+    const SIGN_IN_FLOW = ${jsString(page.flow ?? '')};
     let currentTab = '${isSignup ? 'signup' : 'signin'}';
 
     function switchTab(tab) {
@@ -293,6 +296,7 @@ export function loginPageHtml(
 
 ${POST_TO_CALLBACK_SCRIPT}
 
+    // Tokens from a sign-in made on this page: this browser's flow.
     function goToCallback(accessToken, refreshToken) {
       postToCallback({
         access_token: accessToken,
@@ -300,6 +304,7 @@ ${POST_TO_CALLBACK_SCRIPT}
         type: 'auth',
         redirect_to: REDIRECT_TO,
         project_id: PROJECT_ID,
+        flow: SIGN_IN_FLOW,
       });
     }
 
@@ -398,12 +403,15 @@ ${POST_TO_CALLBACK_SCRIPT}
         // Clear hash to avoid re-processing
         history.replaceState(null, '', window.location.pathname + window.location.search);
         // Preserve the type (e.g. 'invite') so /callback can handle it
+        // Only the flow GoTrue brought back in the URL, never this page's
+        // own: tokens in a planted link get "Continue as".
         postToCallback({
           access_token: accessToken,
           refresh_token: refreshToken,
           type: type,
           redirect_to: REDIRECT_TO,
           project_id: PROJECT_ID,
+          flow: flowFromUrl(),
         });
       }
     })();

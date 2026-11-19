@@ -27,8 +27,13 @@ describe('POST /auth/magiclink with no project (the Eve dashboard)', () => {
     expect(res.status).toBe(200);
     const call = upstream.calls.find((c) => c.url.startsWith(`${GOTRUE_URL}/magiclink`));
     expect(call).toBeDefined();
-    const redirect = new URL(call!.url).searchParams.get('redirect_to');
-    expect(redirect).toBe(`${SSO_ORIGIN}/?redirect_to=${encodeURIComponent(DASHBOARD)}`);
+    const redirect = new URL(new URL(call!.url).searchParams.get('redirect_to')!);
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(`${SSO_ORIGIN}/`);
+    expect(redirect.searchParams.get('redirect_to')).toBe(DASHBOARD);
+    // This browser's flow nonce, also set in its state cookie.
+    const flow = redirect.searchParams.get('flow');
+    expect(flow).toBeTruthy();
+    expect(res.cookies.some((l) => l.startsWith(`__Host-eve_sso_state=flow.${flow}`))).toBe(true);
     expect(JSON.parse(call!.body ?? '{}')).toEqual({ email: 'person@example.com' });
   });
 
@@ -40,7 +45,10 @@ describe('POST /auth/magiclink with no project (the Eve dashboard)', () => {
 
     const call = upstream.calls.find((c) => c.url.startsWith(`${GOTRUE_URL}/magiclink`));
     expect(call).toBeDefined();
-    expect(new URL(call!.url).searchParams.get('redirect_to')).toBe(`${SSO_ORIGIN}/`);
+    const redirect = new URL(new URL(call!.url).searchParams.get('redirect_to')!);
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(`${SSO_ORIGIN}/`);
+    expect(redirect.searchParams.get('redirect_to')).toBeNull();
+    expect(redirect.searchParams.get('flow')).toBeTruthy();
   });
 
   it('gives the same reply whether or not the email has an account', async () => {

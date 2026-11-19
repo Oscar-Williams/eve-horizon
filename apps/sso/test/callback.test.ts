@@ -68,10 +68,10 @@ describe('GET /callback', () => {
 });
 
 describe('POST /callback', () => {
-  it('sets the session and returns to the target when the SSO started the flow', async () => {
+  it('sets the session and returns to the target when the tokens come back with this browser\'s flow', async () => {
     const app = await loadSso();
     const { calls } = upstream();
-    const res = await postCallback(app, tokens, { cookie: FLOW_STATE });
+    const res = await postCallback(app, { ...tokens, flow: 'started-at-login' }, { cookie: FLOW_STATE });
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe(DASHBOARD);
     expect(cookieLine(res.cookies, '__Host-eve_sso_rt', (l) => l.startsWith('__Host-eve_sso_rt=rt-1'))).toBeDefined();
@@ -175,8 +175,8 @@ describe('flows the SSO starts', () => {
     const res = await send(app, {
       method: 'POST',
       path: `/m/${wrap}`,
-      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: SSO_ORIGIN },
-      body: form({ csrf: signWrapCsrf(wrap) }),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: SSO_ORIGIN, cookie: FLOW_STATE },
+      body: form({ csrf: signWrapCsrf(wrap, 'started-at-login') }),
     });
     expect(res.status).toBe(302);
     expect(cookieLine(res.cookies, '__Host-eve_sso_state')).toBeDefined();

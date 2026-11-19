@@ -30,9 +30,12 @@ export function registerLoginRoutes(app: Express): void {
       }
     }
 
-    // A sign-in that comes back to /callback in this browser was started here.
-    startSignInFlow(res);
-    res.type('html').send(loginPageHtml(redirectTo, mode, error, context, { scriptNonce: cspNonce(res) }));
+    // A sign-in started here comes back to /callback with this flow's nonce:
+    // the password sign-in posts it from this page, and a magic link carries
+    // it through GoTrue's redirect_to.
+    const flow = startSignInFlow(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(loginPageHtml(redirectTo, mode, error, context, { scriptNonce: cspNonce(res), flow }));
   });
 
   // -------------------------------------------------------------------------
@@ -122,8 +125,10 @@ export function registerLoginRoutes(app: Express): void {
     }
     // GoTrue sends the link back to the SSO, which then forwards to the
     // requested address. GoTrue only accepts its own site (the SSO) as a
-    // return address, so the final target travels inside it.
-    const returnTo = magicLinkReturnAddress(ssoOrigin(req), typeof redirectTo === 'string' ? redirectTo : '');
+    // return address, so the final target travels inside it, with this
+    // browser's flow nonce.
+    const flow = startSignInFlow(req, res);
+    const returnTo = magicLinkReturnAddress(ssoOrigin(req), typeof redirectTo === 'string' ? redirectTo : '', flow);
     try {
       const gotrueRes = await fetch(`${SUPABASE_AUTH_URL}/magiclink${buildQuery({ redirect_to: returnTo })}`, {
         method: 'POST',
@@ -150,11 +155,10 @@ export function registerLoginRoutes(app: Express): void {
 
 /**
  * Where GoTrue sends a dashboard sign-in link: the SSO's landing page, with
- * the requested address as its `redirect_to` when that address is one the
- * SSO may send people to.
+ * this browser's flow nonce and, when it is one the SSO may send people to,
+ * the requested address as its `redirect_to`.
  */
-export function magicLinkReturnAddress(sso: string, redirectTo: string): string {
-  return redirectTo && isAllowedRedirect(redirectTo)
-    ? `${sso}/${buildQuery({ redirect_to: redirectTo })}`
-    : `${sso}/`;
+export function magicLinkReturnAddress(sso: string, redirectTo: string, flow?: string): string {
+  const onward = redirectTo && isAllowedRedirect(redirectTo) ? redirectTo : undefined;
+  return `${sso}/${buildQuery({ flow, redirect_to: onward })}`;
 }

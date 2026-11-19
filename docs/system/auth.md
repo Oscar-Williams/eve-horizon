@@ -218,7 +218,7 @@ Eve-rendered magic-link and invite emails do not embed the raw GoTrue verify URL
 
 Operations note: rows with `get_count > 1` are expected for users on protected mailboxes. The pruner deletes expired or long-consumed rows after 24h. Wrap tokens have the typeid('mlw') shape (`mlw_<26 base32>`) and are validated against that regex before any DB lookup. The wrap token is the bearer credential — knowing it lets the holder redeem. Trust boundary matches `org_invites.invite_code`.
 
-CSRF defense is a stateless HMAC nonce (signed with `EVE_INTERNAL_API_KEY`, which the SSO must have: without it the interstitial is not served); it defends against accidental cross-origin form submissions but does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` to keep them out of shared caches. Their `Referrer-Policy` keeps the wrap token in the URL from reaching any other site: `same-origin` on the interstitial, which posts its form back to the SSO (a browser sends `Origin: null` on a form POST from a `no-referrer` page), and `no-referrer` on every other `/m/*` response, which post nowhere. The "Continue as" page (`POST /callback`) uses `same-origin` for the same reason. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
+CSRF defense is an HMAC (keyed with `EVE_INTERNAL_API_KEY`, which the SSO must have: without it the interstitial is not served) of the wrap token and this browser's sign-in flow nonce, and `POST /m/:wrap` takes only the SSO's own `Origin` (see [The sign-in callback](#the-sign-in-callback)); it does not add against a token-holder attacker. All `/m/*` responses set `Cache-Control: no-store` to keep them out of shared caches. Their `Referrer-Policy` keeps the wrap token in the URL from reaching any other site: `same-origin` on the interstitial, which posts its form back to the SSO (a browser sends `Origin: null` on a form POST from a `no-referrer` page), and `no-referrer` on every other `/m/*` response, which post nowhere. The "Continue as" page (`POST /callback`) uses `same-origin` for the same reason. The interstitial only displays the destination host once `redirect_to` passes the same project-aware allowlist used by `/callback`.
 
 A successful consume emits `auth.action_link.wrap_redeemed` to the event spine when `project_id` is present, carrying `{ org_id, email_hash, kind, get_count, latency_ms }`. The event source `auth` is also used for the existing `auth.domain_signup.*` events.
 
@@ -455,9 +455,10 @@ sets or clears the session also clears the parent-domain `eve_sso_rt` cookie
 that older releases set. Apps may read `eve_sso` from page script to decide
 whether to ask `/session`.
 
-`/login` and a confirmed sign-in link (`POST /m/:wrap`) also set a short-lived
-host-only state cookie (`__Host-eve_sso_state`, 15 minutes). See
-[The sign-in callback](#the-sign-in-callback).
+`/login`, a dashboard magic-link request and the sign-in link page
+(`/m/:wrap`) also set a short-lived host-only state cookie
+(`__Host-eve_sso_state`, 15 minutes) holding this browser's sign-in flow
+nonce. See [The sign-in callback](#the-sign-in-callback).
 
 `SameSite=None` is required for the `@eve-horizon/auth-react` provider's
 `fetch(SSO_URL/session, { credentials: 'include' })` probe to carry the
@@ -495,16 +496,35 @@ the password sign-in, `/login` and the `/` landing page) post them in a form
 body; a `GET /callback` carrying tokens sets no session and returns to
 `/login`. Tokens therefore never travel in a URL to the SSO.
 
-The `POST` sets the session at once when the state cookie shows that this
-browser started the sign-in (at `/login` or by confirming a sign-in link).
-Without it (an admin invite, or an email opened in another browser) the SSO
-shows "Continue as <email>?" and sets the session only when that page's form
-comes back with its one-time confirmation. A link planted by someone else
-therefore cannot sign a visitor in as them.
+The `POST` sets the session at once only when the tokens come back with the
+flow nonce in this browser's state cookie:
+
+- a password sign-in on `/login` posts the nonce from that page;
+- a dashboard magic link carries it through GoTrue's `redirect_to`
+  (`<sso>/?flow=<nonce>&redirect_to=...`), and the landing page posts the
+  `flow` from its URL;
+- confirming a sign-in link (`POST /m/:wrap`) rewrites the GoTrue link's
+  `redirect_to` to an SSO address with `flow=<nonce>` (an address elsewhere
+  travels inside it as `redirect_to`, which `/callback` checks), and the page
+  GoTrue returns to posts that `flow`.
+
+The fragment readers post only a `flow` from their own URL, never one of
+their own. Tokens with no matching flow (an email opened in another browser,
+a link opened after the 15 minutes, a raw GoTrue link, or a link someone
+else planted) get "Continue as <email>?", and the session is set only when
+that page's form comes back with its one-time confirmation.
+
+`POST /m/:wrap` takes only a request whose `Origin` is the SSO's own. Its CSRF
+value is an HMAC of the wrap token and this browser's flow nonce, so a value
+read in another browser does not work; a mismatch (or a lapsed state cookie)
+shows the page again and consumes nothing.
 
 #### Sign-out
 
-`POST /logout` refreshes the session once (GoTrue's logout needs an access
+`POST /logout` needs an `Origin`: the SSO's own (its landing page), or one
+the instance profile admits under `sso.session_origin` (see below; under
+`audit` and `legacy` that is still any cluster origin or a project's allowed
+origin). It refreshes the session once (GoTrue's logout needs an access
 token), calls GoTrue `POST /logout?scope=local`, which ends this session only
 and not the person's sessions elsewhere, and clears the cookies. The cookies
 are cleared even when GoTrue cannot be reached.
@@ -513,7 +533,7 @@ are cleared even when GoTrue cannot be reached.
 
 A magic link requested from the SSO login page with no project (the Eve
 dashboard) is sent through GoTrue `/magiclink` with
-`redirect_to=<sso>/?redirect_to=<dashboard>` as a query parameter, so the link
+`redirect_to=<sso>/?flow=<nonce>&redirect_to=<dashboard>` as a query parameter, so the link
 returns through the SSO landing page to the dashboard. Only cluster addresses
 are passed on. `GOTRUE_URI_ALLOW_LIST` stays empty: GoTrue only returns to its
 site URL, the SSO, and never hands GoTrue tokens straight to an app. The reply

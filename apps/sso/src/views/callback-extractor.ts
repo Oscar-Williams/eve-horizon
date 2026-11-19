@@ -56,6 +56,7 @@ ${POST_TO_CALLBACK_SCRIPT}
         type: hashParams.get('type') || '',
         redirect_to: queryParams.get('redirect_to') || '',
         project_id: queryParams.get('project_id') || '',
+        flow: flowFromUrl(),
       });
     })();
   </script>`;

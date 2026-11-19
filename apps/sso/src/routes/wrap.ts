@@ -1,8 +1,9 @@
 import express from 'express';
 import type { Express } from 'express';
-import { startSignInFlow } from '../cookies.js';
+import { currentFlowNonce, startSignInFlow } from '../cookies.js';
 import { fetchAppContext, internalApiPost } from '../gotrue-client.js';
 import { isAllowedRedirect, isValidWrapToken, signWrapCsrf, verifyWrapCsrf } from '../security.js';
+import { ssoOrigin } from '../urls.js';
 import type { WrapConsumeResponse, WrapInspectResponse } from '../types.js';
 import { renderInterstitialHtml } from '../views/interstitial.js';
 import { wrapExpiredHtml } from '../views/wrap-expired.js';
@@ -31,6 +32,37 @@ function setWrapResponseHeaders(res: express.Response, referrerPolicy: 'no-refer
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', referrerPolicy);
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+}
+
+/**
+ * The GoTrue action link with this browser's flow in its return address.
+ * GoTrue returns to `redirect_to` when its host is the SSO (its site URL), so
+ * the return address becomes an SSO address carrying `flow=<nonce>`; an
+ * address elsewhere travels inside it as the SSO's own `redirect_to`, which
+ * /callback checks before sending the person there.
+ */
+export function withFlowReturn(actionLink: string, sso: string, flow: string): string {
+  let link: URL;
+  try {
+    link = new URL(actionLink);
+  } catch {
+    return actionLink;
+  }
+  const requested = link.searchParams.get('redirect_to');
+  let target: URL | null = null;
+  try {
+    target = requested ? new URL(requested) : null;
+  } catch {
+    target = null;
+  }
+  if (!target || target.origin !== sso) {
+    const onward = target ? requested : null;
+    target = new URL(`${sso}/`);
+    if (onward) target.searchParams.set('redirect_to', onward);
+  }
+  target.searchParams.set('flow', flow);
+  link.searchParams.set('redirect_to', target.toString());
+  return link.toString();
 }
 
 export function registerWrapRoutes(app: Express): void {
@@ -94,7 +126,10 @@ export function registerWrapRoutes(app: Express): void {
       }
     }
 
-    const csrfNonce = signWrapCsrf(wrap);
+    // The form's CSRF value is bound to this browser's flow (its state
+    // cookie), so a value read in another browser does not work here.
+    const flow = startSignInFlow(req, res);
+    const csrfNonce = signWrapCsrf(wrap, flow);
     setWrapResponseHeaders(res, 'same-origin');
     res.status(200).type('html').send(renderInterstitialHtml({
       kind: inspect.kind,
@@ -113,10 +148,19 @@ export function registerWrapRoutes(app: Express): void {
       res.status(410).type('html').send(wrapExpiredHtml({ kind: null, projectId: null, redirectTo: null, appName: 'Eve Horizon' }));
       return;
     }
-    const csrf = (req.body?.csrf as string) || '';
-    if (!verifyWrapCsrf(wrap, csrf)) {
+    // Only the SSO's own page posts here.
+    if (req.headers.origin !== ssoOrigin(req)) {
+      console.warn(`[wrap.consume_failed] mlw=${wrap.slice(0, 12)}... reason=origin`);
+      res.status(403).type('text').send('Forbidden');
+      return;
+    }
+    const csrf = typeof req.body?.csrf === 'string' ? req.body.csrf : '';
+    const flow = currentFlowNonce(req);
+    if (!verifyWrapCsrf(wrap, flow, csrf)) {
+      // Not this browser's form (or its flow cookie lapsed): show the page
+      // again, which starts a flow here. Nothing is consumed.
       console.warn(`[wrap.consume_failed] mlw=${wrap.slice(0, 12)}... reason=csrf_mismatch`);
-      res.status(410).type('html').send(wrapExpiredHtml({ kind: null, projectId: null, redirectTo: null, appName: 'Eve Horizon' }));
+      res.redirect(303, `/m/${encodeURIComponent(wrap)}`);
       return;
     }
     const result = await internalApiPost<WrapConsumeResponse>('/internal/auth/magic-link-wrap/consume', { wrap_token: wrap });
@@ -141,9 +185,9 @@ export function registerWrapRoutes(app: Express): void {
       return;
     }
     console.log(`[wrap.consume] mlw=${wrap.slice(0, 12)}... project=${result.project_id ?? 'none'} kind=${result.kind}`);
-    // The person confirmed the link in this browser: its return to /callback
-    // belongs to a flow started here.
-    startSignInFlow(res);
-    res.redirect(302, result.gotrue_action_link);
+    // The person confirmed the link in this browser: GoTrue returns to the
+    // SSO with this browser's flow, which /callback compares with the cookie.
+    const confirmedFlow = startSignInFlow(req, res);
+    res.redirect(302, withFlowReturn(result.gotrue_action_link, ssoOrigin(req), confirmedFlow));
   });
 }

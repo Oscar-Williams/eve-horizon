@@ -76,7 +76,9 @@ ${bodyHtml}
 /**
  * Page script: hand sign-in tokens to /callback in a POST body (a form
  * submission from this origin), never in a URL. Takes the fields to send;
- * empty values are left out.
+ * empty values are left out. `flowFromUrl()` reads the flow nonce GoTrue
+ * brought back in this page's query (`?flow=`); a page posts only that, so
+ * tokens planted in a link without this browser's flow get "Continue as".
  */
 export const POST_TO_CALLBACK_SCRIPT = `    function postToCallback(fields) {
       const form = document.createElement('form');
@@ -93,4 +95,8 @@ export const POST_TO_CALLBACK_SCRIPT = `    function postToCallback(fields) {
       }
       document.body.appendChild(form);
       form.submit();
+    }
+
+    function flowFromUrl() {
+      return new URLSearchParams(window.location.search).get('flow') || '';
     }`;
