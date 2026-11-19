@@ -128,13 +128,15 @@ started count as one actor, whether recorded with no actor or as `system`).
 
 A condition is evaluated only when the step it names is `done` and that step's
 latest attempt completed (`succeeded`). When it is read and not met, the step is
-skipped (`close_reason: condition_not_met`) and the steps after it go on. While
-the named step has not finished, the step waits. When the condition cannot be
-decided, the step fails with a reason saying why, and the steps after it are
-cancelled as after any failure: the named step was cancelled or failed, was
-closed as done without completing an attempt (for example skipped by its own
-condition), runs as someone it may not read, cannot be found in the run, or the
-condition cannot be read.
+skipped (`close_reason: condition_not_met`) and the steps after it go on. A step
+whose condition names a step that was skipped by its own condition is skipped
+too, so a skip carries down a chain of conditional steps. The step is also
+skipped when the named step was cancelled, runs as someone it may not read, or
+cannot be found in the run, or when the condition cannot be read. While the
+named step has not finished, the step waits. When the named step was closed as
+`done` without completing an attempt, and not by its own condition, the step
+fails with a reason saying so, and the steps after it are cancelled as after any
+failure.
 
 The root and compiled steps of a run keep the actor they were created with:
 only that actor can change what they run or their attachments, and anyone else
