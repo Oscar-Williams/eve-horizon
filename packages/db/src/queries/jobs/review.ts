@@ -550,10 +550,6 @@ export function jobReviewQueries(db: Db) {
 }
 
 /**
- * Cancel every open job that depends on `jobId`, transitively, in one
- * recursive query, and clear their gate locks.
- */
-/**
  * Cancel the compiled steps of `job`'s own run that depend on it,
  * transitively: steps with the same parent and pipeline run. Edges to jobs
  * outside the run are not followed.
@@ -609,6 +605,10 @@ async function cancelDownstreamInRun(
   console.log(`Cascade-cancelled ${cancelled.length} downstream step(s) of ${job.id}'s run: ${cancelledIds.join(', ')}`);
 }
 
+/**
+ * Cancel every open job that depends on `jobId`, transitively, in one
+ * recursive query, and clear their gate locks.
+ */
 async function cancelDownstream(
   db: Db,
   jobId: string,

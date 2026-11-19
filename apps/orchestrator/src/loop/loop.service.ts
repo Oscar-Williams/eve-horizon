@@ -444,12 +444,6 @@ export function mayFeedStep(
     || (run !== null && isSameActor(source.actor_user_id, run.actor_user_id));
 }
 
-/**
- * The user whose user-scope secrets a job's invocation may resolve: the job's
- * actor, unless the API marked the job (work started with an org-bound token)
- * to resolve none, whoever owns that account later. The 'system' actor of
- * internal runs is no user.
- */
 /** The harness chosen for an attempt, and where its credential may come from. */
 interface HarnessRouting {
   harnessSpec: string;
@@ -461,6 +455,12 @@ interface HarnessRouting {
   envOverridesStrict?: boolean;
 }
 
+/**
+ * The user whose user-scope secrets a job's invocation may resolve: the job's
+ * actor, unless the API marked the job (work started with an org-bound token)
+ * to resolve none, whoever owns that account later. The 'system' actor of
+ * internal runs is no user.
+ */
 export function secretsUserIdForJob(job: Pick<Job, 'actor_user_id' | 'user_secrets_excluded'>): string | undefined {
   if (!hasUserActor(job.actor_user_id) || job.user_secrets_excluded) {
     return undefined;
