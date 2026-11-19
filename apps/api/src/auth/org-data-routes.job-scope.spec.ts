@@ -89,6 +89,7 @@ function seed(orgProfile: 'legacy' | 'audit' | 'strict') {
   store.addOrg(ORG, 'acme', orgProfile);
   store.addProject(PROJECT, ORG, 'lab');
   store.addProject(OTHER, ORG, 'other');
+  store.addJudgedJob('lab-1234abcd');
 }
 
 const paths = (rows: Array<Record<string, unknown>>) => rows.map((row) => row.path ?? row.name ?? row.thread_id);

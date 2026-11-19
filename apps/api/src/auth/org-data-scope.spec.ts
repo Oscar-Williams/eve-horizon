@@ -51,6 +51,8 @@ function seed(orgProfile: 'legacy' | 'audit' | 'strict') {
   store.joinOrg(PROJECT_ADMIN, ORG, 'member');
   store.joinProject(PROJECT_ADMIN, PROJECT, 'admin');
   store.joinOrg(ORG_ADMIN, ORG, 'admin');
+  // The workflow that started the token's job judged its declared scope.
+  store.addJudgedJob('lab-1234abcd');
 }
 
 describe('org files, docs and cloud-fs in jobs (P1-6)', () => {
@@ -72,6 +74,14 @@ describe('org files, docs and cloud-fs in jobs (P1-6)', () => {
       await expect(scoped.can({ org_id: ORG, permission: 'orgfs:read', user: token, resource: readDeal })).resolves.toBe(true);
       await expect(scoped.can({ org_id: ORG, permission: 'orgfs:read', user: token, resource: { ...readDeal, id: '/groups/other/x.md' } }))
         .resolves.toBe(false);
+    });
+
+    it('gives a token whose job scope was never judged no org data', async () => {
+      const { scoped } = services();
+      const token = jobToken({ job_id: 'lab-unjudged', scope: { orgfs: { allow_prefixes: [`${DEAL}/**`] } } });
+
+      await expect(scoped.can({ org_id: ORG, permission: 'orgfs:read', user: token, resource: readDeal })).resolves.toBe(false);
+      expect(store.findings('access.org_data_scope_unjudged')[0]).toMatchObject({ profile: 'strict', org_id: ORG, actor_type: 'job' });
     });
 
     it('gives a run no user started no org scope', async () => {
@@ -180,7 +190,13 @@ describe('org files, docs and cloud-fs in jobs (P1-6)', () => {
         scope: { orgfs: { read_only_prefixes: ['/**'] } }, context: 'Workflow step scope',
       })).resolves.toBeUndefined();
 
+      await expect(scoped.can({
+        org_id: ORG, permission: 'orgfs:read', resource: readDeal,
+        user: jobToken({ job_id: 'lab-unjudged', scope: { orgfs: { allow_prefixes: [`${DEAL}/**`] } } }),
+      })).resolves.toBe(true);
+
       expect(store.findings('access.org_data_unscoped')[0]).toMatchObject({ profile: 'audit' });
+      expect(store.findings('access.org_data_scope_unjudged')[0]).toMatchObject({ profile: 'audit' });
       expect(store.findings('access.org_data_no_user')[0]).toMatchObject({ profile: 'audit', actor_type: 'none' });
       expect(store.findings('access.org_data_scope_wide')[0]).toMatchObject({ profile: 'audit' });
       expect(store.findings('access.org_data_role_wildcard')[0]).toMatchObject({ profile: 'audit' });
