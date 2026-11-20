@@ -208,18 +208,8 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 105`);
   });
 
-  it('raises a database limit that leaves the platform no reserve', async () => {
-    const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: 25 });
-    const { service } = createService([buildTenant()]);
-    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
-
-    await service.reconcile();
-
-    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 30`);
-  });
-
-  it('never lowers a database limit already set at or above the class maximum plus the reserve', async () => {
-    for (const limit of [30, 40]) {
+  it('leaves any database limit an operator already set, lower or higher', async () => {
+    for (const limit of [10, 25, 30, 40]) {
       const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: limit });
       const { service } = createService([buildTenant()]);
       vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
