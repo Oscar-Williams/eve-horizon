@@ -294,14 +294,17 @@ export class EnvDbService {
       // Read-only SQL runs as one statement on the extended protocol, which
       // Postgres refuses for a statement list: a list could commit the
       // read-only transaction and write after it (RT-23).
-      const result = allowWrite
-        ? await client.unsafe(sql, parameters)
-        : await client.unsafe(sql, parameters, EXTENDED_PROTOCOL).catch((error: unknown) => {
+      const result = await (allowWrite
+        ? client.unsafe(sql, parameters)
+        : client.unsafe(sql, parameters, EXTENDED_PROTOCOL).catch((error: unknown) => {
           if (isStatementListError(error)) {
             throw new BadRequestException('Read-only SQL runs one statement at a time; send each statement separately, or use --write');
           }
           throw error;
-        });
+        })
+      ).catch((error: unknown) => {
+        throw sqlErrorAsBadRequest(error) ?? error;
+      });
       const rowCount = Array.isArray(result)
         ? result.length
         : typeof (result as { count?: number }).count === 'number'
@@ -1052,4 +1055,19 @@ const EXTENDED_PROTOCOL = { simple: false } as { prepare?: boolean };
 function isStatementListError(error: unknown): boolean {
   const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
   return code === '42601' && typeof message === 'string' && message.includes('multiple commands');
+}
+
+/**
+ * A query error from the tenant's own SQL (a missing table, a type mismatch,
+ * a constraint) as 400 with Postgres's code and message. Connection,
+ * resource and server failures (SQLSTATE classes 08, 28, 53, 57, 58, XX)
+ * stay errors, as does anything that is not a Postgres error.
+ */
+function sqlErrorAsBadRequest(error: unknown): BadRequestException | null {
+  if (error instanceof BadRequestException) return null;
+  const code = (error as { code?: unknown })?.code;
+  const message = (error as { message?: unknown })?.message;
+  if (typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code) || typeof message !== 'string') return null;
+  if (['08', '28', '53', '57', '58', 'XX'].includes(code.slice(0, 2))) return null;
+  return new BadRequestException(`SQL error ${code}: ${message}`);
 }
