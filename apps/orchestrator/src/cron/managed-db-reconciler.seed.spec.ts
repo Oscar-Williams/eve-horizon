@@ -83,18 +83,18 @@ describe('ManagedDbReconcilerService local seed and providers', () => {
       backup_retention: null, desired_extensions: [], enabled_extensions: [], desired_roles: [], deleted_at: null,
     };
     const transitionStatus = vi.fn().mockResolvedValue(tenant);
+    const failOperation = vi.fn().mockResolvedValue({ ...tenant, status: 'failed' });
     const { service } = createService(platformDb('150008'), {
       listTenantsNeedingReconciliation: vi.fn().mockResolvedValue([tenant]),
       acquireOperationLock: vi.fn().mockResolvedValue(tenant),
       findInstanceById: vi.fn().mockResolvedValue({ id: 'mdbi_cloud', provider: 'cloudsql', provider_instance_id: 'x', host: 'h', port: 5432 }),
       transitionStatus,
+      failOperation,
     });
 
     await service.reconcile();
 
     expect(transitionStatus).not.toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', expect.anything());
-    expect(transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', expect.objectContaining({
-      error: expect.objectContaining({ code: 'provider_unsupported' }),
-    }));
+    expect(failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported' }));
   });
 });

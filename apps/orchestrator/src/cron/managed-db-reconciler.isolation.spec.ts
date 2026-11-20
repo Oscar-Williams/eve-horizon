@@ -98,6 +98,7 @@ function createService(tenants: Array<ReturnType<typeof buildTenant>>, overrides
     listInstances: vi.fn().mockResolvedValue([instance]),
     listTenantsByInstance: vi.fn().mockResolvedValue(tenants),
     transitionStatus: vi.fn().mockResolvedValue(tenants[0]),
+    failOperation: vi.fn().mockResolvedValue({ ...tenants[0], status: 'failed' }),
     markTenantExtensionsEnabled: vi.fn().mockResolvedValue(tenants[0]),
     listTenantRoles: vi.fn().mockResolvedValue([]),
     upsertTenantRole: vi.fn().mockImplementation(async (input: Record<string, unknown>) => ({ id: 'mdbr_new', ...input })),

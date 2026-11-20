@@ -69,6 +69,7 @@ function createService(tenant: ReturnType<typeof deletingTenant>, overrides: Rec
     releaseOperationLock: vi.fn().mockResolvedValue(true),
     findInstanceById: vi.fn().mockResolvedValue(instance),
     transitionStatus: vi.fn().mockResolvedValue(tenant),
+    failOperation: vi.fn().mockResolvedValue({ ...tenant, status: 'failed' }),
     markTenantDeleted: vi.fn().mockResolvedValue(true),
     listTenantRoles: vi.fn().mockResolvedValue([]),
     deleteTenantRoles: vi.fn().mockResolvedValue(0),
@@ -80,6 +81,36 @@ function createService(tenant: ReturnType<typeof deletingTenant>, overrides: Rec
   const projects = { findById: vi.fn().mockResolvedValue({ slug: 'shop' }) };
   Object.assign(service, { managedDb, environments, orgs, projects });
   return { service, managedDb, environments };
+}
+
+/**
+ * A tenant row with the store's own rules (transitionStatus lets a deleted
+ * tenant move only to deleting, deleted or failed; failOperation picks failed
+ * or deleting in one statement), deleted (deletedAt) by the time the
+ * operation's failure is written.
+ */
+function racingStore(tenant: ReturnType<typeof deletingTenant>, deletedAt: Date | null, opts: { checkSeesDelete?: boolean } = {}) {
+  const row = { status: tenant.status as string, deleted_at: deletedAt, token: null as string | null };
+  const overrides = {
+    acquireOperationLock: vi.fn(async (_id: string, token: string) => { row.token = token; return tenant; }),
+    // What a check reads: by default the tenant as it was before the delete.
+    findTenantById: vi.fn(async () => (opts.checkSeesDelete && deletedAt ? null : { ...tenant, deleted_at: null })),
+    findInstanceById: vi.fn().mockResolvedValue(instance),
+    transitionStatus: vi.fn(async (_id: string, token: string, status: string) => {
+      if (token !== row.token) return null;
+      if (row.deleted_at && !['deleting', 'deleted', 'failed'].includes(status)) return null;
+      row.status = status;
+      row.token = null;
+      return { ...tenant, status, deleted_at: row.deleted_at };
+    }),
+    failOperation: vi.fn(async (_id: string, token: string) => {
+      if (token !== row.token) return null;
+      row.status = row.deleted_at ? 'deleting' : 'failed';
+      row.token = null;
+      return { ...tenant, status: row.status, deleted_at: row.deleted_at };
+    }),
+  };
+  return { row, overrides };
 }
 
 describe('ManagedDbReconcilerService tenant drop', () => {
@@ -183,15 +214,14 @@ describe('ManagedDbReconcilerService tenant drop', () => {
     it('queues the tenant for drop, not failed, when its operation fails after the delete', async () => {
       const adminSql = createFakeSql(/^CREATE DATABASE/);
       const tenant = deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
-      const { service, managedDb } = createService(tenant, { findTenantById: vi.fn().mockResolvedValue(null) });
+      const { row, overrides } = racingStore(tenant, new Date(), { checkSeesDelete: true });
+      const { service, managedDb } = createService(tenant, overrides);
       vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
 
       await service.reconcile();
 
-      expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'deleting', expect.objectContaining({
-        error: expect.objectContaining({ code: 'reconcile_error' }),
-      }));
-      expect(managedDb.transitionStatus).not.toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', expect.anything());
+      expect(row.status).toBe('deleting');
+      expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'reconcile_error' }));
     });
   });
 
@@ -208,30 +238,6 @@ describe('ManagedDbReconcilerService tenant drop', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
     });
-
-    function racingStore(tenant: ReturnType<typeof deletingTenant>, deletedAt: Date | null) {
-      const row = { status: tenant.status as string, deleted_at: deletedAt, token: null as string | null };
-      const overrides = {
-        acquireOperationLock: vi.fn(async (_id: string, token: string) => { row.token = token; return tenant; }),
-        // What the check reads: the tenant as it was before the delete.
-        findTenantById: vi.fn(async () => ({ ...tenant, deleted_at: null })),
-        findInstanceById: vi.fn().mockResolvedValue(instance),
-        transitionStatus: vi.fn(async (_id: string, token: string, status: string) => {
-          if (token !== row.token) return null;
-          if (row.deleted_at && !['deleting', 'deleted', 'failed'].includes(status)) return null;
-          row.status = status;
-          row.token = null;
-          return { ...tenant, status, deleted_at: row.deleted_at };
-        }),
-        failOperation: vi.fn(async (_id: string, token: string) => {
-          if (token !== row.token) return null;
-          row.status = row.deleted_at ? 'deleting' : 'failed';
-          row.token = null;
-          return { ...tenant, status: row.status, deleted_at: row.deleted_at };
-        }),
-      };
-      return { row, overrides };
-    }
 
     const provisioning = () => deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
 

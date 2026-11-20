@@ -422,6 +422,32 @@ export function managedDbQueries(db: Db) {
     },
 
     /**
+     * End an operation that failed: `failed`, or `deleting` when the tenant
+     * was deleted meanwhile (deleted_at set), so it stays queued for its
+     * drop. One statement: a delete landing between a check and this write
+     * can no longer park a deleted tenant at `failed` with its database
+     * kept. Null when the caller no longer holds the lock or the row is gone.
+     */
+    async failOperation(
+      tenantId: string,
+      token: string,
+      error: { code: string; message: string },
+    ): Promise<ManagedDbTenant | null> {
+      const [row] = await db<ManagedDbTenant[]>`
+        UPDATE managed_db_tenants
+        SET status = CASE WHEN deleted_at IS NULL THEN 'failed' ELSE 'deleting' END,
+            operation_token = NULL,
+            last_error_code = ${error.code},
+            last_error_message = ${error.message},
+            updated_at = NOW()
+        WHERE id = ${tenantId}
+          AND operation_token = ${token}
+        RETURNING *
+      `;
+      return row ?? null;
+    },
+
+    /**
      * Soft-delete a tenant (set deleted_at).
      */
     async softDeleteTenant(tenantId: string): Promise<ManagedDbTenant | null> {

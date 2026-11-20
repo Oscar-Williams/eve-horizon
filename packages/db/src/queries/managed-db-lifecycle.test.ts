@@ -160,6 +160,24 @@ describe('managedDbQueries lifecycle', () => {
     }
   });
 
+  it('ends a failed operation at failed, or at deleting when the tenant was deleted meanwhile', async () => {
+    const live = await managedDb.createTenant(tenantInput());
+    expect(await managedDb.acquireOperationLock(live.id, 'op-live')).not.toBeNull();
+    const failed = await managedDb.failOperation(live.id, 'op-live', { code: 'reconcile_error', message: 'boom' });
+    expect(failed).toMatchObject({ status: 'failed', last_error_code: 'reconcile_error', operation_token: null });
+    await db`DELETE FROM managed_db_tenants WHERE id = ${live.id}`;
+
+    const racing = await managedDb.createTenant(tenantInput(generateManagedDbTenantId(), 'acme-shop-test-5e6f7a'));
+    expect(await managedDb.acquireOperationLock(racing.id, 'op-racing')).not.toBeNull();
+    // The delete lands while the operation runs, after any check it made.
+    await managedDb.softDeleteTenant(racing.id);
+    const queued = await managedDb.failOperation(racing.id, 'op-racing', { code: 'reconcile_error', message: 'boom' });
+    expect(queued).toMatchObject({ status: 'deleting', last_error_code: 'reconcile_error', operation_token: null });
+    expect((await managedDb.listTenantsNeedingReconciliation()).map((t) => t.id)).toContain(racing.id);
+
+    expect(await managedDb.failOperation(racing.id, 'op-stale', { code: 'reconcile_error', message: 'boom' })).toBeNull();
+  });
+
   it('queues for drop a deleted tenant left in any status but deleted or failed', async () => {
     const ready = await managedDb.createTenant(tenantInput());
     const parked = await managedDb.createTenant({ ...tenantInput(generateManagedDbTenantId(), 'acme-shop-test-2b3c4d'), service_name: 'cache' });

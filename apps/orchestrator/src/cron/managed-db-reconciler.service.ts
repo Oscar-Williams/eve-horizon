@@ -246,32 +246,32 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
             message: err instanceof Error ? err.message : String(err),
           };
       // A drop that fails stays queued (lock released, error recorded) for
-      // a day, so a busy database or a passing outage does not strand it.
-      // Anything else, or a drop failing for longer, parks at failed.
+      // a day, so a busy database or a passing outage does not strand it,
+      // and parks at failed after that. Any other operation parks at failed
+      // unless the tenant was deleted meanwhile (failOperation).
       if (dropping && withinDropRetryWindow(tenant.deleted_at)) {
         this.logger.warn(`[managed-db-reconciler] Drop of tenant ${tenant.id} failed; will retry: ${error.message}`);
         await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
         return;
       }
-      // An operation that failed after the tenant was deleted leaves it
-      // queued for its drop, not parked at failed with the database kept.
-      if (!dropping && (await this.wasDeletedMeanwhile(tenant.id))) {
-        this.logger.warn(`[managed-db-reconciler] Tenant ${tenant.id} was deleted during a failed operation; queued for drop: ${error.message}`);
-        await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
+      if (dropping) {
+        await this.managedDb.transitionStatus(tenant.id, token, 'failed', { error });
         return;
       }
-      await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
-        error,
-      });
+      await this.failOperation(tenant.id, token, error);
     }
   }
 
-  /** True when the tenant was soft-deleted (or removed) since it was listed. */
-  private async wasDeletedMeanwhile(tenantId: string): Promise<boolean> {
-    try {
-      return !(await this.managedDb.findTenantById(tenantId));
-    } catch {
-      return false;
+  /**
+   * An operation (not a drop) failed: the tenant parks at failed, or, when it
+   * was deleted meanwhile, whenever the delete landed, stays queued for its
+   * drop instead of keeping its database (failOperation decides in one
+   * statement).
+   */
+  private async failOperation(tenantId: string, token: string, error: { code: string; message: string }): Promise<void> {
+    const row = await this.managedDb.failOperation(tenantId, token, error);
+    if (row?.status === 'deleting') {
+      this.logger.warn(`[managed-db-reconciler] Tenant ${tenantId} was deleted during a failed operation; queued for drop: ${error.message}`);
     }
   }
 
@@ -307,8 +307,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   ): Promise<void> {
     const instance = await this.managedDb.findInstanceById(tenant.instance_id);
     if (!instance) {
-      await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
-        error: { code: 'instance_not_found', message: `Instance ${tenant.instance_id} not found` },
+      await this.failOperation(tenant.id, token, {
+        code: 'instance_not_found',
+        message: `Instance ${tenant.instance_id} not found`,
       });
       return;
     }
