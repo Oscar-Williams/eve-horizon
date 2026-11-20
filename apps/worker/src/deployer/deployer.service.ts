@@ -3627,7 +3627,15 @@ export class DeployerService {
    * - ${ORG_ID} - organization ID
    * - ${ORG_SLUG} - organization slug
    * - ${COMPONENT_NAME} - current component name
+   * - ${SSO_URL} - the platform's SSO URL, when configured
    * - ${secret.KEY_NAME} - secret value from secrets map
+   * - ${managed.<service>.<field>} - managed DB value, e.g. ${managed.db.url}
+   *   or the nested ${managed.db.roles.app_ro.url}
+   *
+   * One pass over the original value: each placeholder is replaced once and
+   * the text put in is never read again, so a secret whose value looks like
+   * `${managed.db.url}` stays that literal text (rule managed_db.owner_url
+   * judges the manifest as written). An unknown placeholder is left as is.
    */
   private interpolateValue(
     value: string,
@@ -3641,46 +3649,35 @@ export class DeployerService {
       managedValues?: Map<string, string>;
     }
   ): string {
-    let result = value
-      .replace(/\$\{ENV_NAME\}/g, context.envName)
-      .replace(/\$\{PROJECT_ID\}/g, context.projectId)
-      .replace(/\$\{ORG_ID\}/g, context.orgId)
-      .replace(/\$\{ORG_SLUG\}/g, context.orgSlug)
-      .replace(/\$\{COMPONENT_NAME\}/g, context.componentName);
-
-    // Interpolate ${SSO_URL} from platform config
     const ssoUrl = loadConfig().EVE_SSO_URL;
-    if (ssoUrl) {
-      result = result.replace(/\$\{SSO_URL\}/g, ssoUrl);
-    }
+    const variables: Record<string, string | undefined> = {
+      ENV_NAME: context.envName,
+      PROJECT_ID: context.projectId,
+      ORG_ID: context.orgId,
+      ORG_SLUG: context.orgSlug,
+      COMPONENT_NAME: context.componentName,
+      SSO_URL: ssoUrl || undefined,
+    };
 
-    // Handle ${secret.KEY_NAME} patterns
-    if (context.secrets) {
-      result = result.replace(/\$\{secret\.([A-Z0-9_]+)\}/g, (match, keyName) => {
-        const secretValue = context.secrets?.get(keyName);
+    return value.replace(MANIFEST_PLACEHOLDER, (match, variable?: string, secretKey?: string, managedKey?: string) => {
+      if (variable !== undefined) return variables[variable] ?? match;
+      if (secretKey !== undefined) {
+        if (!context.secrets) return match;
+        const secretValue = context.secrets.get(secretKey);
         if (secretValue === undefined) {
-          this.logger.warn(`Secret ${keyName} not found in secrets map`);
+          this.logger.warn(`Secret ${secretKey} not found in secrets map`);
           return match; // Leave original placeholder if secret not found
         }
         return secretValue;
-      });
-    }
-
-    // Handle ${managed.<service>.<field>} patterns (e.g., ${managed.db.url}).
-    // Fields may be nested, e.g. ${managed.db.roles.app_ro.url}.
-    if (context.managedValues) {
-      result = result.replace(/\$\{managed\.([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.]+)\}/g, (match, service, field) => {
-        const key = `${service}.${field}`;
-        const value = context.managedValues?.get(key);
-        if (value === undefined) {
-          this.logger.warn(`Managed value ${key} not found`);
-          return match;
-        }
-        return value;
-      });
-    }
-
-    return result;
+      }
+      if (!context.managedValues || managedKey === undefined) return match;
+      const managedValue = context.managedValues.get(managedKey);
+      if (managedValue === undefined) {
+        this.logger.warn(`Managed value ${managedKey} not found`);
+        return match;
+      }
+      return managedValue;
+    });
   }
 
   private prefixRegistryHost(image: string, registryHost: string | null): string {
@@ -3911,6 +3908,14 @@ export class DeployerService {
 }
 
 const MANAGED_OWNER_URL_RULE = 'managed_db.owner_url';
+
+/**
+ * Every placeholder interpolateValue knows, in one alternation so a single
+ * pass replaces them all: a plain variable, `${secret.KEY}` or
+ * `${managed.<service>.<field>}` (fields may be nested).
+ */
+const MANIFEST_PLACEHOLDER =
+  /\$\{(?:(ENV_NAME|PROJECT_ID|ORG_ID|ORG_SLUG|COMPONENT_NAME|SSO_URL)|secret\.([A-Z0-9_]+)|managed\.([a-zA-Z0-9_-]+\.[a-zA-Z0-9_.]+))\}/g;
 
 /**
  * The owner-credential references (`managed.<db>.url`, `managed.<db>.password`)
