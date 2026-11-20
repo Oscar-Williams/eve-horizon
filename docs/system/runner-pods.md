@@ -118,7 +118,7 @@ Another attempt's routes get 403. None returns platform data.
 
 | Route | Accepts |
 |---|---|
-| `logs` | `{ entries: [{ type, content }] }`, up to 500 per call. |
+| `logs` | `{ entries: [{ type, content }] }`, up to 500 per call (the API's JSON body limit, 1 MiB, applies). The runner sends at most 100 per call and keeps each body under 512 KiB; an entry over 256 KiB on its own has its longest strings cut, marked `truncated: true` with `original_bytes`. |
 | `events` | `system.resource.hydration.{started,completed,failed}` only, on the job's project. |
 | `runtime-meta` | Only `orgfs_mount`, `resource_hydration`, `resource_index_path`, `browser`, `toolchains`, `self_check` (400 otherwise); toolchain image IDs the worker recorded are kept. |
 | `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. With `chat_progress: true`, a chat job's `eve-message` progress, delivered to its chat thread and provider through the same chat delivery the inline path uses; only for a chat job's own chat thread, at most 10 per job and 30 s apart (429 otherwise), 500 characters. |
