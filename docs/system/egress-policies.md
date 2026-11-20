@@ -181,7 +181,9 @@ leaves an older, wider NetworkPolicy behind:
   strict profile refuses the job"); until the hosts are written the
   project's pods have no internet at all. A job is refused the same way
   under a strict `egress.default_deny` whenever its runner NetworkPolicies
-  cannot be written.
+  cannot be written. At dispatch the write is tried once more after a
+  second before the job is refused, so a passing API error does not cost
+  the attempt.
 - under `audit` it is logged and recorded (`reason: fqdn_write_failed`),
   and blocks nothing.
 

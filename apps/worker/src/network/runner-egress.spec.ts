@@ -4,9 +4,11 @@ import { ensureRunnerEgress, registerRunnerEgress } from './runner-egress.js';
 
 /**
  * The dispatch hook: before a runner pod starts, its project's runner
- * egress policies are brought in line with the profile. It never fails the
- * job (the static deny holds whatever happens), and does nothing until the
- * worker's network module has registered.
+ * egress policies are brought in line with the profile. It refuses the job
+ * only under a strict egress rule (no provider, or the policies could not be
+ * written on two tries); otherwise a failure is logged (the static deny holds
+ * whatever happens). It does nothing until the worker's network module has
+ * registered.
  */
 afterEach(() => {
   registerRunnerEgress(null);
