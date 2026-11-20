@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim AS build
+# debian:bookworm-slim
+FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git cmake make g++ curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -26,5 +27,6 @@ RUN for bin in /toolchain/bin/ffmpeg /toolchain/bin/ffprobe /toolchain/bin/whisp
 # env.sh for runtime setup
 RUN printf '#!/bin/sh\nexport PATH="/opt/eve/toolchains/media/bin:${PATH}"\nexport LD_LIBRARY_PATH="/opt/eve/toolchains/media/lib:${LD_LIBRARY_PATH:-}"\nexport WHISPER_MODELS_DIR="/opt/eve/toolchains/media/models"\n' > /toolchain/env.sh
 
-FROM busybox:stable
+# busybox:stable
+FROM busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
 COPY --from=build /toolchain /toolchain

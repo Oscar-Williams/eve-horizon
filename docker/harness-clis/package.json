@@ -1,0 +1,15 @@
+{
+  "name": "eve-harness-clis",
+  "private": true,
+  "description": "Harness CLIs baked into the worker and agent-runtime images, at exact versions. package-lock.json holds their integrity hashes; install.sh installs them.",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.329",
+    "@google/gemini-cli": "0.70.0",
+    "@just-every/code": "0.6.196",
+    "@mariozechner/pi-coding-agent": "0.73.1",
+    "@openai/codex": "0.171.0",
+    "cc-mirror": "2.2.3",
+    "skills": "1.5.3"
+  }
+}

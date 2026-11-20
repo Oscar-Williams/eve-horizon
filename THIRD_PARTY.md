@@ -10,7 +10,8 @@ travel with each package via the package manager.
 Eve Horizon invokes external agent "harness" CLIs at runtime. These are **not**
 part of this repository or any published npm package — they are installed into
 the worker and agent-runtime **container images** at build time
-(`apps/worker/Dockerfile`, `apps/agent-runtime/Dockerfile`), gated behind the
+(`apps/worker/Dockerfile`, `apps/agent-runtime/Dockerfile`), at the exact
+versions locked in `docker/harness-clis`, and in the worker gated behind the
 `INSTALL_CLAUDE` / `INSTALL_CODEX` / `INSTALL_GEMINI` build args. Each is the
 property of its respective vendor and is subject to its own license and terms
 of service (which may require a separate account or API key):

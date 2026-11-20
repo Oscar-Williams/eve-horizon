@@ -111,6 +111,10 @@ tag-driven via GitHub Actions, cut from `eve-horizon/eve-horizon` only.
 git tag <prefix>-v0.1.0 && git push origin <prefix>-v0.1.0
 ```
 
+Every publisher needs the tagged commit on `main` or a `hotfix/*` branch and
+waits for approval in the `release` environment; image digests are signed with
+cosign. See [Release protections](./docs/system/ci-cd.md#release-protections).
+
 Hosted deployments use a three-repo model: this source repo publishes service
 images; the public `eve-horizon/eve-horizon-infra` template provides the cloud
 scaffold; and a private deployment instance repo created from that template

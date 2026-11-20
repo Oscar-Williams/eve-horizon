@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim AS build
+# debian:bookworm-slim
+FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv curl ca-certificates \
     && pip3 install --break-system-packages uv \
@@ -23,5 +24,6 @@ RUN for bin in /toolchain/bin/python3 /toolchain/bin/uv; do \
 # env.sh for runtime PATH/env setup
 RUN printf '#!/bin/sh\nexport PATH="/opt/eve/toolchains/python/bin:${PATH}"\nexport PYTHONPATH="/opt/eve/toolchains/python/lib"\n' > /toolchain/env.sh
 
-FROM busybox:stable
+# busybox:stable
+FROM busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
 COPY --from=build /toolchain /toolchain

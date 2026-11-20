@@ -1,4 +1,5 @@
-FROM node:22-alpine AS build
+# node:22-alpine
+FROM node@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS build
 
 WORKDIR /app
 RUN corepack enable
@@ -19,11 +20,12 @@ RUN pnpm --filter @eve-horizon/auth build
 RUN pnpm --filter @eve-horizon/auth-react build
 RUN pnpm --filter @eve/dashboard build
 
-FROM node:22-alpine AS production
+# node:22-alpine
+FROM node@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS production
 WORKDIR /app
 
-# Install production server dependencies
-RUN npm install --no-save express@4 http-proxy-middleware@3
+# Install production server dependencies, at exact versions
+RUN npm install --no-save --ignore-scripts express@4.22.3 http-proxy-middleware@3.0.11
 
 COPY --from=build /app/apps/dashboard/dist ./dist
 COPY --from=build /app/apps/dashboard/server.js ./server.js

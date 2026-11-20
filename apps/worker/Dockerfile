@@ -25,11 +25,13 @@
 #
 # =============================================================================
 
-ARG NODE_BASE_IMAGE=node:22-slim
+# node:22-slim
+ARG NODE_BASE_IMAGE=node@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
-FROM gcr.io/kaniko-project/executor:v1.20.1 AS kaniko
-FROM moby/buildkit:v0.12.5 AS buildkit
-FROM gcr.io/go-containerregistry/crane:v0.20.3 AS crane
+# gcr.io/kaniko-project/executor:v1.20.1
+FROM gcr.io/kaniko-project/executor@sha256:c71116ee36be17b14026f853103f7fb695042a9b6a4b4ad9b70de0e65c5c94a1 AS kaniko
+# moby/buildkit:v0.12.5
+FROM moby/buildkit@sha256:449188623c7a8a3bd4f161c5d0ddf5cabbfb828f7eaadf9ed8111864b911a308 AS buildkit
 
 # =============================================================================
 # Stage: node-image
@@ -68,24 +70,37 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install kubectl for K8s operations
+# Install kubectl for K8s operations, and crane for worker-local toolchain
+# image extraction, at exact versions, each checked against its sha256 (as
+# published at dl.k8s.io/release/<version>/bin/linux/<arch>/kubectl.sha256 and
+# in the go-containerregistry release's checksums.txt). Same values as the
+# agent-runtime image.
+ARG KUBECTL_VERSION=v1.37.2
+ARG KUBECTL_SHA256_AMD64=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+ARG KUBECTL_SHA256_ARM64=fcc16f63186659d9722014b7e02d5fdd2d4e669cb8c0ab66365d7d3b8ba03509
+ARG CRANE_VERSION=v0.20.3
+ARG CRANE_SHA256_AMD64=36c67a932f489b3f2724b64af90b599a8ef2aa7b004872597373c0ad694dc059
+ARG CRANE_SHA256_ARM64=d2235f7779cd39c6e40f43701d2512c997409f629fb53e621ede0d57d3f995e2
 RUN set -eu; \
-    arch="$(uname -m)"; \
+    arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      x86_64) k8s_arch="amd64" ;; \
-      aarch64|arm64) k8s_arch="arm64" ;; \
-      *) echo "Unsupported arch: $arch"; exit 1 ;; \
+      amd64) kubectl_sha256="$KUBECTL_SHA256_AMD64"; crane_arch=x86_64; crane_sha256="$CRANE_SHA256_AMD64" ;; \
+      arm64) kubectl_sha256="$KUBECTL_SHA256_ARM64"; crane_arch=arm64; crane_sha256="$CRANE_SHA256_ARM64" ;; \
+      *) echo "Unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
-    k8s_version="$(curl -L -s https://dl.k8s.io/release/stable.txt)"; \
-    curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${k8s_version}/bin/linux/${k8s_arch}/kubectl"; \
-    chmod +x /usr/local/bin/kubectl
+    curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl"; \
+    echo "${kubectl_sha256}  /tmp/kubectl" | sha256sum -c -; \
+    install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl; \
+    curl -fsSLo /tmp/crane.tar.gz "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${crane_arch}.tar.gz"; \
+    echo "${crane_sha256}  /tmp/crane.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/crane.tar.gz --no-same-owner -C /usr/local/bin crane; \
+    chmod 0755 /usr/local/bin/crane; \
+    rm -f /tmp/kubectl /tmp/crane.tar.gz
 
 # Add kaniko executor for in-cluster image builds
 COPY --from=kaniko /kaniko/executor /usr/local/bin/kaniko
 # Add buildctl for in-cluster BuildKit builds
 COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
-# Add crane for worker-local toolchain image extraction
-COPY --from=crane /ko-app/crane /usr/local/bin/crane
 
 RUN corepack enable
 
@@ -195,31 +210,16 @@ ARG INSTALL_CODE=true
 ARG INSTALL_PI=true
 ARG INSTALL_MIRROR=true
 ARG INSTALL_SKILLS=true
-ARG HARNESS_INSTALL_CACHE_BUST=latest
-ARG CC_MIRROR_PACKAGE=cc-mirror@latest
-ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@2.1.280
-ARG CODE_PACKAGE=@just-every/code@latest
-ARG CODEX_PACKAGE=@openai/codex@0.156.1
-ARG GEMINI_PACKAGE=@google/gemini-cli@latest
-ARG PI_PACKAGE=@mariozechner/pi-coding-agent@latest
-ARG SKILLS_PACKAGE=skills@1.5.3
 
-# Install global npm packages as root (conditionally based on ARGs)
-RUN set -eu; \
-    echo "Harness package refresh: ${HARNESS_INSTALL_CACHE_BUST}"; \
-    PACKAGES=""; \
-    if [ "$INSTALL_MIRROR" = "true" ]; then PACKAGES="$PACKAGES $CC_MIRROR_PACKAGE"; fi; \
-    if [ "$INSTALL_CLAUDE" = "true" ]; then PACKAGES="$PACKAGES $CLAUDE_CODE_PACKAGE"; fi; \
-    if [ "$INSTALL_CODE" = "true" ]; then PACKAGES="$PACKAGES $CODE_PACKAGE"; fi; \
-    if [ "$INSTALL_CODEX" = "true" ]; then PACKAGES="$PACKAGES $CODEX_PACKAGE"; fi; \
-    if [ "$INSTALL_GEMINI" = "true" ]; then PACKAGES="$PACKAGES $GEMINI_PACKAGE"; fi; \
-    if [ "$INSTALL_PI" = "true" ]; then PACKAGES="$PACKAGES $PI_PACKAGE"; fi; \
-    if [ "$INSTALL_SKILLS" = "true" ]; then PACKAGES="$PACKAGES $SKILLS_PACKAGE"; fi; \
-    if [ -n "$PACKAGES" ]; then npm install -g $PACKAGES; fi; \
-    rm -rf /root/.npm
+# Harness CLIs at the exact versions locked in docker/harness-clis, installed
+# as root without lifecycle scripts into the root-owned /opt/harness-clis
+# (install.sh reads the INSTALL_* args above).
+COPY docker/harness-clis/ /opt/harness-clis/
+RUN /opt/harness-clis/install.sh
 
 # Create cc-mirror variants (mclaude, zai) for harness invocation
-# cc-mirror creates isolated Claude Code variants with custom commands
+# cc-mirror creates isolated Claude Code variants with custom commands, on the
+# same Claude Code version as `claude`.
 # Note: This runs as root but creates files in /home/node/.cc-mirror and /home/node/.local/bin
 # API keys are stripped from settings.json after creation - they're passed via env at runtime
 # mclaude must exist in the image: if it does not, the entrypoint installs it
@@ -227,13 +227,14 @@ RUN set -eu; \
 # A failed variant build is reported here and falls back to a claude shim, as
 # in the agent-runtime image.
 RUN if command -v cc-mirror >/dev/null 2>&1; then \
+      claude_version="$(node -p 'require("/opt/harness-clis/package.json").dependencies["@anthropic-ai/claude-code"]')"; \
       # Create mclaude variant (mirror provider - direct Anthropic API)
-      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --yes --no-shell-env \
+      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --yes --no-shell-env \
         || echo "WARNING: cc-mirror could not create the mclaude variant; using the claude shim" >&2; \
       # Create zai variant (Z.ai provider - GLM models)
       # Use placeholder API key to complete setup, then strip it from settings.json
       # (cc-mirror requires an API key to create the variant, but we want runtime env to take precedence)
-      HOME=/home/node cc-mirror quick --provider zai --name zai --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true && \
+      HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true && \
       # Strip ANTHROPIC_API_KEY from zai settings.json so runtime env var takes precedence
       # The cc-mirror wrapper unconditionally exports settings.json env vars, which would overwrite runtime
       if [ -f /home/node/.cc-mirror/zai/config/settings.json ]; then \
@@ -555,26 +556,9 @@ ENV EVE_BUILD_TIME=${EVE_BUILD_TIME}
 # =============================================================================
 FROM dependencies AS development
 
-# Install global npm packages as root
-ARG HARNESS_INSTALL_CACHE_BUST=latest
-ARG CC_MIRROR_PACKAGE=cc-mirror@latest
-ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@2.1.280
-ARG CODE_PACKAGE=@just-every/code@latest
-ARG CODEX_PACKAGE=@openai/codex@0.156.1
-ARG GEMINI_PACKAGE=@google/gemini-cli@latest
-ARG PI_PACKAGE=@mariozechner/pi-coding-agent@latest
-ARG SKILLS_PACKAGE=skills@1.5.3
-RUN set -eu; \
-    echo "Harness package refresh: ${HARNESS_INSTALL_CACHE_BUST}"; \
-    npm install -g \
-      "$CC_MIRROR_PACKAGE" \
-      "$CLAUDE_CODE_PACKAGE" \
-      "$CODE_PACKAGE" \
-      "$CODEX_PACKAGE" \
-      "$GEMINI_PACKAGE" \
-      "$PI_PACKAGE" \
-      "$SKILLS_PACKAGE" \
-    && rm -rf /root/.npm
+# Harness CLIs as in the runtime stages (docker/harness-clis)
+COPY docker/harness-clis/ /opt/harness-clis/
+RUN /opt/harness-clis/install.sh
 
 # Pre-create ALL directories node user might write to (see directory list in base stage)
 # This single command ensures K8s and Docker Compose compatibility

@@ -1,4 +1,5 @@
-FROM postgres:16-bookworm
+# postgres:16-bookworm
+FROM postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
