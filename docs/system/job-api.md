@@ -312,8 +312,8 @@ interface UpdateJobRequest {
 ## Review Workflow
 
 - `submit`: requires `summary`
-- `approve`: optional `comment`
-- `reject`: requires `reason`
+- `approve`: optional `comment`, optional `attempt_id`
+- `reject`: requires `reason`, optional `attempt_id`
 
 The decider of an approve or reject is the authenticated caller, recorded as
 the job's `reviewer` and in the audit log; a `reviewer_id` in the body is
@@ -334,6 +334,14 @@ review holds the job's row while it decides; a second decision, made after the
 first or racing it, finds the review decided and gets 409 ("already
 decided"). It changes nothing: a reject that loses creates no new attempt. A
 decision on a job that was never sent for review still gets 400.
+
+A review has rounds: a rejection runs the job again, and its next attempt is
+sent for review in turn. A decider may name the round they reviewed with
+`attempt_id`, the attempt whose work they looked at (the job's latest attempt
+then; `eve job approve|reject --attempt-id <id>`). Once the job is in review
+on a later attempt, a decision naming an earlier one gets 409 and changes
+nothing, so a stale approve cannot pass work its decider never saw. A decision
+that names no attempt decides the round in review, as before.
 
 Under the project's `strict` security profile (rule `jobs.approve_token`), only
 a person's own token may approve or reject: job, service, service-principal and

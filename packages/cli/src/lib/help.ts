@@ -1281,7 +1281,7 @@ for cloud deployments. Credentials are stored globally per API URL.`,
         ],
       },
       'rotate-service-tokens': {
-        description: 'Revoke an environment\'s service tokens issued until now and renew them (the services roll)',
+        description: 'Revoke an environment\'s service tokens issued until now and renew them (the services roll); prints how many were renewed, changed by a deploy meanwhile, or failed (the hourly renewal retries those)',
         usage: 'eve env rotate-service-tokens <env> [--project <id>]',
         options: [
           '<env>                  Environment name',

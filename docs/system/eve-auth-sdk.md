@@ -159,6 +159,13 @@ their token org/project context.
 
 The `'local'` strategy fetches `/.well-known/jwks.json` once and caches keys for 15 minutes. The `'remote'` strategy calls `/auth/token/verify` on every request.
 
+Revocation lives in Eve, so only `'remote'` sees it. A local check reads the
+signature and `exp` only: a deployed service's token or app-link token revoked
+by `eve env rotate-service-tokens`, or by deleting its environment or project,
+and a job's app-link token whose attempt has ended, keep passing it until they
+expire (a service's tokens live up to 90 days). Use `'remote'` for app-link and
+service tokens wherever a revoked token must stop working.
+
 ### Environment Variables
 
 All read from `process.env` automatically:

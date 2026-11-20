@@ -410,6 +410,8 @@ eve env show <project> <env>
 
 # Release Management
 eve release resolve <tag> [--project <id>]
+eve release delete <tag> [--project <id>]     # 409 while an environment runs it (current or last applied)
+eve release prune [--project <id>] [--keep <n>]  # keeps the newest n and every release an environment runs
 
 # Manifest Validation
 eve manifest validate [--project <id>] [--path <path>] [--latest]

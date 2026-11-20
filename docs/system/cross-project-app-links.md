@@ -69,7 +69,10 @@ running attempt, or the job is cancelled; a token minted without an attempt is
 refused once the job is done. This holds wherever Eve verifies the token
 (`/auth/me`, `/auth/token/verify`, the auth SDK's default `remote` strategy).
 A producer that verifies locally against JWKS (`strategy: 'local'`) sees only
-`exp`, so it should verify job principals remotely.
+`exp`, so it should verify job principals remotely. The same holds for a
+deployed service's link token (principal `service:<name>`): `eve env
+rotate-service-tokens` and the environment's deletion revoke it only where Eve
+verifies it (see [auth](auth.md), service tokens).
 
 A job that runs longer than an hour refreshes its own tokens with its job token:
 

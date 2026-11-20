@@ -75,7 +75,10 @@ const claims = await verifyEveToken(token);
 ```
 
 JWKS is fetched from `$EVE_API_URL/.well-known/jwks.json` and cached for 15
-minutes.
+minutes. Local verification checks the signature and `exp` only, so it does
+not see a revoked token (an ended job attempt, `eve env rotate-service-tokens`,
+a deleted environment); the default `remote` strategy does (see
+[auth](auth.md), service tokens).
 
 **Option C: Roll your own**
 

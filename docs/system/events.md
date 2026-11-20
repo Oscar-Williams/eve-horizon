@@ -95,6 +95,18 @@ Worker hydration emits provisioning events when `resource_refs` are resolved:
 Payload includes: `job_id`, `attempt_id`, `resolved_count`,
 `missing_optional_count`, `failed_required_count`, and per-resource status.
 
+### Service-Token Renewal Events
+
+The worker's service-token renewal (see [auth](auth.md), service tokens)
+emits one event when a Deployment it rolled onto renewed tokens has not
+finished rolling by its next pass, past the deploy timeout (180 s):
+
+- `system.service_token.rollout_stuck`
+
+Payload: `env_id`, `namespace`, `deployment`, `started_at`,
+`elapsed_seconds`, `timeout_seconds`. `env_name` is set; the event is
+recorded once per roll.
+
 ### Runner Events
 
 Runner pods emit lifecycle events for worker coordination:
