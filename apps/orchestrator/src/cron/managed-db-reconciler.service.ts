@@ -296,24 +296,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       });
       this.logger.log(`[managed-db-reconciler] Tenant ${tenant.id} provisioned (local: ${tenant.db_name})`);
     } else {
-      if (desiredExtensions.length > 0) {
-        throw new ManagedDbProvisioningError(
-          'provider_unsupported',
-          `Managed DB extension provisioning is not implemented for provider "${instance.provider}"`,
-        );
-      }
-      if (normalizeManagedDbRoles(tenant.desired_roles).length > 0) {
-        throw new ManagedDbProvisioningError(
-          'provider_unsupported',
-          `Managed DB role provisioning is not implemented for provider "${instance.provider}"`,
-        );
-      }
-      // Cloud providers — stub for future implementation
-      await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
-        providerTenantId: `${instance.provider}:${tenant.db_name}`,
-        setReady: true,
-      });
-      this.logger.log(`[managed-db-reconciler] Tenant ${tenant.id} provisioned (stub: ${instance.provider})`);
+      // Only the local provider creates real databases. Marking a tenant
+      // ready here would hand the app a database that does not exist.
+      throw new ManagedDbProvisioningError(
+        'provider_unsupported',
+        `Managed DB provisioning is not implemented for provider "${instance.provider}"; ` +
+        'register a local instance (EVE_MANAGED_DB_LOCAL_SEED) or use a database override',
+      );
     }
   }
 
@@ -1062,11 +1051,15 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       return;
     }
 
-    // Check if we already have a local instance
+    // One local instance row per class the operator offers (placement
+    // matches the tenant's class to the row's), each seeded once.
+    const classes = seedClasses();
     const instances = await this.managedDb.listInstances();
-    const existing = instances.find(i => i.provider === 'local');
-    if (existing) {
-      this.logger.log(`[managed-db-reconciler] Local instance already exists: ${existing.id}`);
+    const missing = classes.filter(
+      (dbClass) => !instances.some((i) => i.provider === 'local' && i.instance_class === dbClass),
+    );
+    if (missing.length === 0) {
+      this.logger.log(`[managed-db-reconciler] Local instances already exist for ${classes.join(', ')}`);
       return;
     }
 
@@ -1074,21 +1067,39 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     const url = new URL(databaseUrl);
     const host = url.hostname;
     const port = parseInt(url.port || '5432', 10);
+    const engineVersion = await this.serverMajorVersion();
 
-    const instance = await this.managedDb.createInstance({
-      id: generateManagedDbInstanceId(),
-      provider: 'local',
-      provider_instance_id: 'local-system-postgres',
-      region: 'local',
-      engine: 'postgres',
-      engine_version: '16',
-      host,
-      port,
-      instance_class: 'db.p1',
-      capacity_json: { max_tenants: 50 },
-    });
+    for (const dbClass of missing) {
+      const instance = await this.managedDb.createInstance({
+        id: generateManagedDbInstanceId(),
+        provider: 'local',
+        provider_instance_id: dbClass === 'db.p1' ? 'local-system-postgres' : `local-system-postgres-${dbClass}`,
+        region: 'local',
+        engine: 'postgres',
+        engine_version: engineVersion,
+        host,
+        port,
+        instance_class: dbClass,
+        capacity_json: { max_tenants: 50 },
+      });
+      this.logger.log(
+        `[managed-db-reconciler] Seeded local managed DB instance ${instance.id} (${dbClass}, Postgres ${engineVersion}, ${host}:${port})`,
+      );
+    }
+  }
 
-    this.logger.log(`[managed-db-reconciler] Seeded local managed DB instance: ${instance.id} (${host}:${port})`);
+  /** The platform server's major version, e.g. "15"; "16" if it cannot be read. */
+  private async serverMajorVersion(): Promise<string> {
+    try {
+      const [row] = await this.db<{ server_version_num: string }[]>`
+        SELECT current_setting('server_version_num') AS server_version_num
+      `;
+      const num = Number(row?.server_version_num);
+      if (Number.isInteger(num) && num >= 100000) return String(Math.floor(num / 10000));
+    } catch (err) {
+      this.logger.warn(`[managed-db-reconciler] Could not read the server version: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return '16';
   }
 }
 
@@ -1104,4 +1115,13 @@ function withinDropRetryWindow(deletedAt: Date | string | null | undefined): boo
   if (!deletedAt) return false;
   const since = Date.now() - new Date(deletedAt).getTime();
   return Number.isFinite(since) && since < DROP_RETRY_WINDOW_MS;
+}
+
+/** Classes to seed local instances for: `EVE_MANAGED_DB_SEED_CLASSES`, known classes only (default db.p1). */
+function seedClasses(): string[] {
+  const configured = (process.env.EVE_MANAGED_DB_SEED_CLASSES ?? 'db.p1')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value && getManagedDbLimits(value));
+  return configured.length > 0 ? [...new Set(configured)] : ['db.p1'];
 }
