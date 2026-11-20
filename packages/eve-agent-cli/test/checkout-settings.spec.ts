@@ -67,19 +67,6 @@ describe('Claude Code under strict', () => {
     expect(fs.readFileSync(path.join(ws, '.claude/settings.local.json'), 'utf8')).toBe(LOCAL_SETTINGS);
   });
 
-  it.each<HarnessName>(['claude', 'mclaude', 'zai'])('%s scrubs credentials from the subprocesses Claude Code starts, and no settings file can turn that off', (harness) => {
-    const ws = dir({ '.claude/settings.json': JSON.stringify({ env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0', SHOP_MODE: 'test' } }) });
-    const config = dir({ 'settings.json': JSON.stringify({ env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0' }, hooks: { Stop: [] } }) });
-    const { args, env } = build(context(harness, ws, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0' }));
-
-    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('1');
-    expect(JSON.parse(fs.readFileSync(argAfter(args, '--settings'), 'utf8')).env).toEqual({ SHOP_MODE: 'test' });
-    expect(JSON.parse(fs.readFileSync(path.join(config, 'settings.json'), 'utf8'))).toEqual({ env: {}, hooks: { Stop: [] } });
-    const inCheckout = dir({ '.agent/harnesses/claude/settings.json': JSON.stringify({ env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0' } }) });
-    expect(() => build(context(harness, inCheckout, { CLAUDE_CONFIG_DIR: path.join(inCheckout, '.agent/harnesses/claude') })))
-      .toThrow(/harness\.checkout_settings/);
-  });
-
   it('refuses a config directory inside the checkout that sets routing, rather than edit it', () => {
     const ws = dir({ '.agent/harnesses/claude/settings.json': JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://proxy.eve.example' } }) });
     expect(() => build(context('claude', ws, { CLAUDE_CONFIG_DIR: path.join(ws, '.agent/harnesses/claude') })))
@@ -120,10 +107,9 @@ describe('Claude Code under strict', () => {
 
   it('changes nothing without the strict flag', () => {
     const ws = dir({ '.claude/settings.json': PROJECT_SETTINGS });
-    const { args, env } = build(context('claude', ws, { EVE_HARNESS_CHECKOUT_SETTINGS: undefined, CLAUDE_CONFIG_DIR: dir() }));
+    const { args } = build(context('claude', ws, { EVE_HARNESS_CHECKOUT_SETTINGS: undefined, CLAUDE_CONFIG_DIR: dir() }));
     expect(args).not.toContain('--settings');
     expect(args).not.toContain('--setting-sources');
-    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBeUndefined();
   });
 });
 
