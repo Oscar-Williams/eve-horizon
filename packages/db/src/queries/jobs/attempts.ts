@@ -157,6 +157,20 @@ export function jobAttemptQueries(db: Db) {
     },
 
     /**
+     * Set one runtime_meta field unless the attempt already has it, in one
+     * statement. False when it was already set (or the attempt is gone).
+     */
+    async setRuntimeMetaOnce(attemptId: string, field: string, value: unknown): Promise<boolean> {
+      const rows = await db<{ id: string }[]>`
+        UPDATE job_attempts
+        SET runtime_meta = COALESCE(runtime_meta, '{}'::jsonb) || jsonb_build_object(${field}::text, ${db.json(value as never)}::jsonb)
+        WHERE id = ${attemptId}::uuid AND NOT (COALESCE(runtime_meta, '{}'::jsonb) ? ${field}::text)
+        RETURNING id
+      `;
+      return rows.length > 0;
+    },
+
+    /**
      * Mark an attempt as having started execution (idempotent).
      *
      * This is distinct from `started_at` (claim time). It should be set at the

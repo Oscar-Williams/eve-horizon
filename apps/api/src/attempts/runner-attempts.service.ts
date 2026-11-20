@@ -171,7 +171,12 @@ export class RunnerAttemptsService {
     if (extra.length > 0) {
       throw new BadRequestException(`A runner reports only ${RUNNER_RUNTIME_META_KEYS.join(', ')} (got ${extra.join(', ')})`);
     }
-    const update = { ...(meta as Record<string, unknown>) };
+    const { self_check: selfCheck, ...update } = meta as Record<string, unknown>;
+    // The egress self-check is reported once, before job code runs; job code holds the same token.
+    if (selfCheck !== undefined && !await this.jobs.setRuntimeMetaOnce(attemptId, 'self_check', selfCheck)) {
+      throw new ConflictException('This attempt has already reported its self-check');
+    }
+    if (Object.keys(update).length === 0) return;
     // Keep the toolchain image IDs the worker recorded at pod start.
     if (update.toolchains && typeof update.toolchains === 'object') {
       const [attempt] = await this.db<{ runtime_meta: { toolchains?: { image_ids?: unknown } } | null }[]>`
@@ -183,17 +188,21 @@ export class RunnerAttemptsService {
     await this.jobs.updateRuntimeMeta(attemptId, update);
   }
 
-  /** A message on the job's own chat thread or its parent's coordination thread. */
+  /**
+   * A message on the job's own chat thread or its parent's coordination
+   * thread. It is posted as the job's own agent (its assignee, else the job):
+   * the actor the body names is ignored, since job code holds the same token.
+   */
   async createThreadMessage(token: JobTokenPayload, body: Record<string, unknown>): Promise<void> {
     const threadId = body.thread_id;
     const text = body.body;
-    const actorType = body.actor_type;
     if (typeof threadId !== 'string' || typeof text !== 'string' || !text || text.length > MAX_THREAD_MESSAGE) {
       throw new BadRequestException('thread_id and a body of at most 16 KiB are required');
     }
-    if (actorType !== 'agent' && actorType !== 'system') throw new BadRequestException('actor_type must be agent or system');
+    const job = await this.jobs.findById(token.job_id) as { assignee?: string | null } | null;
+    const agentId = job?.assignee || token.job_id;
     if (body.chat_progress === true) {
-      await this.deliverChatProgress(token, threadId, text, typeof body.actor_id === 'string' ? body.actor_id : undefined);
+      await this.deliverChatProgress(token, threadId, text, agentId);
       return;
     }
     if (!(await this.jobThreads(token.job_id)).has(threadId)) {
@@ -203,8 +212,8 @@ export class RunnerAttemptsService {
       id: typeof body.id === 'string' && body.id ? body.id : randomUUID(),
       thread_id: threadId,
       direction: 'outbound',
-      actor_type: actorType,
-      actor_id: typeof body.actor_id === 'string' && body.actor_id ? body.actor_id : token.job_id,
+      actor_type: 'agent',
+      actor_id: agentId,
       body: text,
       job_id: token.job_id,
     } as never);
