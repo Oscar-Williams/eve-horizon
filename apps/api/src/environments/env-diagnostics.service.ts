@@ -26,6 +26,7 @@ import {
   DEFAULT_INGRESS_MAX_BODY_SIZE,
   DEFAULT_INGRESS_TIMEOUT,
   getServicesFromManifest,
+  isDeploymentRolledOut,
   isImplicitPublicIngress,
   isPublicIngress,
   loadConfig,
@@ -128,7 +129,9 @@ export class EnvDiagnosticsService {
 
       const desiredReplicas = items.reduce((sum, d) => sum + (d.spec?.replicas ?? 0), 0);
       const availableReplicas = items.reduce((sum, d) => sum + (d.status?.availableReplicas ?? 0), 0);
-      const ready = desiredReplicas === 0 ? true : availableReplicas >= desiredReplicas;
+      // Ready once every Deployment's new pods serve, as the worker judges a deploy.
+      const rolling = items.filter((d) => !isDeploymentRolledOut(d)).map((d) => d.metadata?.name ?? 'unknown');
+      const ready = rolling.length === 0;
       const conditions = items
         .flatMap((d) => d.status?.conditions ?? [])
         .map((condition) => ({
@@ -145,7 +148,7 @@ export class EnvDiagnosticsService {
       };
 
       if (!ready) {
-        warnings.push(`Deployments not ready (${availableReplicas}/${desiredReplicas} available)`);
+        warnings.push(`Deployments not ready (${availableReplicas}/${desiredReplicas} available; still rolling: ${rolling.join(', ')})`);
       }
 
       return {
@@ -218,7 +221,7 @@ export class EnvDiagnosticsService {
       for (const deployment of items) {
         const desiredReplicas = deployment.spec?.replicas ?? 0;
         const availableReplicas = deployment.status?.availableReplicas ?? 0;
-        const ready = desiredReplicas === 0 ? true : availableReplicas >= desiredReplicas;
+        const ready = isDeploymentRolledOut(deployment);
         const conditions = (deployment.status?.conditions ?? []).map((condition) => ({
           type: condition.type ?? 'Unknown',
           status: condition.status ?? 'Unknown',

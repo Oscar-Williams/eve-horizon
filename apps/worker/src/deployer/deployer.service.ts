@@ -206,10 +206,13 @@ export interface DeploymentStatus {
   namespace?: string;
   /** Detailed status from K8s */
   k8sStatus?: {
+    /** Every Deployment has rolled out: its new pods serve and no old pod is left. */
     ready: boolean;
     availableReplicas: number;
     desiredReplicas: number;
     conditions: Array<{ type: string; status: string; message?: string }>;
+    /** The Deployments not rolled out yet. */
+    rolling?: string[];
   };
 }
 
@@ -1093,7 +1096,7 @@ export class DeployerService {
     const message = k8sStatus.ready
       ? 'Deployment ready'
       : hasDesiredReplicas
-        ? `Deploying (${k8sStatus.availableReplicas}/${k8sStatus.desiredReplicas} replicas available)`
+        ? `Deploying (${k8sStatus.availableReplicas}/${k8sStatus.desiredReplicas} replicas available; still rolling: ${k8sStatus.rolling.join(', ')})`
         : 'No deployments found';
 
     return {

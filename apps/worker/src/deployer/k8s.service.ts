@@ -8,6 +8,7 @@ import {
   FQDN_POLICY_PLURAL,
   FQDN_POLICY_VERSION,
   MANAGED_NAMESPACE_LABEL,
+  isDeploymentRolledOut,
   workerTenantRoleBinding,
   type FqdnNetworkPolicy,
 } from '@eve/shared';
@@ -248,30 +249,26 @@ export class K8sService {
     }
   }
 
+  /**
+   * Whether the namespace's Deployments (or the one named) have rolled out:
+   * a Deployment is ready only once its new pods serve and no old pod is
+   * left (isDeploymentRolledOut), so the old pods still available right after
+   * an apply never make a deploy ready. `rolling` names the Deployments that
+   * are not ready yet.
+   */
   async getDeploymentStatus(namespace: string, deploymentName?: string): Promise<{
     ready: boolean;
     availableReplicas: number;
     desiredReplicas: number;
     conditions: Array<{ type: string; status: string; message?: string }>;
+    rolling: string[];
   }> {
     this.ensureAvailable();
 
-    // If specific deployment requested, check just that one
+    let items: k8s.V1Deployment[];
     if (deploymentName) {
       try {
-        const deployment = await this.appsApi!.readNamespacedDeployment(deploymentName, namespace);
-        const d = deployment.body;
-        const desiredReplicas = d.spec?.replicas ?? 0;
-        const availableReplicas = d.status?.availableReplicas ?? 0;
-        const ready = desiredReplicas === 0 ? true : availableReplicas >= desiredReplicas;
-
-        const conditions = (d.status?.conditions ?? []).map((condition) => ({
-          type: condition.type ?? 'Unknown',
-          status: condition.status ?? 'Unknown',
-          message: condition.message ?? undefined,
-        }));
-
-        return { ready, availableReplicas, desiredReplicas, conditions };
+        items = [(await this.appsApi!.readNamespacedDeployment(deploymentName, namespace)).body];
       } catch (err) {
         if (isK8sNotFound(err)) {
           return {
@@ -279,36 +276,33 @@ export class K8sService {
             availableReplicas: 0,
             desiredReplicas: 0,
             conditions: [{ type: 'Available', status: 'False', message: `Deployment ${deploymentName} not found` }],
+            rolling: [deploymentName],
           };
         }
         throw wrapK8sError(err, 'read', { kind: 'Deployment', name: deploymentName, namespace });
       }
+    } else {
+      try {
+        items = (await this.appsApi!.listNamespacedDeployment(namespace)).body.items ?? [];
+      } catch (err) {
+        throw wrapK8sError(err, 'list', { kind: 'Deployment', namespace });
+      }
+      if (items.length === 0) {
+        return {
+          ready: false,
+          availableReplicas: 0,
+          desiredReplicas: 0,
+          conditions: [{ type: 'Available', status: 'False', message: 'No deployments found' }],
+          rolling: [],
+        };
+      }
     }
 
-    // Otherwise check all deployments in namespace
-    let deployments: { body: { items?: k8s.V1Deployment[] } };
-    try {
-      deployments = await this.appsApi!.listNamespacedDeployment(namespace);
-    } catch (err) {
-      throw wrapK8sError(err, 'list', { kind: 'Deployment', namespace });
-    }
-    const items = deployments.body.items ?? [];
-
-    if (items.length === 0) {
-      return {
-        ready: false,
-        availableReplicas: 0,
-        desiredReplicas: 0,
-        conditions: [{ type: 'Available', status: 'False', message: 'No deployments found' }],
-      };
-    }
-
-    const desiredReplicas = items.reduce((sum: number, d: k8s.V1Deployment) => sum + (d.spec?.replicas ?? 0), 0);
-    const availableReplicas = items.reduce((sum: number, d: k8s.V1Deployment) => sum + (d.status?.availableReplicas ?? 0), 0);
-    const ready = desiredReplicas === 0 ? true : availableReplicas >= desiredReplicas;
-
+    const rolling = items
+      .filter((d) => !isDeploymentRolledOut(d))
+      .map((d) => d.metadata?.name ?? 'unknown');
     const conditions = items
-      .flatMap((d: k8s.V1Deployment) => d.status?.conditions ?? [])
+      .flatMap((d) => d.status?.conditions ?? [])
       .map((condition) => ({
         type: condition.type ?? 'Unknown',
         status: condition.status ?? 'Unknown',
@@ -316,10 +310,11 @@ export class K8sService {
       }));
 
     return {
-      ready,
-      availableReplicas,
-      desiredReplicas,
+      ready: rolling.length === 0,
+      availableReplicas: items.reduce((sum, d) => sum + (d.status?.availableReplicas ?? 0), 0),
+      desiredReplicas: items.reduce((sum, d) => sum + (d.spec?.replicas ?? 0), 0),
       conditions,
+      rolling,
     };
   }
 
