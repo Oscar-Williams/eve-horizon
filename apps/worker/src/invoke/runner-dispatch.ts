@@ -11,6 +11,8 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  DEFAULT_EVE_API_APP_URL,
+  DEFAULT_PLATFORM_NAMESPACE,
   DEFAULT_RUNNER_NAMESPACE,
   HEAVY_WORKSPACE_SIZE,
   createRunnerInboundKey,
@@ -28,7 +30,13 @@ import {
   type RunnerSubmit,
 } from '@eve/shared';
 import { createPlainPodBackend, type PodCreatedMeta, type RunnerPodPlan } from './k8s-runner.js';
-import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolSize } from './sandbox-claim-backend.js';
+import {
+  SandboxClaimUnavailable,
+  createSandboxClaimBackend,
+  runnerNamespaceExists,
+  sandboxCrdsPresent,
+  sandboxPoolSize,
+} from './sandbox-claim-backend.js';
 import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
@@ -244,6 +252,14 @@ export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchTo
   // legacy, its allow-all companion) exist before a claim labels a pod with
   // the project or a plain pod starts with it; eve-runner-deny holds until then.
   await ensureRunnerEgress(submit.project_id);
+  if (!opts.pod.orgFs) {
+    const namespace = process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE;
+    if (!(await runnerNamespaceExists(namespace))) {
+      return failure(submit.attempt_id, `The runner namespace ${namespace} does not exist, so no runner pod can start. `
+        + 'Apply the runner pieces of k8s/base (runner-namespace.yaml, runner-serviceaccount.yaml, runner-rbac.yaml and '
+        + 'runner-network-policies.yaml) to the cluster, or set EVE_RUNNER_NAMESPACE on the worker to the namespace that holds them.');
+    }
+  }
   const inbound = createRunnerInboundKey();
   const backend = await runnerBackendFor(submit, opts, inbound.sha256);
   return runInRunnerPod(submit, {
@@ -261,9 +277,22 @@ export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchTo
   });
 }
 
-/** The API URL a runner reports to: the app-facing URL when the instance sets one. */
+/**
+ * The API URL a runner reports to: EVE_API_APP_URL, the URL apps get (the
+ * API's public port by its cluster name; the same default as the deployer's),
+ * never the worker's own EVE_API_URL, which may be a short name the runner
+ * namespace cannot resolve or the internal port its egress policy blocks. A
+ * single-label host is qualified with the platform namespace, as the
+ * deployer does for apps.
+ */
 export function runnerApiUrl(): string {
-  const url = process.env.EVE_API_APP_URL || process.env.EVE_API_URL;
-  if (!url) throw new Error('EVE_API_URL is required to dispatch a runner pod');
-  return url;
+  const raw = process.env.EVE_API_APP_URL || DEFAULT_EVE_API_APP_URL;
+  try {
+    const url = new URL(raw);
+    if (url.hostname.includes('.') || url.hostname === 'localhost' || /^[0-9.]+$|:/.test(url.hostname)) return raw;
+    url.hostname = `${url.hostname}.${process.env.EVE_K8S_NAMESPACE || DEFAULT_PLATFORM_NAMESPACE}.svc.cluster.local`;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return raw;
+  }
 }

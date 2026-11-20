@@ -75,10 +75,26 @@ export async function sandboxPoolSize(namespace: string, jobClass: RunnerClass):
   return size;
 }
 
+let namespaceSeen: { namespace: string; at: number } | null = null;
+
+/**
+ * Whether the runner namespace exists. Only a NotFound answer counts as
+ * missing (any other kubectl failure is left to the pod or claim to report);
+ * a namespace seen is remembered for a while.
+ */
+export async function runnerNamespaceExists(namespace: string): Promise<boolean> {
+  if (namespaceSeen?.namespace === namespace && Date.now() - namespaceSeen.at < CRD_CACHE_MS) return true;
+  const result = await execKubectl(['get', 'namespace', namespace, '-o', 'name']).catch(() => null);
+  if (result && result.exitCode !== 0 && /NotFound|not found/i.test(result.stderr)) return false;
+  if (result?.exitCode === 0) namespaceSeen = { namespace, at: Date.now() };
+  return true;
+}
+
 /** Forget cached discovery (tests, and after a reconcile). */
 export function resetSandboxDiscovery(): void {
   crdCache = null;
   poolCache.clear();
+  namespaceSeen = null;
 }
 
 type ClaimStatus = {

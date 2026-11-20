@@ -127,8 +127,8 @@ whatever happens; a cancelled job's pod with a 5 s grace period.
 | `EVE_K8S_POLL_TIMEOUT_MS` | `1800000` | How long to wait for a result. |
 | `EVE_K8S_RUNNER_RESULT_GRACE_MS` | `30000` | How long a pod may run on after its result. |
 | `EVE_K8S_POD_READY_TIMEOUT` | `60s` | How long a pod may take to become Ready. |
-| `EVE_API_APP_URL` | `EVE_API_URL` | The API URL a runner reports to: the API's public port, by a name that resolves from the runner namespace (base: `http://eve-api.eve.svc.cluster.local:4701`). |
-| `EVE_RUNNER_NAMESPACE` | `eve-runners` | Where runner pods, templates and claims live. |
+| `EVE_API_APP_URL` | `http://eve-api.eve.svc.cluster.local:4701` | The API URL a runner reports to (as apps do): the API's public port, by a name that resolves from the runner namespace. Never the worker's own `EVE_API_URL`; a single-label host is qualified with the platform namespace. |
+| `EVE_RUNNER_NAMESPACE` | `eve-runners` | Where runner pods, templates and claims live. When it does not exist, dispatch fails with "The runner namespace … does not exist" and the k8s/base files to apply. |
 | `EVE_SANDBOX_CLAIM_TIMEOUT` | `10s` | How long a claim may take to be Ready before the plain-pod fallback. |
 | `EVE_RUNNER_PODS_ONLY` | unset | `true`: every project's job code in runner pods. |
 
