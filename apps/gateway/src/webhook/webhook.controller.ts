@@ -15,7 +15,7 @@ import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { GatewayChatService } from '../chat/gateway-chat.service.js';
 import { postJson, getJson } from '../api-client.js';
 import { isSimulateEnabled } from '../simulate-mode.js';
-import { assertDeliverCaller } from '../internal-auth.js';
+import { assertDeliverCaller, gatewayLegacyKeyJudge } from '../internal-auth.js';
 import type {
   GatewayProvider,
   WebhookRequest,
@@ -105,6 +105,8 @@ function rawBodyText(raw: string | Buffer | undefined): string | undefined {
  */
 @Controller('gateway/providers')
 export class WebhookController {
+  private readonly legacyKeyAllowed = gatewayLegacyKeyJudge();
+
   constructor(
     private readonly registry: GatewayProviderRegistry,
     private readonly chatService: GatewayChatService,
@@ -254,7 +256,7 @@ export class WebhookController {
     if (!isSimulateEnabled()) {
       throw new NotFoundException('Simulate endpoint disabled');
     }
-    assertDeliverCaller(req.headers);
+    await assertDeliverCaller(req.headers, '/gateway/providers/simulate', this.legacyKeyAllowed);
 
     const body = req.body as SimulateRequest;
     const dedupeKey = body.dedupe_key;

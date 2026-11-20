@@ -1,5 +1,6 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { identifyInternalCaller, internalTokenMatches, SERVICE_KEY_HEADER } from '@eve/shared';
+import { CanActivate, ExecutionContext, Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
+import { internalLegacyKeyDecider, type Db } from '@eve/db';
+import { identifyInternalCaller, internalTokenMatches, legacyInternalKeyJudge, SERVICE_KEY_HEADER } from '@eve/shared';
 
 /**
  * Guard to protect internal admin endpoints.
@@ -9,10 +10,20 @@ import { identifyInternalCaller, internalTokenMatches, SERVICE_KEY_HEADER } from
  * - `x-internal-api-key` header, OR
  * - `Authorization: Bearer <key>` header
  *
+ * A call that only the legacy key proves follows the instance's
+ * `internal.service_key`, as at the worker and agent runtime: recorded under
+ * `audit`, refused under `strict`.
+ *
  * If no key is configured, all requests are REJECTED (fail closed).
  */
 @Injectable()
 export class InternalApiKeyGuard implements CanActivate {
+  private readonly legacyKeyAllowed?: (path: string) => Promise<boolean>;
+
+  constructor(@Optional() @Inject('DB') db?: Db) {
+    this.legacyKeyAllowed = db ? legacyInternalKeyJudge(internalLegacyKeyDecider(db, 'orchestrator')) : undefined;
+  }
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const headers = request?.headers;
@@ -57,6 +68,12 @@ export class InternalApiKeyGuard implements CanActivate {
     // Constant-time comparison (shared helper; does not leak the key's length)
     if (!internalTokenMatches(providedKey, configuredKey)) {
       throw new UnauthorizedException('Invalid internal API key');
+    }
+
+    const url: string = typeof request.url === 'string' ? request.url : '';
+    const path = url.split('?')[0];
+    if (this.legacyKeyAllowed && !(await this.legacyKeyAllowed(path))) {
+      throw new UnauthorizedException('The legacy internal key is refused (rule internal.service_key)');
     }
 
     return true;

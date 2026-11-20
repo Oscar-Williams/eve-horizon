@@ -9,7 +9,7 @@ import {
 import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { formatAgentReply } from '../providers/slack/slack-format.js';
 import { createJsonLogger } from '@eve/shared';
-import { assertDeliverCaller } from '../internal-auth.js';
+import { assertDeliverCaller, gatewayLegacyKeyJudge } from '../internal-auth.js';
 
 const logger = createJsonLogger('gateway');
 
@@ -23,6 +23,8 @@ interface DeliveryRequest {
 
 @Controller('internal')
 export class DeliveryController {
+  private readonly legacyKeyAllowed = gatewayLegacyKeyJudge();
+
   constructor(private readonly registry: GatewayProviderRegistry) {}
 
   @Post('deliver')
@@ -31,8 +33,9 @@ export class DeliveryController {
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() body: DeliveryRequest,
   ) {
-    // Only the services that deliver: the deliver key, or the legacy key.
-    assertDeliverCaller(headers);
+    // Only the services that deliver: the deliver key, or the legacy key
+    // under internal.service_key.
+    await assertDeliverCaller(headers, '/internal/deliver', this.legacyKeyAllowed);
 
     if (!body.provider || !body.account_id || !body.channel_id || !body.text) {
       return { delivered: false, reason: 'missing_fields' };
