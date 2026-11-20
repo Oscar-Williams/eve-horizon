@@ -374,7 +374,8 @@ export type ResumeEnvironmentResponse = z.infer<typeof ResumeEnvironmentResponse
 // Service-token rotation (`eve env rotate-service-tokens`)
 // ---------------------------------------------------------------------------
 
-const RotatedTokenSchema = z.object({
+/** A token the rotation took on. A fresh schema per use keeps the OpenAPI export free of internal refs. */
+const rotatedToken = () => z.object({
   secret: z.string(),
   key: z.string(),
   reason: z.string(),
@@ -397,11 +398,11 @@ export const RotateServiceTokensResponseSchema = z.object({
     failed: z.number().int(),
   }),
   /** Written to the service's Secret; the service rolls onto it. */
-  renewed: z.array(RotatedTokenSchema),
+  renewed: z.array(rotatedToken()),
   /** The Secret was written in between (a deploy): left for the hourly renewal. */
-  conflicted: z.array(RotatedTokenSchema),
+  conflicted: z.array(rotatedToken()),
   /** Not renewed, or renewed but not rolled onto: left for the hourly renewal. */
-  failed: z.array(RotatedTokenSchema.extend({ error: z.string().optional() })),
+  failed: z.array(rotatedToken().extend({ error: z.string().optional() })),
 });
 
 export type RotateServiceTokensResponse = z.infer<typeof RotateServiceTokensResponseSchema>;
