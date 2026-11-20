@@ -102,7 +102,7 @@ describe('runner egress self-check', () => {
   it.each(['enforce', 'audit', 'off'] as const)('fails the job under %s when the self-check cannot be recorded', async (mode) => {
     const probe = vi.fn(async () => false);
     const c = client();
-    c.updateRuntimeMeta.mockRejectedValue(new Error('409 Conflict'));
+    c.updateRuntimeMeta.mockRejectedValue(new RunnerApiError('runner runtime-meta failed [409]: already reported', 409));
     const refusal = await egressSelfCheck({ probe, kubernetesHost: '10.0.0.1' })(submit(mode), c as never);
     expect(refusal).toMatchObject({ success: false, error_code: 'self_check_not_recorded', error: expect.stringMatching(/could not record its self-check/) });
   });
