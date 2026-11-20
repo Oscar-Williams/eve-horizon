@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { RunnerApiError } from '@eve/shared';
 import { egressSelfCheck } from './runner-self-check.js';
 
 /**
@@ -56,6 +57,46 @@ describe('runner egress self-check', () => {
       expect(c.updateRuntimeMeta).toHaveBeenCalledWith({ self_check: expect.objectContaining({ mode: 'off' }) });
     }
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('retries the write once on a network error or a 5xx, and runs the job when the retry lands', async () => {
+    for (const first of [new TypeError('fetch failed'), new RunnerApiError('runner runtime-meta failed [503]: ', 503)]) {
+      const c = client();
+      c.updateRuntimeMeta.mockRejectedValueOnce(first);
+      const check = egressSelfCheck({ probe: async () => false, kubernetesHost: '10.0.0.1', retryDelayMs: 0 });
+      expect(await check(submit('enforce'), c as never), first.message).toBeNull();
+      expect(c.updateRuntimeMeta).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('takes a 409 on the retry as the first write having landed, since job code cannot have run yet', async () => {
+    const c = client();
+    c.updateRuntimeMeta
+      .mockRejectedValueOnce(new RunnerApiError('runner runtime-meta failed [502]: ', 502))
+      .mockRejectedValueOnce(new RunnerApiError('runner runtime-meta failed [409]: already reported', 409));
+    expect(await egressSelfCheck({ probe: async () => false, kubernetesHost: '10.0.0.1', retryDelayMs: 0 })(submit('audit'), c as never)).toBeNull();
+    // The check's own result still decides under enforce.
+    const reachable = client();
+    reachable.updateRuntimeMeta
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new RunnerApiError('runner runtime-meta failed [409]: already reported', 409));
+    const refusal = await egressSelfCheck({ probe: async () => true, kubernetesHost: '10.0.0.1', retryDelayMs: 0 })(submit('enforce'), reachable as never);
+    expect(refusal?.error_code).toBe('egress_not_enforced');
+  });
+
+  it('does not retry a refusal, nor accept a 409 on the first write, and fails when the retry fails too', async () => {
+    for (const status of [409, 400, 403]) {
+      const c = client();
+      c.updateRuntimeMeta.mockRejectedValue(new RunnerApiError(`runner runtime-meta failed [${status}]: `, status));
+      const refusal = await egressSelfCheck({ probe: async () => false, kubernetesHost: '10.0.0.1', retryDelayMs: 0 })(submit('audit'), c as never);
+      expect(refusal?.error_code, String(status)).toBe('self_check_not_recorded');
+      expect(c.updateRuntimeMeta).toHaveBeenCalledTimes(1);
+    }
+    const c = client();
+    c.updateRuntimeMeta.mockRejectedValue(new RunnerApiError('runner runtime-meta failed [503]: ', 503));
+    const refusal = await egressSelfCheck({ probe: async () => false, kubernetesHost: '10.0.0.1', retryDelayMs: 0 })(submit('off'), c as never);
+    expect(refusal?.error_code).toBe('self_check_not_recorded');
+    expect(c.updateRuntimeMeta).toHaveBeenCalledTimes(2);
   });
 
   it.each(['enforce', 'audit', 'off'] as const)('fails the job under %s when the self-check cannot be recorded', async (mode) => {
