@@ -32,8 +32,9 @@ export const SECURITY_NEW_PROJECT_PROFILE_SETTING = 'security.new_project_profil
 
 /**
  * The rule set of each rule: the release step that brought it (P1 is 1, P2
- * is 2). New behaviour gets a new rule id, never a wider meaning for an old
- * one, so a stamp keeps what it covered. A rule not listed counts as 1.
+ * is 2, P3 is 3). New behaviour gets a new rule id, never a wider meaning
+ * for an old one, so a stamp keeps what it covered. A rule not listed
+ * counts as 1.
  */
 export const SECURITY_RULESETS: Readonly<Record<string, number>> = {
   // P1
@@ -77,6 +78,13 @@ export const SECURITY_RULESETS: Readonly<Record<string, number>> = {
   'internal.service_key': 2,
   'registry.internal_key': 2,
   'secrets.legacy_ciphertext': 2,
+  // P3
+  'managed_db.owner_url': 3,
+  'egress.allow_hosts': 3,
+  'network.ingress_isolation': 3,
+  'isolation.pod_security_admission': 3,
+  'builds.isolated': 3,
+  'auth.nip98_public_url': 3,
 };
 
 /** The rule set a `strict` profile set now is stamped with. */

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
-import { SetSecurityProfileRequestSchema, registryKeyVersion } from '@eve/shared';
+import { SECURITY_CURRENT_RULESET, SetSecurityProfileRequestSchema, registryKeyVersion } from '@eve/shared';
 import { SecurityService } from './security.service';
 import type { AuthUser } from '../auth/auth.types';
 
@@ -319,9 +319,9 @@ describe('SecurityService', () => {
       await svc.setProfile({ scope: 'org', id: ORG }, 'strict', 'user_admin');
       await svc.setProfile({ scope: 'instance' }, 'strict', 'user_admin');
 
-      expect(db.state.projectRulesets.get(PROJECT)).toBe(2);
-      expect(db.state.orgRulesets.get(ORG)).toBe(2);
-      expect(db.state.settings.get('security.profile_ruleset')).toBe('2');
+      expect(db.state.projectRulesets.get(PROJECT)).toBe(SECURITY_CURRENT_RULESET);
+      expect(db.state.orgRulesets.get(ORG)).toBe(SECURITY_CURRENT_RULESET);
+      expect(db.state.settings.get('security.profile_ruleset')).toBe(String(SECURITY_CURRENT_RULESET));
       expect(await svc.decide(P2_RULE, { projectId: PROJECT, governing: 'project' })).toBe('strict');
     });
 
@@ -339,7 +339,7 @@ describe('SecurityService', () => {
       db.state.settings.set('security.new_project_profile', 'strict');
       await build().applyNewProjectProfile(PROJECT);
       expect(db.state.projectProfiles.get(PROJECT)).toBe('strict');
-      expect(db.state.projectRulesets.get(PROJECT)).toBe(2);
+      expect(db.state.projectRulesets.get(PROJECT)).toBe(SECURITY_CURRENT_RULESET);
     });
 
     it('reports the rule set each strict profile covers', async () => {
@@ -347,7 +347,7 @@ describe('SecurityService', () => {
       db.state.projectRulesets.set(PROJECT, 1);
       db.state.orgProfiles.set(ORG, 'audit');
       const report = await build().report({});
-      expect(report.current_ruleset).toBe(2);
+      expect(report.current_ruleset).toBe(SECURITY_CURRENT_RULESET);
       expect(report.projects.find((p) => p.id === PROJECT)).toMatchObject({
         profile: 'strict',
         ruleset: 1,
