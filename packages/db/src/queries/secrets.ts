@@ -59,6 +59,16 @@ export function secretQueries(db: Db) {
       `;
     },
 
+    /** The names of every secret in a scope, without their values. */
+    async listKeysByScope(scopeType: SecretScopeType, scopeId: string): Promise<string[]> {
+      const rows = await db<Array<{ key: string }>>`
+        SELECT key FROM secrets
+        WHERE scope_type = ${scopeType} AND scope_id = ${scopeId}
+        ORDER BY key
+      `;
+      return rows.map((row) => row.key);
+    },
+
     async findByScopeAndKey(
       scopeType: SecretScopeType,
       scopeId: string,

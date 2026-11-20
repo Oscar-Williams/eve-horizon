@@ -4,6 +4,7 @@ import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import yaml from 'yaml';
 import {
+  agentConfigQueries,
   appLinkSubscriptionQueries,
   decideSecurityRule,
   environmentQueries,
@@ -13,6 +14,7 @@ import {
   projectManifestQueries,
   projectQueries,
   releaseQueries,
+  secretQueries,
   securityQueries,
   systemSettingsQueries,
   type Db,
@@ -30,6 +32,7 @@ import {
   FQDN_POLICY_LABEL_VALUE,
   NETWORK_PRIVATE_CIDRS_SETTING,
   RUNNER_PROJECT_LABEL,
+  credentialHarnesses,
   deriveNamespace,
   egressFqdnProvider,
   envEgressPolicies,
@@ -37,6 +40,8 @@ import {
   envIngressPolicies,
   manifestEgressHosts,
   parseCidrList,
+  profileHarnesses,
+  readDeclaredProfiles,
   runnerAllowHosts,
   runnerEgressPolicies,
   runnerFqdnPolicies,
@@ -169,6 +174,8 @@ export class EgressPolicies {
   private readonly manifests: ReturnType<typeof projectManifestQueries>;
   private readonly releases: ReturnType<typeof releaseQueries>;
   private readonly security: ReturnType<typeof securityQueries>;
+  private readonly agentConfigs: ReturnType<typeof agentConfigQueries>;
+  private readonly secrets: ReturnType<typeof secretQueries>;
 
   constructor(
     private readonly db: Db,
@@ -187,6 +194,8 @@ export class EgressPolicies {
     this.manifests = projectManifestQueries(db);
     this.releases = releaseQueries(db);
     this.security = securityQueries(db);
+    this.agentConfigs = agentConfigQueries(db);
+    this.secrets = secretQueries(db);
   }
 
   /** The profile egress.default_deny runs under for a project (stamps honoured). */
@@ -518,17 +527,40 @@ export class EgressPolicies {
   }
 
   /**
-   * The hosts a project's runners may reach (its list, every harness's
-   * hosts, its git host), and how many it declares. The list comes from the
-   * manifest of its last explicit sync or deploy: the pipeline's drift check
-   * stores manifests from whatever ref a build checked out, which job code
-   * controls, so the latest row could widen the list.
+   * The hosts a project's runners may reach (its list, the hosts of the
+   * harnesses it can run, its git host), and how many it declares. The list
+   * comes from the manifest of its last explicit sync or deploy: the
+   * pipeline's drift check stores manifests from whatever ref a build checked
+   * out, which job code controls, so the latest row could widen the list.
    */
   private async runnerHosts(projectId: string): Promise<{ hosts: EgressHost[]; declared: number }> {
     const project = await this.projects.findById(projectId);
     const record = await this.manifests.findLatestSyncedByProject(projectId);
     const declared = manifestEgressHosts(parseManifest(record?.manifest_yaml)).project;
-    return { hosts: runnerAllowHosts({ projectHosts: declared, repoUrl: project?.repo_url }), declared: declared.length };
+    const harnesses = project ? await this.runnerHarnesses(project, record?.manifest_yaml) : [];
+    return { hosts: runnerAllowHosts({ projectHosts: declared, harnesses, repoUrl: project?.repo_url }), declared: declared.length };
+  }
+
+  /**
+   * The harnesses a project's runners can run: those its harness profiles
+   * name (the agents config's x-eve, else the synced manifest's, as dispatch
+   * reads them), else those its project, org and instance secrets are
+   * credentials for. Each allowed model API can carry data out under a key
+   * the job code brings, so a harness the project cannot run adds nothing.
+   */
+  private async runnerHarnesses(
+    project: { id: string; org_id: string },
+    manifestYaml: string | undefined,
+  ): Promise<string[]> {
+    const config = await this.agentConfigs.findLatestByProject(project.id);
+    const named = profileHarnesses(readDeclaredProfiles({ xEveYaml: config?.x_eve_yaml, manifestYaml }).profiles);
+    if (named.length > 0) return named;
+    const keys = [
+      ...await this.secrets.listKeysByScope('project', project.id),
+      ...await this.secrets.listKeysByScope('org', project.org_id),
+      ...await this.secrets.listKeysByScope('system', 'system'),
+    ];
+    return credentialHarnesses(keys);
   }
 
   /** The manifest an env runs: its applied (else current) release's, else the project's last synced or deployed one. */

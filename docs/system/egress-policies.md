@@ -103,8 +103,16 @@ runner pods and env pods reach. The hosts come from three places:
   only). See [manifest](manifest.md#x-eveegresshosts).
 - **The harnesses:** each harness adapter in
   `packages/shared/src/harnesses/adapters` declares the hosts its CLI needs
-  (`egressHosts`). Every runner policy carries all of them, since a job may
-  name any harness:
+  (`egressHosts`). A project's runner policies carry those of the harnesses
+  it can run: the harnesses its harness profiles name
+  (`x-eve.agents.profiles`, every target, fallbacks included; the agents
+  config's, else the synced manifest's), else, with no profile, the
+  harnesses its project, org and instance secrets are credentials for
+  (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` for Claude,
+  `OPENAI_API_KEY` or a Codex sign-in for Codex, and so on; `pi` counts
+  only through the profile, its hosts being its providers'). A job that
+  names another harness gets no route to its API under `strict`: declare a
+  profile for it. Each harness's hosts:
 
   | Harness | Hosts |
   |---|---|
@@ -187,6 +195,10 @@ from `audit` to `strict` takes effect at the next job).
   name opens the CDN's other customers.
 - **DNS:** lookups succeed for any name, so a pod can still leak data in
   DNS queries to a name server it does not control.
+- **Model APIs:** an allowed model API (and the git host) accepts any
+  account's key, so job code can still send data out through it under a key
+  of its own. Only the harnesses a project can run are allowed, which keeps
+  that to the providers it already uses.
 - **The ingress controller:** calls to any public host of this instance
   still reach the ingress controller, as under `egress.default_deny`.
 
