@@ -50,6 +50,8 @@ import {
   agentQueries,
   decideSecurityRule,
   governingSecurityProfile,
+  recordRunnerModeFinding,
+  runnerModeFor,
 } from '@eve/db';
 import { CHECKOUT_SETTINGS_RULE, holdCheckoutSettings } from '@eve/shared';
 import {
@@ -1010,6 +1012,18 @@ export class InvokeService implements OnModuleInit {
 
       if (this.shouldRunInK8sRunnerPod()) {
         return await this.dispatchToRunner(effectiveInvocation, cancellation.signal);
+      }
+
+      // Rule isolation.runner_mode, decided as the worker decides it: the
+      // orchestrator sends such jobs to the worker, and this runtime does not
+      // run one inline should it arrive here anyway.
+      const mode = await runnerModeFor(this.db, effectiveInvocation.projectId);
+      if (mode.required) {
+        await recordRunnerModeFinding(this.db, { projectId: effectiveInvocation.projectId, profile: mode.profile,
+          actorId: effectiveInvocation.jobId, detail: { kind: 'agent', job_id: effectiveInvocation.jobId, refused: 'agent-runtime-inline' } });
+        throw new Error(`isolation.runner_mode: ${mode.profile === 'strict' ? `project ${effectiveInvocation.projectId} is strict` : 'the instance sets EVE_RUNNER_PODS_ONLY'}, `
+          + 'so this agent job runs only in a runner pod, and the agent runtime does not run it inline. Send it to the worker '
+          + '(the orchestrator does so for such jobs), or set EVE_AGENT_RUNTIME_EXECUTION_MODE=runner on the agent runtime.');
       }
 
       inlineExecution = true;

@@ -169,7 +169,7 @@ runner pods never carry it.
 
 | Work | `legacy` / `audit` | `strict`, or `EVE_RUNNER_PODS_ONLY=true` |
 |---|---|---|
-| Agent job | The agent runtime inline when `EVE_AGENT_RUNTIME_URL` is set (recorded under `audit`), else the worker's runner pod | The worker's runner pod; the orchestrator never sends it to the agent runtime |
+| Agent job | The agent runtime inline when `EVE_AGENT_RUNTIME_URL` is set (recorded under `audit`), else the worker's runner pod | The worker's runner pod; the orchestrator never sends it to the agent runtime, and the agent runtime, deciding the rule as the worker does, refuses to run one inline (it still hands it to the worker in runner mode) |
 | Script step | The worker's process, or a runner pod with `EVE_SCRIPT_K8S_RUNNER=true` (inline recorded under `audit`) | A runner pod |
 | `action: run` | The worker's process (recorded under `audit`) | A runner pod, through the script handler (checked out at the action's `git_sha`; timeout code `action_run_timeout`) |
 | Legacy pipeline-runner `run` step | The worker's process (recorded under `audit`) | Refused: 400, "use a `script:` step" |
