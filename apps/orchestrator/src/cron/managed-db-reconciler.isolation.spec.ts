@@ -2,9 +2,10 @@ import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedDbReconcilerService } from './managed-db-reconciler.service.js';
 
-// A tenant database accepts only its own logins, and each login has a
-// connection limit from its class, so one tenant can neither connect to
-// another's database nor use up the connections the platform shares.
+// A tenant database accepts only its own logins, each login has a connection
+// limit from its class, and so does the database as a whole, so one tenant can
+// neither connect to another's database nor use up the connections the
+// platform shares (however many roles it declares).
 
 type FakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
   unsafe: (text: string) => Promise<unknown[]>;
@@ -16,8 +17,11 @@ function normalizeSql(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Logins and their current limit (-1 is "no limit"), as pg_roles would answer. */
-function createFakeSql(limits: Record<string, number> = {}): FakeSql {
+/**
+ * Logins and databases with their current limit (-1 is "no limit"), as
+ * pg_roles and pg_database would answer.
+ */
+function createFakeSql(limits: Record<string, number> = {}, databaseLimits: Record<string, number> = {}): FakeSql {
   const statements: string[] = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = normalizeSql(strings.reduce((acc, part, index) => acc + part + (index < values.length ? `$${index + 1}` : ''), ''));
@@ -25,6 +29,10 @@ function createFakeSql(limits: Record<string, number> = {}): FakeSql {
     if (text.includes('rolconnlimit')) {
       const login = String(values[0]);
       return Promise.resolve(login in limits ? [{ rolconnlimit: limits[login] }] : []);
+    }
+    if (text.includes('datconnlimit')) {
+      const name = String(values[0]);
+      return Promise.resolve(name in databaseLimits ? [{ datconnlimit: databaseLimits[name] }] : []);
     }
     return Promise.resolve([]);
   }) as FakeSql;
@@ -184,5 +192,47 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     ]));
     expect(adminSql.statements.some((s) => s.includes('acme-lab-test-u-4d5e6f" CONNECTION LIMIT'))).toBe(false);
     expect(adminSql.statements.some((s) => s.includes('acme-old-test'))).toBe(false);
+  });
+
+  it('limits the database as a whole to the class maximum when it has no limit', async () => {
+    const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: -1 });
+    const { service } = createService([buildTenant({ class: 'db.p2' })]);
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.reconcile();
+
+    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 100`);
+  });
+
+  it('never changes a database limit already set', async () => {
+    const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: 30 });
+    const { service } = createService([buildTenant()]);
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.reconcile();
+
+    expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE'))).toBe(false);
+  });
+
+  it('limits the databases of ready tenants in the start-up pass, keeping limits already set', async () => {
+    process.env.EVE_MANAGED_DB_RECONCILER_ENABLED = 'true';
+    process.env.EVE_MANAGED_DB_RECONCILER_CRON = '0 0 1 1 *';
+    const ready = buildTenant({ status: 'ready' });
+    const other = buildTenant({ id: 'mdbt_2', status: 'ready', db_name: 'acme-lab-test-4d5e6f', db_user: 'acme-lab-test-u-4d5e6f' });
+    const adminSql = createFakeSql(
+      { [OWNER]: 25, 'acme-lab-test-u-4d5e6f': 25 },
+      { [DB]: -1, 'acme-lab-test-4d5e6f': 30 },
+    );
+    const { service } = createService([ready, other], {
+      listTenantsNeedingReconciliation: vi.fn().mockResolvedValue([]),
+    });
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.onModuleInit();
+    await (service as any).isolationBackfill;
+    await service.onModuleDestroy();
+
+    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 25`);
+    expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE "acme-lab-test-4d5e6f"'))).toBe(false);
   });
 });
