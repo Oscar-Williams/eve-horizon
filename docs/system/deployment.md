@@ -447,15 +447,22 @@ The admission policies live in their own kustomization, `k8s/admission`
 
 `eve-worker-workload-guard` holds every pod and pod template the worker
 writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
-SandboxTemplates), in every namespace: no DaemonSet, no privileged
-container, no host namespace (`hostNetwork`, `hostPID`, `hostIPC`), no
-`hostPath`, no ephemeral volume (its claim template could clone another
-claim), no `hostPort`, no capability beyond Pod Security baseline, and a
+SandboxTemplates), in every namespace: no DaemonSet, and nothing Pod
+Security baseline refuses, at pod level or in any container (init and
+ephemeral ones included): no privileged container, no host namespace
+(`hostNetwork`, `hostPID`, `hostIPC`), no Windows host process, no
+`hostPath`, no `hostPort`, no capability beyond baseline's, no seccomp or
+AppArmor `Unconfined` (field or `container.apparmor.security.beta.kubernetes.io/*`
+annotation), no `procMount` but `Default`, no sysctl outside baseline's
+safe set, no SELinux type, user or role beyond baseline's. It also refuses
+ephemeral volumes (a claim template could clone another claim), and wants a
 service account of `default`, `eve-runner` or, outside `eve`, an app account
 (`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label
 (`app.kubernetes.io/name`, `app`: they name the platform's own pods to
 network policies), any Secret but `kaniko-cfg-*` (volumes, `env`,
 `envFrom`), and any claim but `eve-ws-*` and `eve-org-fs-*`.
+`x-eve.networking.egress: stable` on EKS runs a host-network pod, which the
+guard refuses: an instance that needs it drops that rule in its overlay.
 
 `eve-worker-platform-guard` holds every write of the worker's in `eve`
 (create, update and delete) to what it makes there, judged by name or label
@@ -467,8 +474,6 @@ kaniko label; NetworkPolicies and FQDN policies labelled
 `eve.horizon/egress`; nothing else. So the worker can neither replace nor
 remove the platform's Secrets (`eve-app`), pods, claims, Jobs or policies,
 whatever its Role in `eve` allows by verb.
-`x-eve.networking.egress: stable` on EKS runs a host-network pod, which the
-guard refuses: an instance that needs it drops that rule in its overlay.
 
 The orchestrator (`k8s/base/orchestrator-rbac.yaml`) reads pods, events,
 Deployments and ReplicaSets, and patches only `deployments/scale` (the env

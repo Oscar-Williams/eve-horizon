@@ -23,8 +23,12 @@
 # (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs, agent-sandbox
 # SandboxTemplates), in every namespace:
 # - no DaemonSet at all (the worker never makes one);
-# - no privileged container, host namespace (hostNetwork, hostPID, hostIPC),
-#   hostPath volume, hostPort, or capability beyond Pod Security baseline;
+# - nothing Pod Security baseline refuses, in any container (init and
+#   ephemeral ones included) or at pod level: no privileged container, host
+#   namespace (hostNetwork, hostPID, hostIPC), Windows host process, hostPath
+#   volume, hostPort, capability beyond baseline's, seccomp or AppArmor
+#   Unconfined (field or annotation), unmasked /proc, sysctl outside the safe
+#   set, or SELinux type, user or role beyond baseline's;
 # - the service account is default, eve-runner, or (outside the platform
 #   namespace) an app account: eve-app (IRSA) or eve-app-<env> (GKE Workload
 #   Identity). x-eve.networking.egress: stable on EKS (hostNetwork) is
@@ -183,10 +187,20 @@ spec:
     - name: podLabels
       expression: >-
         has(variables.template.metadata) && has(variables.template.metadata.labels) ? variables.template.metadata.labels : {}
+    - name: podAnnotations
+      expression: >-
+        has(variables.template.metadata) && has(variables.template.metadata.annotations) ? variables.template.metadata.annotations : {}
     - name: containers
       expression: >-
         variables.podSpec.containers +
-        (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])
+        (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : []) +
+        (has(variables.podSpec.ephemeralContainers) ? variables.podSpec.ephemeralContainers : [])
+    # The pod's security context and each container's: the fields baseline
+    # checks at both levels share their names.
+    - name: securityContexts
+      expression: >-
+        (has(variables.podSpec.securityContext) ? [variables.podSpec.securityContext] : []) +
+        variables.containers.filter(c, has(c.securityContext)).map(c, c.securityContext)
     - name: volumes
       expression: "has(variables.podSpec.volumes) ? variables.podSpec.volumes : []"
     - name: inPlatform
@@ -198,6 +212,12 @@ spec:
   validations:
     - expression: "variables.resource != 'daemonsets'"
       message: "The Eve worker creates no DaemonSet"
+    # Before the host namespaces: the API refuses a host process without
+    # hostNetwork, and the first refusal is the one reported.
+    - expression: >-
+        variables.securityContexts.all(sc, !has(sc.windowsOptions) ||
+        !has(sc.windowsOptions.hostProcess) || !sc.windowsOptions.hostProcess)
+      message: "Pods the Eve worker writes run no Windows host process (windowsOptions.hostProcess)"
     - expression: >-
         !(has(variables.podSpec.hostNetwork) && variables.podSpec.hostNetwork) &&
         !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) &&
@@ -219,6 +239,35 @@ spec:
       message: "Pods the Eve worker writes add no capabilities beyond Pod Security baseline"
     - expression: "variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))"
       message: "Pods the Eve worker writes use no hostPort"
+    - expression: >-
+        variables.securityContexts.all(sc, !has(sc.seccompProfile) ||
+        sc.seccompProfile.type in ['RuntimeDefault', 'Localhost'])
+      message: "Pods the Eve worker writes run nothing with seccomp Unconfined"
+    - expression: >-
+        variables.securityContexts.all(sc, !has(sc.appArmorProfile) ||
+        sc.appArmorProfile.type in ['RuntimeDefault', 'Localhost']) &&
+        variables.podAnnotations.all(k, !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+        variables.podAnnotations[k] == 'runtime/default' || variables.podAnnotations[k].startsWith('localhost/'))
+      message: "Pods the Eve worker writes run nothing with AppArmor Unconfined (appArmorProfile, or the container.apparmor.security.beta.kubernetes.io annotation)"
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) ||
+        c.securityContext.procMount == 'Default')
+      message: "Pods the Eve worker writes leave /proc masked (procMount Default)"
+    - expression: >-
+        !has(variables.podSpec.securityContext) || !has(variables.podSpec.securityContext.sysctls) ||
+        variables.podSpec.securityContext.sysctls.all(x, x.name in ['kernel.shm_rmid_forced',
+        'net.ipv4.ip_local_port_range', 'net.ipv4.ip_local_reserved_ports', 'net.ipv4.ip_unprivileged_port_start',
+        'net.ipv4.tcp_syncookies', 'net.ipv4.ping_group_range', 'net.ipv4.tcp_keepalive_time',
+        'net.ipv4.tcp_fin_timeout', 'net.ipv4.tcp_keepalive_intvl', 'net.ipv4.tcp_keepalive_probes',
+        'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'])
+      message: "Pods the Eve worker writes set only the sysctls Pod Security baseline allows"
+    - expression: >-
+        variables.securityContexts.all(sc, !has(sc.seLinuxOptions) || (
+        (!has(sc.seLinuxOptions.type) || sc.seLinuxOptions.type in
+          ['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']) &&
+        (!has(sc.seLinuxOptions.user) || sc.seLinuxOptions.user == '') &&
+        (!has(sc.seLinuxOptions.role) || sc.seLinuxOptions.role == '')))
+      message: "Pods the Eve worker writes set no SELinux type, user or role beyond Pod Security baseline"
     - expression: >-
         variables.accounts.all(sa, sa in ['', 'default', 'eve-runner'] ||
         (!variables.inPlatform && (sa == 'eve-app' || sa.startsWith('eve-app-'))))

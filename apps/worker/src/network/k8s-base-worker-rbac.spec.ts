@@ -203,7 +203,7 @@ describe('k8s/admission: the worker workload guard', () => {
   it('holds every container, init and ephemeral ones included, to Pod Security baseline', () => {
     const text = JSON.stringify(policy()!.spec);
     for (const needle of [
-      'ephemeralContainers', 'seccompProfile', "'Unconfined'", 'appArmorProfile',
+      'ephemeralContainers', 'seccompProfile', "'RuntimeDefault'", 'appArmorProfile',
       "'container.apparmor.security.beta.kubernetes.io/'", 'procMount', "'Default'", 'sysctls',
       "'kernel.shm_rmid_forced'", 'seLinuxOptions', "'container_t'", 'hostProcess',
     ]) {
