@@ -60,12 +60,14 @@ describe('DeliveryController internal keys', () => {
     });
   });
 
-  it('refuses the core key, even with its hash configured and the legacy key beside it', async () => {
+  it('refuses the core key on its own, even with its hash configured', async () => {
     await expect(controller.handleDelivery({ 'x-eve-service-key': `core.${CORE}` }, body)).rejects.toThrow(UnauthorizedException);
-    await expect(
-      controller.handleDelivery({ 'x-eve-service-key': `core.${CORE}`, 'x-eve-internal-token': 'internal-key' }, body),
-    ).rejects.toThrow(UnauthorizedException);
     expect(getInstance).not.toHaveBeenCalled();
+  });
+
+  it('ignores the core key beside the legacy key and judges the legacy key (a previous release\'s API, for one release)', async () => {
+    await controller.handleDelivery({ 'x-eve-service-key': `core.${CORE}`, 'x-eve-internal-token': 'internal-key' }, body);
+    expect(getInstance).toHaveBeenCalled();
   });
 
   it('refuses its own key and the SSO key: only the services that deliver', async () => {
