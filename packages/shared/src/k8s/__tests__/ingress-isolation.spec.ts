@@ -102,6 +102,16 @@ describe('podSecurityAdmissionPatch', () => {
   const none = { labels: {}, annotations: {} };
   const patch = (input: Record<string, unknown>) => api.podSecurityAdmissionPatch({ current: none, ...input });
 
+  it('lowers only an enforce Eve set that is stricter than the level (podSecurityEnforceLowering, also used before a service job)', () => {
+    const marked = { labels: { [`${PSA}/enforce`]: 'restricted' }, annotations: { [MARK]: 'restricted' } };
+    expect(api.podSecurityEnforceLowering(marked, 'baseline')).toEqual({
+      labels: { [`${PSA}/enforce`]: 'baseline' }, annotations: { [MARK]: 'baseline' },
+    });
+    expect(api.podSecurityEnforceLowering(marked, 'restricted')).toEqual(none);
+    expect(api.podSecurityEnforceLowering({ labels: marked.labels, annotations: {} }, 'baseline')).toEqual(none);
+    expect(api.podSecurityEnforceLowering(none, 'baseline')).toEqual(none);
+  });
+
   it('under strict, before the workloads: warn and audit only, never a new enforce', () => {
     expect(patch({ profile: 'strict', level: 'restricted', phase: 'before' })).toEqual({
       labels: { [`${PSA}/warn`]: 'restricted', [`${PSA}/audit`]: 'restricted' },

@@ -16,6 +16,7 @@ import {
   generateManagedDbSnapshotId,
   generateManagedDbTenantRoleId,
   getManagedDbLimits,
+  managedDbDatabaseConnectionLimit,
   createSnapshotStorageClient,
   executeSnapshot,
   resolveManagedDbSnapshotRetention,
@@ -245,32 +246,32 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
             message: err instanceof Error ? err.message : String(err),
           };
       // A drop that fails stays queued (lock released, error recorded) for
-      // a day, so a busy database or a passing outage does not strand it.
-      // Anything else, or a drop failing for longer, parks at failed.
+      // a day, so a busy database or a passing outage does not strand it,
+      // and parks at failed after that. Any other operation parks at failed
+      // unless the tenant was deleted meanwhile (failOperation).
       if (dropping && withinDropRetryWindow(tenant.deleted_at)) {
         this.logger.warn(`[managed-db-reconciler] Drop of tenant ${tenant.id} failed; will retry: ${error.message}`);
         await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
         return;
       }
-      // An operation that failed after the tenant was deleted leaves it
-      // queued for its drop, not parked at failed with the database kept.
-      if (!dropping && (await this.wasDeletedMeanwhile(tenant.id))) {
-        this.logger.warn(`[managed-db-reconciler] Tenant ${tenant.id} was deleted during a failed operation; queued for drop: ${error.message}`);
-        await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
+      if (dropping) {
+        await this.managedDb.transitionStatus(tenant.id, token, 'failed', { error });
         return;
       }
-      await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
-        error,
-      });
+      await this.failOperation(tenant.id, token, error);
     }
   }
 
-  /** True when the tenant was soft-deleted (or removed) since it was listed. */
-  private async wasDeletedMeanwhile(tenantId: string): Promise<boolean> {
-    try {
-      return !(await this.managedDb.findTenantById(tenantId));
-    } catch {
-      return false;
+  /**
+   * An operation (not a drop) failed: the tenant parks at failed, or, when it
+   * was deleted meanwhile, whenever the delete landed, stays queued for its
+   * drop instead of keeping its database (failOperation decides in one
+   * statement).
+   */
+  private async failOperation(tenantId: string, token: string, error: { code: string; message: string }): Promise<void> {
+    const row = await this.managedDb.failOperation(tenantId, token, error);
+    if (row?.status === 'deleting') {
+      this.logger.warn(`[managed-db-reconciler] Tenant ${tenantId} was deleted during a failed operation; queued for drop: ${error.message}`);
     }
   }
 
@@ -306,8 +307,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   ): Promise<void> {
     const instance = await this.managedDb.findInstanceById(tenant.instance_id);
     if (!instance) {
-      await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
-        error: { code: 'instance_not_found', message: `Instance ${tenant.instance_id} not found` },
+      await this.failOperation(tenant.id, token, {
+        code: 'instance_not_found',
+        message: `Instance ${tenant.instance_id} not found`,
       });
       return;
     }
@@ -969,9 +971,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   /**
    * A tenant database accepts only its own logins: the owner (by ownership)
    * and declared roles (granted CONNECT explicitly). Each login gets its
-   * class's per-login limit, and the database its class's maximum across all
-   * logins, unless one is already set, so an operator's own limit is never
-   * changed. Idempotent.
+   * class's per-login limit unless one is already set. The database's limit
+   * counts every login, Eve's own included, so it is the class maximum plus
+   * the platform reserve (managedDbDatabaseConnectionLimit), set only when
+   * there is none: a limit an operator set is theirs. Idempotent.
    */
   private async isolateLocalTenantDb(
     adminSql: Db,
@@ -981,18 +984,20 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     await adminSql.unsafe(`REVOKE CONNECT ON DATABASE ${quotePostgresIdentifier(tenant.db_name)} FROM PUBLIC`);
     const limits = getManagedDbLimits(tenant.class);
     if (!limits) return;
-    await this.applyDatabaseConnectionLimit(adminSql, tenant.db_name, limits.maxConnections);
+    await this.applyDatabaseConnectionLimit(adminSql, tenant.db_name, managedDbDatabaseConnectionLimit(limits));
     for (const login of [tenant.db_user, ...roleUsers]) {
       await this.applyConnectionLimit(adminSql, login, limits.connectionLimitSql);
     }
   }
 
-  /** Sets a database's connection limit only when it has none (-1). */
+  /** Sets a database's connection limit only when it has none (-1); a limit already set is the operator's. */
   private async applyDatabaseConnectionLimit(adminSql: Db, dbName: string, limit: number): Promise<void> {
     const [row] = await adminSql`
       SELECT datconnlimit FROM pg_database WHERE datname = ${dbName}
     `;
-    if (!row || Number((row as { datconnlimit: unknown }).datconnlimit) !== -1) return;
+    if (!row) return;
+    const current = Number((row as { datconnlimit: unknown }).datconnlimit);
+    if (current !== -1) return;
     await adminSql.unsafe(`ALTER DATABASE ${quotePostgresIdentifier(dbName)} CONNECTION LIMIT ${limit}`);
     this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on database ${dbName}`);
   }

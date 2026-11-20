@@ -16,7 +16,7 @@ const db = vi.hoisted(() => ({
   orgs: new Map<string, { id: string; slug: string }>(),
   envs: [] as Array<Record<string, any>>,
   manifests: new Map<string, string>(),
-  /** The manifest of each project's last explicit sync or deploy (the drift check never sets it). */
+  /** The manifest of each project's last explicit sync (the drift check and deploys never set it). */
   syncedManifests: new Map<string, string>(),
   releaseManifests: new Map<string, string>(),
   /** The agents config's x-eve per project (harness profiles live there). */
@@ -362,7 +362,7 @@ describe('provider gke', () => {
     expect(listed.sort()).toEqual(['*.cdn.example.com:443', 'api.example.com:443', 'github.com:443']);
   });
 
-  it('takes runner hosts from the last explicit sync or deploy, not a manifest the drift check stored from a built ref', async () => {
+  it('takes runner hosts from the last explicit sync, not a manifest the drift check stored from a built ref', async () => {
     strict();
     // Job code controls the repository: a built ref's manifest, stored by
     // the pipeline's drift check, must not widen the project's runner list.

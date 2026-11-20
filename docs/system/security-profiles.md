@@ -193,10 +193,14 @@ holds its writes there (see [deployment](deployment.md#worker-rights));
 each managed database accepts
 only its own logins (`CONNECT` is revoked from `PUBLIC`; the owner keeps it
 by ownership and declared roles by grant), every login without a
-connection limit gets its class's limit (25, 100 or 200), and so does the
-database as a whole across all its logins, applied at provisioning, when a
+connection limit gets its class's limit (25, 100 or 200), and the database
+as a whole across all its logins gets its class maximum plus a platform
+reserve of 5 for Eve's own connections (30, 105 or 205; set only when there
+is none, so an operator's limit stays), applied at provisioning, when a
 change to the tenant finishes and once to existing tenants when the
-orchestrator starts. A limit an operator set is never changed. A managed
+orchestrator starts (run the pre-check in
+[connection limits](db.md#connection-limits) before the deploy). A login
+limit an operator set is never changed. A managed
 database declares at most 8 roles. `eve db reset` and `wipe` reinstall
 the extensions that lived in `public` and the declared roles' grants, in the
 same transaction as the drop. `eve db sql` reports an error in the tenant's
