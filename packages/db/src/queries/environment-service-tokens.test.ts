@@ -79,6 +79,8 @@ describe('environment service tokens', () => {
         name: 'prod',
         namespace: 'eve-acme-shop-prod',
         release_id: `rel_2${suffix}`,
+        // The renewal falls back to it when the applied release is gone.
+        current_release_id: `rel_1${suffix}`,
       }),
     ]);
     expect(listed[0].service_tokens_not_before).toBeInstanceOf(Date);

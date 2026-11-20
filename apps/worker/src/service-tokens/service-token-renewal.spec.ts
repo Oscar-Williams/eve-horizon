@@ -65,6 +65,7 @@ const ENV = {
   name: 'prod',
   namespace: NS,
   release_id: 'rel_2',
+  current_release_id: 'rel_2' as string | null,
   service_tokens_not_before: null as Date | null,
 };
 const STAGING_NS = 'eve-acme-shop-staging';
@@ -645,6 +646,45 @@ describe('service token renewal', () => {
 
       expect(issuer.mintServiceToken).toHaveBeenCalledTimes(5);
       expect(cluster.appsApi.patchNamespacedDeployment).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  describe('a release that is gone', () => {
+    beforeEach(() => {
+      vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    });
+
+    const errors = () => vi.mocked(Logger.prototype.error).mock.calls.map((call) => String(call[0])).join('\n');
+
+    it('falls back to the environment\'s current release when the applied one is not found, and says so', async () => {
+      mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
+        { ...ENV, release_id: 'rel_3', current_release_id: 'rel_2' },
+      ]);
+      const mint = issuer.mintServiceToken.getMockImplementation()!;
+      issuer.mintServiceToken.mockImplementation(async (p: any) => (p.releaseId === 'rel_3' ? { status: 404 } : mint(p)));
+      const old = serviceToken({ days: 20 });
+      cluster.addService('api', { EVE_SERVICE_TOKEN: old }, 'rel_3');
+
+      await renewal.renewAll();
+
+      expect(issuer.mintServiceToken.mock.calls.map(([p]: any[]) => p.releaseId)).toEqual(['rel_3', 'rel_2']);
+      expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(old);
+      expect(errors()).toMatch(/prod.*env_prod.*rel_3.*rel_2/);
+    });
+
+    it('renews nothing, and says so, when the release not found is also the current one', async () => {
+      issuer.mintServiceToken.mockResolvedValue({ status: 404 });
+      const old = serviceToken({ days: 20 });
+      cluster.addService('api', { EVE_SERVICE_TOKEN: old });
+
+      await renewal.renewAll();
+
+      expect(issuer.mintServiceToken).toHaveBeenCalledTimes(1);
+      expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).toBe(old);
+      expect(cluster.coreApi.patchNamespacedSecret).not.toHaveBeenCalled();
+      expect(errors()).toMatch(/prod.*env_prod.*rel_2/);
     });
   });
 });
