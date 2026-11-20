@@ -115,6 +115,9 @@ export interface UpsertManagedDbTenantRoleInput {
 // Query factory
 // ---------------------------------------------------------------------------
 
+/** The statuses a deleted tenant (deleted_at set) may still move to. */
+const MANAGED_DB_STATUSES_ONCE_DELETED: readonly string[] = ['deleting', 'deleted', 'failed'];
+
 export function managedDbQueries(db: Db) {
   return {
     // -----------------------------------------------------------------------
@@ -315,10 +318,13 @@ export function managedDbQueries(db: Db) {
      * The reconciler polls this to find work.
      */
     async listTenantsNeedingReconciliation(): Promise<ManagedDbTenant[]> {
+      // A deleted tenant in any status but deleted or failed is due its drop,
+      // also one an operation left behind when the delete landed meanwhile.
       return db<ManagedDbTenant[]>`
         SELECT * FROM managed_db_tenants
         WHERE (deleted_at IS NULL AND status IN ('provisioning', 'modifying', 'rotating'))
            OR (status = 'deleting')
+           OR (deleted_at IS NOT NULL AND status NOT IN ('deleted', 'failed'))
         ORDER BY created_at ASC
       `;
     },
@@ -371,6 +377,11 @@ export function managedDbQueries(db: Db) {
     /**
      * Transition tenant status. Requires holding the operation lock (token match).
      * On success, clears the lock.
+     *
+     * A deleted tenant (deleted_at set, for example by an environment delete
+     * while an operation held the lock) moves only to deleting, deleted or
+     * failed; any other move is refused (null) and leaves the row and the
+     * lock as they were.
      */
     async transitionStatus(
       tenantId: string,
@@ -389,6 +400,7 @@ export function managedDbQueries(db: Db) {
       const errorCode = opts?.error?.code ?? null;
       const errorMessage = opts?.error?.message ?? null;
       const readyAt = opts?.setReady ? new Date() : undefined;
+      const allowedOnceDeleted = MANAGED_DB_STATUSES_ONCE_DELETED.includes(newStatus);
 
       const [row] = await db<ManagedDbTenant[]>`
         UPDATE managed_db_tenants
@@ -403,6 +415,7 @@ export function managedDbQueries(db: Db) {
             updated_at = NOW()
         WHERE id = ${tenantId}
           AND operation_token = ${token}
+          ${allowedOnceDeleted ? db`` : db`AND deleted_at IS NULL`}
         RETURNING *
       `;
       return row ?? null;

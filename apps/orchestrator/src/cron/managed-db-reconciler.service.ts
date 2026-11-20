@@ -210,7 +210,15 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       return;
     }
 
+    // A deleted tenant is dropped whatever its status: an operation that was
+    // running when the delete landed can leave it in another one.
+    const dropping = tenant.status === 'deleting' || !!tenant.deleted_at;
+
     try {
+      if (dropping) {
+        await this.handleDeleting(tenant, token);
+        return;
+      }
       switch (tenant.status) {
         case 'provisioning':
           await this.handleProvisioning(tenant, token);
@@ -220,9 +228,6 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           break;
         case 'rotating':
           await this.handleRotating(tenant, token);
-          break;
-        case 'deleting':
-          await this.handleDeleting(tenant, token);
           break;
         default:
           // Release lock for unknown states
@@ -238,14 +243,47 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       // A drop that fails stays queued (lock released, error recorded) for
       // a day, so a busy database or a passing outage does not strand it.
       // Anything else, or a drop failing for longer, parks at failed.
-      if (tenant.status === 'deleting' && withinDropRetryWindow(tenant.deleted_at)) {
+      if (dropping && withinDropRetryWindow(tenant.deleted_at)) {
         this.logger.warn(`[managed-db-reconciler] Drop of tenant ${tenant.id} failed; will retry: ${error.message}`);
+        await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
+        return;
+      }
+      // An operation that failed after the tenant was deleted leaves it
+      // queued for its drop, not parked at failed with the database kept.
+      if (!dropping && (await this.wasDeletedMeanwhile(tenant.id))) {
+        this.logger.warn(`[managed-db-reconciler] Tenant ${tenant.id} was deleted during a failed operation; queued for drop: ${error.message}`);
         await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
         return;
       }
       await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
         error,
       });
+    }
+  }
+
+  /** True when the tenant was soft-deleted (or removed) since it was listed. */
+  private async wasDeletedMeanwhile(tenantId: string): Promise<boolean> {
+    try {
+      return !(await this.managedDb.findTenantById(tenantId));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Moves a tenant on at the end of an operation. A tenant deleted meanwhile
+   * cannot move (transitionStatus refuses); its lock is released so the next
+   * pass drops it.
+   */
+  private async completeOperation(
+    tenantId: string,
+    token: string,
+    status: string,
+    opts?: Parameters<ReturnType<typeof managedDbQueries>['transitionStatus']>[3],
+  ): Promise<void> {
+    const moved = await this.managedDb.transitionStatus(tenantId, token, status, opts);
+    if (!moved && (await this.managedDb.releaseOperationLock(tenantId, token))) {
+      this.logger.log(`[managed-db-reconciler] Tenant ${tenantId} was deleted during the operation; it will be dropped`);
     }
   }
 
@@ -289,7 +327,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         );
       }
       await this.applyLocalTenantRoleChanges(instance, tenant, await this.planTenantRoleChanges(tenant));
-      await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+      await this.completeOperation(tenant.id, token, 'ready', {
         providerTenantId: `local:${tenant.db_name}`,
         credentialSecretRef: connectionUrl,
         setReady: true,
@@ -375,7 +413,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     if (tenant.desired_class) {
       this.logger.log(`[managed-db-reconciler] Scaling tenant ${tenant.id} to ${tenant.desired_class}`);
     }
-    await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+    await this.completeOperation(tenant.id, token, 'ready', {
       desiredClass: null,
     });
   }
@@ -395,7 +433,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           await adminSql.unsafe(`ALTER ROLE "${tenant.db_user}" WITH PASSWORD '${newPassword}'`);
           const connectionUrl = this.buildTenantConnectionUrl(instance, tenant, newPassword);
           await this.rotateLocalTenantRoles(adminSql, instance, tenant);
-          await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+          await this.completeOperation(tenant.id, token, 'ready', {
             credentialSecretRef: connectionUrl,
           });
           this.logger.log(`[managed-db-reconciler] Rotated credentials for local tenant ${tenant.id}`);
@@ -406,7 +444,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       }
     }
 
-    await this.managedDb.transitionStatus(tenant.id, token, 'ready');
+    await this.completeOperation(tenant.id, token, 'ready');
   }
 
   private async handleDeleting(
@@ -456,11 +494,11 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       }
     }
 
-    if (tenant.provider_tenant_id?.startsWith('local:')) {
-      const instance = await this.managedDb.findInstanceById(tenant.instance_id);
-      if (instance) {
-        await this.deleteLocalDb(instance, tenant);
-      }
+    // On a local instance the drop does not wait for a provider id: a tenant
+    // deleted while it was being provisioned has a database but none yet.
+    const instance = await this.managedDb.findInstanceById(tenant.instance_id);
+    if (instance && (instance.provider === 'local' || tenant.provider_tenant_id?.startsWith('local:'))) {
+      await this.deleteLocalDb(instance, tenant);
     }
 
     await this.managedDb.markTenantDeleted(tenant.id);
