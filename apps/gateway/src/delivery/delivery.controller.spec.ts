@@ -3,6 +3,10 @@ import { UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeliveryController } from './delivery.controller.js';
 
+// The gateway has no database: it asks the API how to treat a legacy-key call.
+const api = vi.hoisted(() => ({ postJson: vi.fn() }));
+vi.mock('../api-client.js', () => ({ postJson: api.postJson, getJson: vi.fn() }));
+
 const CORE = 'core-key-0123456789';
 const GATEWAY = 'gateway-key-0123456789';
 const DELIVER = 'deliver-key-0123456789';
@@ -15,6 +19,8 @@ describe('DeliveryController internal keys', () => {
 
   beforeEach(() => {
     getInstance.mockClear();
+    api.postJson.mockReset();
+    api.postJson.mockResolvedValue({ profile: 'audit' });
     vi.stubEnv('EVE_INTERNAL_API_KEY', 'internal-key');
     // The gateway holds its own key and only hashes of the others, the
     // core key's included (the instance's one hash list).
@@ -67,5 +73,29 @@ describe('DeliveryController internal keys', () => {
       controller.handleDelivery({ 'x-eve-service-key': `gateway.${GATEWAY}`, 'x-eve-internal-token': 'internal-key' }, body),
     ).rejects.toThrow(UnauthorizedException);
     expect(getInstance).not.toHaveBeenCalled();
+  });
+
+  describe('a call with only the legacy key (internal.service_key)', () => {
+    it('is refused under strict, as the API decides and records it', async () => {
+      api.postJson.mockResolvedValue({ profile: 'strict' });
+      const judged = new DeliveryController({ getInstance } as any);
+      await expect(judged.handleDelivery({ 'x-eve-internal-token': 'internal-key' }, body)).rejects.toThrow(UnauthorizedException);
+      expect(api.postJson).toHaveBeenCalledWith('/internal/security/legacy-key-calls', { route: '/internal/deliver' });
+      expect(getInstance).not.toHaveBeenCalled();
+    });
+
+    it('passes under audit, once the API has recorded it', async () => {
+      const judged = new DeliveryController({ getInstance } as any);
+      await expect(judged.handleDelivery({ 'x-eve-internal-token': 'internal-key' }, body)).resolves.toMatchObject({ delivered: false });
+      expect(api.postJson).toHaveBeenCalledWith('/internal/security/legacy-key-calls', { route: '/internal/deliver' });
+    });
+
+    it('is not asked about a deliver-key call', async () => {
+      api.postJson.mockResolvedValue({ profile: 'strict' });
+      const judged = new DeliveryController({ getInstance } as any);
+      await expect(judged.handleDelivery({ 'x-eve-service-key': `deliver.${DELIVER}`, 'x-eve-internal-token': 'internal-key' }, body))
+        .resolves.toMatchObject({ delivered: false });
+      expect(api.postJson).not.toHaveBeenCalled();
+    });
   });
 });
