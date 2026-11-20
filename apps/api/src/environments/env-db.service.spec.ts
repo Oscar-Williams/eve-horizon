@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   environments: { findByProjectAndName: vi.fn() },
   manifests: { findLatestByProject: vi.fn() },
   orgs: { findById: vi.fn() },
-  managedDb: { findReadyTenantByEnv: vi.fn(), listTenantsByOrg: vi.fn() },
+  managedDb: { findReadyTenantByEnv: vi.fn(), listTenantsByOrg: vi.fn(), listTenantRoles: vi.fn(async () => []) },
   accessGroups: { listGroupIdsForPrincipal: vi.fn() },
   // What a role-privilege query on a fresh connection reports.
   privileged: false,

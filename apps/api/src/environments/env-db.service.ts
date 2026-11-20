@@ -21,6 +21,9 @@ import {
   snapshotRetentionToExpiresAt,
   toK8sName,
   deriveNamespace,
+  quotePostgresIdentifier,
+  isManagedDbRoleGrants,
+  buildManagedDbRoleGrantSql,
 } from '@eve/shared';
 import * as crypto from 'crypto';
 import * as yaml from 'yaml';
@@ -87,6 +90,8 @@ type ResolvedEnvDb = {
   config: EnvDbConfig;
   schemaFilter: string | null;
   orgId: string;
+  /** Set when the target is an Eve-managed database: its tenant and owner login. */
+  managedTenant?: { id: string; db_user: string };
 };
 
 type DbClient = ReturnType<typeof createDb>;
@@ -422,7 +427,7 @@ export class EnvDbService {
     }
 
     // Resolve (and vet) the target before any snapshot or schema work.
-    const { config, orgId } = await this.resolveEnvDb(projectId, envName);
+    const { config, orgId, managedTenant } = await this.resolveEnvDb(projectId, envName);
 
     // Snapshot-on-reset: create safety snapshot if configured on the tenant
     if (!options.skip_snapshot) {
@@ -500,8 +505,35 @@ export class EnvDbService {
 
     const sessionContext = await this.enrichContext(context, orgId);
 
+    // Declared roles lose their grants on `public` with the schema; read them
+    // now so they are put back in the same transaction as the drop.
+    const roles = managedTenant ? await this.managedDb.listTenantRoles(managedTenant.id) : [];
+
     await this.withClient(config, sessionContext, true, async (client) => {
+      // Extensions installed in `public` go with it too (DROP ... CASCADE).
+      const extensions = await client<{ extname: string }[]>`
+        SELECT e.extname FROM pg_extension e
+        JOIN pg_namespace n ON n.oid = e.extnamespace
+        WHERE n.nspname = 'public'
+      `;
       await client.unsafe('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
+      for (const { extname } of extensions) {
+        await client.unsafe(`CREATE EXTENSION IF NOT EXISTS ${quotePostgresIdentifier(extname)} SCHEMA "public"`);
+      }
+      if (managedTenant) {
+        for (const role of roles) {
+          if (!isManagedDbRoleGrants(role.grants)) continue;
+          const grants = buildManagedDbRoleGrantSql({
+            dbName: '',
+            ownerUser: managedTenant.db_user,
+            roleUser: role.db_user,
+            grants: role.grants,
+          });
+          for (const statement of grants.tenant) {
+            await client.unsafe(statement);
+          }
+        }
+      }
     });
 
     if (options.no_migrate) {
@@ -712,6 +744,7 @@ export class EnvDbService {
                 config: { url: connectionUrl, schema: null },
                 schemaFilter: null,
                 orgId: project.org_id,
+                managedTenant: { id: tenant.id, db_user: tenant.db_user },
               };
             }
             // Managed DB exists but not ready — fail fast per plan requirements
