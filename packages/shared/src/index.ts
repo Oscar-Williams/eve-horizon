@@ -3,6 +3,7 @@ export * from './harnesses/index.js';
 export * from './types/index.js';
 export * from './schemas/index.js';
 export * from './ids.js';
+export * from './service-token-floor.js';
 export * from './observability.js';
 export * from './logger.js';
 export * from './redaction.js';

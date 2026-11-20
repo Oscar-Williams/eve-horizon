@@ -1,8 +1,8 @@
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { type Db, appLinkSubscriptionQueries, environmentQueries, jobQueries, projectQueries } from '@eve/db';
+import { serviceTokenFloor } from '@eve/shared';
 import type { AuthService } from './auth.service.js';
 import { isRunningAttempt } from './job-liveness.js';
-import { serviceTokenFloor } from './service-token-floor.js';
 
 export interface AppLinkMintRequest {
   subscription_id: string;

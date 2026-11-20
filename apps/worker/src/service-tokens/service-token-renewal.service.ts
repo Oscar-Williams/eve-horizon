@@ -1,7 +1,14 @@
 import { createPublicKey, verify as verifySignature, type JsonWebKey, type KeyObject } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { environmentQueries, eventQueries, type Db, type ServiceTokenRenewalTarget } from '@eve/db';
-import { fetchSigningKey, generateEventId, mintAppLinkToken, requestServiceToken, toK8sLabelValue } from '@eve/shared';
+import {
+  fetchSigningKey,
+  generateEventId,
+  mintAppLinkToken,
+  requestServiceToken,
+  serviceTokenFloor,
+  toK8sLabelValue,
+} from '@eve/shared';
 import { K8sService } from '../deployer/k8s.service';
 import {
   SECRETS_HASH_ANNOTATION,
@@ -138,7 +145,7 @@ interface RenewalPolicy {
   renewWithinSeconds: number;
   /** The key the API signs with now; null when it could not be read. */
   signingKey: SigningKey | null;
-  /** The environment's service_tokens_not_before, in seconds. */
+  /** The environment's floor (its creation or service_tokens_not_before), in seconds. */
   notBefore: number | null;
 }
 
@@ -366,9 +373,8 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
         now: Math.floor(Date.now() / 1000),
         renewWithinSeconds: days * DAY_SECONDS,
         signingKey,
-        notBefore: env.service_tokens_not_before
-          ? Math.floor(new Date(env.service_tokens_not_before).getTime() / 1000)
-          : null,
+        // The floor the API holds the environment's tokens to.
+        notBefore: serviceTokenFloor(env),
       };
       try {
         work.push(...await this.survey(env, policy));

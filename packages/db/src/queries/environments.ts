@@ -41,6 +41,8 @@ export interface ServiceTokenRenewalTarget {
   release_id: string;
   /** The environment's current release; renewal mints against it when release_id is gone. */
   current_release_id: string | null;
+  /** With service_tokens_not_before, the floor a token's iat is held to (serviceTokenFloor). */
+  created_at: Date;
   service_tokens_not_before: Date | null;
 }
 
@@ -464,6 +466,7 @@ export function environmentQueries(db: Db) {
         SELECT e.id, e.project_id, p.org_id, e.name, e.namespace,
                COALESCE(e.last_applied_release_id, e.current_release_id) AS release_id,
                e.current_release_id,
+               e.created_at,
                e.service_tokens_not_before
         FROM environments e
         JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL

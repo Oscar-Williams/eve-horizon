@@ -12,6 +12,7 @@ import {
   clampJobTokenPermissions,
   clampServiceTokenPermissions,
   hasUserActor,
+  serviceTokenFloor,
   type AccessBindingScope,
 } from '@eve/shared';
 import {
@@ -38,7 +39,6 @@ import {
 } from './auth.util.js';
 import type { AuthUser, JobTokenPayload, ServiceTokenPayload } from './auth.types.js';
 import { parseAppAudience, type AppAudienceRequest } from './app-audience.js';
-import { serviceTokenFloor } from './service-token-floor.js';
 
 /**
  * GoTrue sign-in methods (`amr` claim) that prove the caller controls the

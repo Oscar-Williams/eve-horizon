@@ -20,6 +20,7 @@ import {
   agentSecretsAllowlist,
   getServicePermissions,
   narrowSecretsAllowlist,
+  serviceTokenFloor,
   type AccessBindingScope,
   type Service,
 } from '@eve/shared';
@@ -43,7 +44,6 @@ import { SecurityService } from '../security/security.service.js';
 import { jobTokenPermissionsFor } from './token-scope.js';
 import { AppLinkTokenMinter, type AppLinkMintRequest } from './app-link-token-minter.js';
 import { isRunningAttempt } from './job-liveness.js';
-import { serviceTokenFloor } from './service-token-floor.js';
 
 @ApiTags('internal')
 @Controller('internal/auth')
