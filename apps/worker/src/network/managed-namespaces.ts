@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { environmentQueries, orgQueries, projectQueries, type Db } from '@eve/db';
-import { ENV_OWNER_LABEL, MANAGED_NAMESPACE_LABEL, deriveNamespace } from '@eve/shared';
+import { ENV_OWNER_LABEL, MANAGED_NAMESPACE_LABEL, deriveNamespace, projectNamespacePrefix } from '@eve/shared';
 
 /** What the reconcile needs of the Kubernetes API (K8sService). */
 export interface ManagedNamespaceApi {
@@ -28,8 +28,11 @@ type LoggerLike = Pick<Logger, 'log' | 'warn'>;
  * cluster-wide rights shrink the worker could not deploy into them.
  *
  * A namespace counts only when its `eve.env_id` names a live environment
- * whose namespace (stored or derived) is this one; anything else is left
- * alone. It is labelled first (the admission policy refuses writes in an
+ * whose namespace (stored or derived) is this one, under the project's
+ * namespace prefix (`eve-<org>-<project>-`, the rule the API holds a stored
+ * namespace to); anything else is left alone, so a row pointing at a
+ * namespace Eve does not own (one stored before the rule, or another
+ * tenant's) never gets the worker's rights there. It is labelled first (the admission policy refuses writes in an
  * unlabelled namespace, and lets the worker add the label only where
  * `eve.env_id` is), then bound. Idempotent: a run with nothing to do
  * writes nothing.
@@ -80,6 +83,8 @@ export class ManagedNamespaceReconciler {
     const project = await this.projects.findById(env.project_id);
     const org = project ? await this.orgs.findById(project.org_id) : null;
     if (!project || !org) return false;
+    const prefix = projectNamespacePrefix(org.slug, project.slug);
+    if (!namespace.startsWith(prefix) || namespace.length === prefix.length) return false;
     return deriveNamespace(org.slug, project.slug, env.name, env.namespace) === namespace;
   }
 }

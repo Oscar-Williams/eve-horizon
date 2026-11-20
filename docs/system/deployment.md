@@ -413,7 +413,11 @@ The worker holds two ClusterRoles (`k8s/base/worker-rbac.yaml`):
 Every namespace the worker creates carries `eve.horizon/managed=true`. At
 start-up the worker labels and binds the env namespaces earlier releases
 created (they carry `eve.env_id`) when that label names a live environment
-whose namespace it is; others are left alone and logged.
+whose namespace it is and the namespace is under the project's prefix
+(`eve-<org>-<project>-`); others are left alone and logged. An env whose
+stored namespace predates the prefix rule is not adopted: move it under the
+prefix (or bind `eve-worker-tenant` there by hand) before the old
+`eve-worker` ClusterRole goes.
 
 The template's ValidatingAdmissionPolicy `eve-worker-namespace-guard`
 (`k8s/base/worker-admission-policy.yaml`, Kubernetes 1.30 or later) refuses
