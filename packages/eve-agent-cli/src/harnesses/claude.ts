@@ -1,10 +1,4 @@
-import {
-  CHECKOUT_SETTINGS_ENV,
-  CLAUDE_SUBPROCESS_ENV_SCRUB,
-  normalizeClaudeCodeModelAlias,
-  resolveClaudeConfigDir,
-  strictClaudeSettingsArgs,
-} from '@eve/shared';
+import { CHECKOUT_SETTINGS_ENV, normalizeClaudeCodeModelAlias, resolveClaudeConfigDir, strictClaudeSettingsArgs } from '@eve/shared';
 import type { CliHarnessAdapter, CliContext, HarnessCommand } from './types';
 
 const CLAUDE_ARGS = ['--print', '--verbose', '--output-format', 'stream-json'];
@@ -39,12 +33,9 @@ function buildClaudeFamilyCommand(
 
   // Rule harness.checkout_settings under strict: a cleaned copy of the
   // checkout's project and local settings, and only user settings besides;
-  // a checkout MCP server that names a credential is refused. Claude Code
-  // also strips credentials from the environment of the Bash commands,
-  // hooks and stdio MCP servers it starts, keeping them for its own calls.
+  // a checkout MCP server that names a credential is refused.
   if (env[CHECKOUT_SETTINGS_ENV] === 'strict') {
     args.push(...strictClaudeSettingsArgs(ctx.workspace, env.CLAUDE_CONFIG_DIR, opts.name));
-    env[CLAUDE_SUBPROCESS_ENV_SCRUB] = '1';
   }
 
   // zai models (glm-*) must not go through the Claude Code alias normalizer
