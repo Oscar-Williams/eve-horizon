@@ -233,14 +233,17 @@ neither sync deletes the other's.
 
 | Profile | Policies |
 |---|---|
-| `legacy` | None. A deploy or reconcile removes any it finds. |
-| `audit` | `eve-ingress-audit` (admits everything), then `eve-ingress`. Nothing is refused. |
-| `strict` | `eve-ingress` alone. |
+| `legacy` | None. A deploy or reconcile removes any Eve ingress policy it finds. |
+| `audit` | None: findings only. Each deploy, service job and reconcile records what `strict` would write (finding detail `policies`, `enforced: false`), and removes any Eve ingress policy it finds. Nothing is refused, and a project's own ingress policies stay exactly as it wrote them. |
+| `strict` | `eve-ingress-svc-<service>` for each service the ingress controller routes to or app-link consumers call, then `eve-ingress`. Each deploy, service job and reconcile records the set (`enforced: true`). |
+
+Removal on a move to `audit` or `legacy` (the profile change's reconcile,
+or the next deploy) touches only policies labelled
+`eve.horizon/ingress=env`, such as an allow-all `eve-ingress-audit` a
+pre-release build wrote under `audit`, never one the project wrote itself.
 
 `eve-ingress` selects every pod in the namespace and admits, on any port:
 
-- the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
-  `kube-system`), for the env's hosts;
 - the API in the platform namespace (`app.kubernetes.io/name: eve-api`),
   which fetches app API specs, delivers webhooks to private targets and runs
   `eve db` queries. No other pod there: the worker, orchestrator and gateway
@@ -252,17 +255,43 @@ neither sync deletes the other's.
   `app.kubernetes.io/name` or `app`;
 - the project's own env namespaces, this one included;
 - the project's runner pods (`eve.horizon/runner=true` and its
-  `eve.horizon/project-id`, in `eve-runners` and the platform namespace);
-- the env namespaces and runner pods of projects that consume its app links
-  through a live API grant for this env: for a `same` link, the consumer's
-  env of the same name; for a link fixed to this env, every env of the
-  consumer.
+  `eve.horizon/project-id`, in `eve-runners` and the platform namespace).
 
-Not admitted under `strict`: other tenants' namespaces and runners, and
-anything outside the cluster that does not come through the ingress
-controller, such as public TCP listeners (`x-eve.tcp_ingress`, through a
-load balancer straight to the pods). Kubelet health checks come from the
-node and are not subject to these policies on GKE Dataplane V2.
+`eve-ingress-svc-<service>` selects one service's pods (`eve.component`,
+the label the deployer sets on them and selects its Service by) and admits:
+
+- the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
+  `kube-system`), when the deployer gives the service an Ingress (public
+  under `x-eve.ingress.public` and `ports.implicit_public`), on the port the
+  Ingress routes to (`x-eve.ingress.port`, else its first port). The
+  worker reads this from the env's manifest and stored overrides: the one
+  being deployed, else the env's applied release's;
+- the env namespaces and runner pods of projects that consume it through
+  an app link with a live API grant for this env (for a `same` link, the
+  consumer's env of the same name; for a link fixed to this env, every env
+  of the consumer), on the service's port as the consumers' egress has it
+  (its first declared port in the last synced manifest; any port of its
+  pods when it declares none). A grant that names no service admits
+  nothing.
+
+Not admitted under `strict`: other tenants' namespaces and runners, the
+ingress controller to a service with no Ingress, app-link consumers to any
+service but the one granted, and anything outside the cluster that does not
+come through the ingress controller, such as public TCP listeners
+(`x-eve.tcp_ingress`, through a load balancer straight to the pods).
+Kubelet health checks come from the node and are not subject to these
+policies on GKE Dataplane V2.
+
+**A project's own ingress policies.** NetworkPolicies add up: a pod
+accepts a connection that any policy selecting it allows. Under `strict`
+Eve's allows add to a project's own, and so can widen them within the
+namespace: `eve-ingress` selects every pod and admits the project's own
+namespaces, so a project that restricts traffic between its own pods (for
+example an auth service reachable only from its web pods) loses that
+restriction under `strict`. It keeps it only for pods Eve's allows do not
+select, and against sources none of them admits (other tenants, the
+platform's other pods). Under `audit` and `legacy` Eve writes no ingress
+policy, so a project's own apply as written.
 
 ## The API URL apps and runners get
 
@@ -352,11 +381,11 @@ them, and they keep doing what they did:
 - **Runner policies** select only `eve.horizon/runner=true`, which pods from
   earlier releases do not carry, so they affect nothing after a rollback.
 - **Ingress isolation (0.1.328):** a release before it ignores
-  `eve-ingress` and `eve-ingress-audit`. Under `audit` the companion keeps
-  everything open. Under `strict` `eve-ingress` keeps applying with the
-  peers it last had, so a new app-link consumer or env is not added: set
-  `strict` projects to `audit` and let the reconcile run before rolling
-  back, or delete `eve-ingress` (`kubectl delete networkpolicy -A -l
+  `eve-ingress` and `eve-ingress-svc-*`. Under `audit` and `legacy` there
+  are none. Under `strict` they keep applying with the peers they last had,
+  so a new app-link consumer, public service or env is not added: set
+  `strict` projects to `audit` and let the reconcile run (it removes them)
+  before rolling back, or delete them (`kubectl delete networkpolicy -A -l
   eve.horizon/ingress=env`).
 - **Host allow lists (0.1.328):** a release before them leaves the FQDN
   policies in place. They only allow, so they block nothing; delete them
