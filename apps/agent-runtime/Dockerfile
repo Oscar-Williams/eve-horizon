@@ -55,27 +55,15 @@ RUN set -eu; \
     && apt-get purge -y --auto-remove cmake make g++ \
     && rm -rf /var/lib/apt/lists/*
 
-ARG HARNESS_INSTALL_CACHE_BUST=latest
-ARG CC_MIRROR_PACKAGE=cc-mirror@latest
-ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@latest
-ARG CODEX_PACKAGE=@openai/codex@latest
-ARG GEMINI_PACKAGE=@google/gemini-cli@latest
-ARG CODE_PACKAGE=@just-every/code@latest
-ARG PI_PACKAGE=@mariozechner/pi-coding-agent@latest
-ARG SKILLS_PACKAGE=skills@1.5.3
+# Harness CLIs at the exact versions locked in docker/harness-clis, installed
+# without lifecycle scripts into the root-owned /opt/harness-clis (install.sh).
+# The cc-mirror variants run the same Claude Code version as `claude`.
+COPY docker/harness-clis/ /opt/harness-clis/
 RUN set -eu; \
-    echo "Harness package refresh: ${HARNESS_INSTALL_CACHE_BUST}"; \
-    npm install -g \
-       "$CC_MIRROR_PACKAGE" \
-       "$CLAUDE_CODE_PACKAGE" \
-       "$CODEX_PACKAGE" \
-       "$GEMINI_PACKAGE" \
-       "$CODE_PACKAGE" \
-       "$PI_PACKAGE" \
-       "$SKILLS_PACKAGE" \
-    && rm -rf /root/.npm \
-    && (HOME=/home/node cc-mirror quick --provider mirror --name mclaude --yes --no-shell-env 2>/dev/null || true) \
-    && (HOME=/home/node cc-mirror quick --provider zai --name zai --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true) \
+    /opt/harness-clis/install.sh; \
+    claude_version="$(node -p 'require("/opt/harness-clis/package.json").dependencies["@anthropic-ai/claude-code"]')"; \
+    (HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --yes --no-shell-env 2>/dev/null || true) \
+    && (HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true) \
     && if [ -f /home/node/.cc-mirror/zai/config/settings.json ]; then \
          node -e "const fs=require('fs'); const f='/home/node/.cc-mirror/zai/config/settings.json'; const d=JSON.parse(fs.readFileSync(f)); delete d.env.ANTHROPIC_API_KEY; fs.writeFileSync(f,JSON.stringify(d,null,2));" 2>/dev/null || true; \
        fi \

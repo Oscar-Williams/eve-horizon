@@ -195,31 +195,16 @@ ARG INSTALL_CODE=true
 ARG INSTALL_PI=true
 ARG INSTALL_MIRROR=true
 ARG INSTALL_SKILLS=true
-ARG HARNESS_INSTALL_CACHE_BUST=latest
-ARG CC_MIRROR_PACKAGE=cc-mirror@latest
-ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@2.1.280
-ARG CODE_PACKAGE=@just-every/code@latest
-ARG CODEX_PACKAGE=@openai/codex@0.156.1
-ARG GEMINI_PACKAGE=@google/gemini-cli@latest
-ARG PI_PACKAGE=@mariozechner/pi-coding-agent@latest
-ARG SKILLS_PACKAGE=skills@1.5.3
 
-# Install global npm packages as root (conditionally based on ARGs)
-RUN set -eu; \
-    echo "Harness package refresh: ${HARNESS_INSTALL_CACHE_BUST}"; \
-    PACKAGES=""; \
-    if [ "$INSTALL_MIRROR" = "true" ]; then PACKAGES="$PACKAGES $CC_MIRROR_PACKAGE"; fi; \
-    if [ "$INSTALL_CLAUDE" = "true" ]; then PACKAGES="$PACKAGES $CLAUDE_CODE_PACKAGE"; fi; \
-    if [ "$INSTALL_CODE" = "true" ]; then PACKAGES="$PACKAGES $CODE_PACKAGE"; fi; \
-    if [ "$INSTALL_CODEX" = "true" ]; then PACKAGES="$PACKAGES $CODEX_PACKAGE"; fi; \
-    if [ "$INSTALL_GEMINI" = "true" ]; then PACKAGES="$PACKAGES $GEMINI_PACKAGE"; fi; \
-    if [ "$INSTALL_PI" = "true" ]; then PACKAGES="$PACKAGES $PI_PACKAGE"; fi; \
-    if [ "$INSTALL_SKILLS" = "true" ]; then PACKAGES="$PACKAGES $SKILLS_PACKAGE"; fi; \
-    if [ -n "$PACKAGES" ]; then npm install -g $PACKAGES; fi; \
-    rm -rf /root/.npm
+# Harness CLIs at the exact versions locked in docker/harness-clis, installed
+# as root without lifecycle scripts into the root-owned /opt/harness-clis
+# (install.sh reads the INSTALL_* args above).
+COPY docker/harness-clis/ /opt/harness-clis/
+RUN /opt/harness-clis/install.sh
 
 # Create cc-mirror variants (mclaude, zai) for harness invocation
-# cc-mirror creates isolated Claude Code variants with custom commands
+# cc-mirror creates isolated Claude Code variants with custom commands, on the
+# same Claude Code version as `claude`.
 # Note: This runs as root but creates files in /home/node/.cc-mirror and /home/node/.local/bin
 # API keys are stripped from settings.json after creation - they're passed via env at runtime
 # mclaude must exist in the image: if it does not, the entrypoint installs it
@@ -227,13 +212,14 @@ RUN set -eu; \
 # A failed variant build is reported here and falls back to a claude shim, as
 # in the agent-runtime image.
 RUN if command -v cc-mirror >/dev/null 2>&1; then \
+      claude_version="$(node -p 'require("/opt/harness-clis/package.json").dependencies["@anthropic-ai/claude-code"]')"; \
       # Create mclaude variant (mirror provider - direct Anthropic API)
-      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --yes --no-shell-env \
+      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --yes --no-shell-env \
         || echo "WARNING: cc-mirror could not create the mclaude variant; using the claude shim" >&2; \
       # Create zai variant (Z.ai provider - GLM models)
       # Use placeholder API key to complete setup, then strip it from settings.json
       # (cc-mirror requires an API key to create the variant, but we want runtime env to take precedence)
-      HOME=/home/node cc-mirror quick --provider zai --name zai --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true && \
+      HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true && \
       # Strip ANTHROPIC_API_KEY from zai settings.json so runtime env var takes precedence
       # The cc-mirror wrapper unconditionally exports settings.json env vars, which would overwrite runtime
       if [ -f /home/node/.cc-mirror/zai/config/settings.json ]; then \
@@ -555,26 +541,9 @@ ENV EVE_BUILD_TIME=${EVE_BUILD_TIME}
 # =============================================================================
 FROM dependencies AS development
 
-# Install global npm packages as root
-ARG HARNESS_INSTALL_CACHE_BUST=latest
-ARG CC_MIRROR_PACKAGE=cc-mirror@latest
-ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@2.1.280
-ARG CODE_PACKAGE=@just-every/code@latest
-ARG CODEX_PACKAGE=@openai/codex@0.156.1
-ARG GEMINI_PACKAGE=@google/gemini-cli@latest
-ARG PI_PACKAGE=@mariozechner/pi-coding-agent@latest
-ARG SKILLS_PACKAGE=skills@1.5.3
-RUN set -eu; \
-    echo "Harness package refresh: ${HARNESS_INSTALL_CACHE_BUST}"; \
-    npm install -g \
-      "$CC_MIRROR_PACKAGE" \
-      "$CLAUDE_CODE_PACKAGE" \
-      "$CODE_PACKAGE" \
-      "$CODEX_PACKAGE" \
-      "$GEMINI_PACKAGE" \
-      "$PI_PACKAGE" \
-      "$SKILLS_PACKAGE" \
-    && rm -rf /root/.npm
+# Harness CLIs as in the runtime stages (docker/harness-clis)
+COPY docker/harness-clis/ /opt/harness-clis/
+RUN /opt/harness-clis/install.sh
 
 # Pre-create ALL directories node user might write to (see directory list in base stage)
 # This single command ensures K8s and Docker Compose compatibility
