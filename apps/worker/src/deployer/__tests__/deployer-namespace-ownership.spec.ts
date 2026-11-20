@@ -22,10 +22,18 @@ describe('K8sService.createNamespace ownership', () => {
       readNamespace: vi.fn(),
       createNamespace: vi.fn().mockResolvedValue({}),
       replaceNamespace: vi.fn().mockResolvedValue({}),
+      patchNamespace: vi.fn().mockResolvedValue({}),
+    };
+    const rbacApi = {
+      readNamespacedRoleBinding: vi.fn().mockResolvedValue({}),
+      createNamespacedRoleBinding: vi.fn().mockResolvedValue({}),
     };
     k8s = new K8sService();
-    Object.assign(k8s as any, { coreApi, available: true });
+    Object.assign(k8s as any, { coreApi, rbacApi, available: true });
   });
+
+  const MANAGED = { 'eve.horizon/managed': 'true' };
+  const mergePatch = [undefined, undefined, undefined, undefined, undefined, { headers: { 'Content-Type': 'application/merge-patch+json' } }];
 
   const namespace = (labels?: Record<string, string>) => ({ body: { metadata: { name: 'eve-a-web-prod', labels } } });
 
@@ -34,7 +42,7 @@ describe('K8sService.createNamespace ownership', () => {
 
     await k8s.createNamespace('eve-a-web-prod', LABELS, { ownerLabel: 'eve.env_id' });
 
-    expect(coreApi.createNamespace).toHaveBeenCalledWith({ metadata: { name: 'eve-a-web-prod', labels: LABELS } });
+    expect(coreApi.createNamespace).toHaveBeenCalledWith({ metadata: { name: 'eve-a-web-prod', labels: { ...LABELS, ...MANAGED } } });
   });
 
   it('merges labels into a namespace the env already owns', async () => {
@@ -42,9 +50,10 @@ describe('K8sService.createNamespace ownership', () => {
 
     await k8s.createNamespace('eve-a-web-prod', LABELS, { ownerLabel: 'eve.env_id' });
 
-    expect(coreApi.replaceNamespace).toHaveBeenCalledWith('eve-a-web-prod', {
-      metadata: { name: 'eve-a-web-prod', labels: { ...LABELS, team: 'x' } },
-    });
+    // A merge patch keeps the other labels (team: x) and needs no update right.
+    expect(coreApi.patchNamespace).toHaveBeenCalledWith('eve-a-web-prod', {
+      metadata: { labels: { ...LABELS, ...MANAGED } },
+    }, ...mergePatch);
   });
 
   it('refuses a namespace another environment owns', async () => {
@@ -54,7 +63,7 @@ describe('K8sService.createNamespace ownership', () => {
 
     await expect(result).rejects.toBeInstanceOf(NamespaceOwnershipError);
     await expect(result).rejects.toThrow('belongs to another Eve environment');
-    expect(coreApi.replaceNamespace).not.toHaveBeenCalled();
+    expect(coreApi.patchNamespace).not.toHaveBeenCalled();
   });
 
   it('refuses a namespace Eve did not create', async () => {
@@ -62,7 +71,7 @@ describe('K8sService.createNamespace ownership', () => {
 
     await expect(k8s.createNamespace('kube-system', LABELS, { ownerLabel: 'eve.env_id' }))
       .rejects.toThrow('was not created by Eve for this environment (no eve.env_id label)');
-    expect(coreApi.replaceNamespace).not.toHaveBeenCalled();
+    expect(coreApi.patchNamespace).not.toHaveBeenCalled();
   });
 
   it('checks the owner of a namespace created concurrently', async () => {
@@ -80,9 +89,9 @@ describe('K8sService.createNamespace ownership', () => {
 
     await k8s.createNamespace('eve-a-web-prod', { a: 'b' });
 
-    expect(coreApi.replaceNamespace).toHaveBeenCalledWith('eve-a-web-prod', {
-      metadata: { name: 'eve-a-web-prod', labels: { other: 'y', a: 'b' } },
-    });
+    expect(coreApi.patchNamespace).toHaveBeenCalledWith('eve-a-web-prod', {
+      metadata: { labels: { a: 'b', ...MANAGED } },
+    }, ...mergePatch);
   });
 
   it('reports namespace labels, or null when the namespace is absent', async () => {
