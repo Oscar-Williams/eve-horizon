@@ -57,6 +57,63 @@ describe('Dockerfile packages', () => {
       ],
     );
   });
+
+  it('follows a version passed through an ARG or ENV to its default, in the stage that reads it', () => {
+    const offences = checkDockerfile(
+      [
+        'ARG GLOBAL_VERSION=1.0.0',
+        'FROM scratch',
+        'ARG GOOD_VERSION=1.2.3',
+        'ARG LOOSE_VERSION=^2.0.0',
+        'ARG BARE_VERSION',
+        'ENV TOOL_VERSION=4.5.6',
+        'RUN npm install -g "one@${GOOD_VERSION}" two@$LOOSE_VERSION three@${BARE_VERSION} four@${UNDEFINED} five@${TOOL_VERSION}',
+        'RUN pip install "six==${GOOD_VERSION}" seven==${LOOSE_VERSION}',
+        'RUN npm i eight@${GLOBAL_VERSION}',
+        'ARG GLOBAL_VERSION',
+        'RUN npm i nine@${GLOBAL_VERSION}',
+        'FROM scratch AS later',
+        'RUN npm i ten@${GOOD_VERSION}',
+      ].join('\n'),
+    );
+    assert.deepEqual(
+      offences.map(({ line, message }) => `${line} ${message}`),
+      [
+        '7 npm package two@$LOOSE_VERSION (two@^2.0.0) has no exact version',
+        '7 npm package three@${BARE_VERSION} (no default) has no exact version',
+        '7 npm package four@${UNDEFINED} (no default) has no exact version',
+        '8 pip package seven==${LOOSE_VERSION} (seven==^2.0.0) has no exact version',
+        '9 npm package eight@${GLOBAL_VERSION} (no default) has no exact version',
+        '13 npm package ten@${GOOD_VERSION} (no default) has no exact version',
+      ],
+    );
+  });
+
+  it('rejects npx, pnpm add, yarn add and pip install without an exact version', () => {
+    const offences = checkDockerfile(
+      [
+        'FROM scratch',
+        'RUN npx --yes cc-mirror quick && npx -y tool@1.2.3 run && npx -p helper@^1 -p other@2.0.0 cmd arg',
+        'RUN pnpm add -g pkg-a && pnpm --filter app add pkg-b@1.0.0 && yarn add pkg-c@~1.0.0 && yarn global add pkg-d@2.0.0',
+        'RUN pip3 install --break-system-packages uv \\',
+        '    && python3 -m pip install --no-cache-dir "req[extra]==1.2.3" "loose>=1.0" -r requirements.txt . \\',
+        '    && uv pip install pkg-e==1.0.* pkg-f===2.0.0 --index-url https://pypi.example/simple',
+        'RUN pnpm install --frozen-lockfile && npm ci && pip install -e ./local',
+      ].join('\n'),
+    );
+    assert.deepEqual(
+      offences.map(({ line, message }) => `${line} ${message}`),
+      [
+        '2 npx package cc-mirror has no exact version',
+        '2 npx package helper@^1 has no exact version',
+        '3 pnpm package pkg-a has no exact version',
+        '3 yarn package pkg-c@~1.0.0 has no exact version',
+        '4 pip package uv has no exact version',
+        '5 pip package loose>=1.0 has no exact version',
+        '6 pip package pkg-e==1.0.* has no exact version',
+      ],
+    );
+  });
 });
 
 describe('Dockerfile base images', () => {
@@ -148,8 +205,36 @@ describe('workflow run blocks', () => {
         '          ${{ github.event.head_commit.message }}',
       ].join('\n'),
     );
-    assert.deepEqual(lines(offences), [6, 11, 12, 13, 22]);
+    assert.deepEqual(lines(offences), [6, 9, 11, 12, 13, 13, 22]);
     assert.equal(offences[0].message, 'run: interpolates ${{ github.ref_name }}; pass it through env:');
+  });
+
+  it('rejects env and matrix expressions inside run:, which env: passes safely', () => {
+    const offences = checkWorkflow(
+      [
+        'jobs:',
+        '  build:',
+        '    strategy:',
+        '      matrix:',
+        '        name: [a, b]',
+        '    name: Build ${{ matrix.name }}',
+        '    steps:',
+        '      - run: echo ${{ env.TAG }}',
+        '      - name: each',
+        '        run: |',
+        '          echo "${{ matrix.name }}" "$NAME" "${{ vars.SAFE }}"',
+        '        env:',
+        '          NAME: ${{ matrix.name }}',
+        '          TAG: ${{ env.TAG }}',
+      ].join('\n'),
+    );
+    assert.deepEqual(
+      offences.map(({ line, message }) => `${line} ${message}`),
+      [
+        '8 run: interpolates ${{ env.TAG }}; pass it through env:',
+        '11 run: interpolates ${{ matrix.name }}; pass it through env:',
+      ],
+    );
   });
 });
 
@@ -192,5 +277,48 @@ describe('the harness CLI lock', () => {
     const { execFileSync } = await import('node:child_process');
     const tracked = execFileSync('git', ['ls-files', 'docker/harness-clis/package-lock.json'], { encoding: 'utf8', cwd: ROOT }).trim();
     assert.equal(tracked, 'docker/harness-clis/package-lock.json');
+  });
+});
+
+describe('publishing workflows', () => {
+  const workflowsDir = join(ROOT, '.github', 'workflows');
+
+  /** Each step of the workflow's first job, as its lines joined. */
+  function firstJobSteps(text) {
+    const lines = text.split(/\r?\n/);
+    const jobs = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+    assert.notEqual(jobs, -1, 'no jobs: block');
+    const job = lines.findIndex((line, i) => i > jobs && /^ {2}[\w-]+:\s*$/.test(line));
+    const end = lines.findIndex((line, i) => i > job && /^ {2}[\w-]+:\s*$/.test(line));
+    const body = lines.slice(job + 1, end === -1 ? lines.length : end);
+    const stepsAt = body.findIndex((line) => /^ {4}steps:\s*$/.test(line));
+    const steps = [];
+    for (const line of body.slice(stepsAt + 1)) {
+      if (/^ {6}- /.test(line)) steps.push(line.trim());
+      else if (steps.length > 0 && /^ {8}/.test(line)) steps[steps.length - 1] += `\n${line.trim()}`;
+      else if (line.trim() !== '' && !/^ {6,}/.test(line)) break;
+    }
+    return steps;
+  }
+
+  it('run the supply-chain gate and its tests first, so a tag or hotfix release is gated too', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const publishing = readdirSync(workflowsDir)
+      .filter((file) => /\.ya?ml$/.test(file))
+      .filter((file) => /^\s*environment:\s*release\s*$/m.test(readFileSync(join(workflowsDir, file), 'utf8')))
+      .sort();
+    assert.deepEqual(publishing, ['publish-chat.yml', 'publish-cli.yml', 'publish-images.yml', 'publish-sdk.yml', 'toolchain-images.yml']);
+
+    for (const file of publishing) {
+      const steps = firstJobSteps(readFileSync(join(workflowsDir, file), 'utf8'));
+      assert.match(steps[0] ?? '', /uses: actions\/checkout@/, `${file}: the first job starts with the checkout`);
+      assert.match(steps[1] ?? '', /\nrun: node scripts\/check-supply-chain\.mjs$/, `${file}: then runs the gate`);
+      assert.match(
+        steps[2] ?? '',
+        /\nrun: node --test scripts\/__tests__\/check-supply-chain\.test\.mjs$/,
+        `${file}: then runs its tests`,
+      );
+      assert.doesNotMatch(`${steps[1]}\n${steps[2]}`, /\bif:/, `${file}: the gate runs on every trigger`);
+    }
   });
 });
