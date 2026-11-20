@@ -1,5 +1,6 @@
 import { createPrivateKey, generateKeyPairSync } from 'crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { registryKeyVersion } from '@eve/shared';
 import {
   computeRfc7638ThumbprintFromPrivateKey,
   parseScopes,
@@ -40,6 +41,23 @@ describe('registry signing key formats', () => {
       'repository:my-app:pull',
       'eve-registry',
     )).rejects.toThrow(/EVE_REGISTRY_SIGNING_KEY is not a PEM key/);
+  });
+});
+
+describe('the registry key version the API verifies with', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is the credential key version, the internal key otherwise, or none', () => {
+    const controller = new RegistryTokenController((() => undefined) as any, null as any);
+    vi.stubEnv('EVE_INTERNAL_API_KEY', 'internal-key');
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
+    expect(controller.keyVersion()).toEqual({ key_version: registryKeyVersion('registry-credential-key') });
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
+    expect(controller.keyVersion()).toEqual({ key_version: 'internal' });
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+    expect(controller.keyVersion()).toEqual({ key_version: null });
   });
 });
 

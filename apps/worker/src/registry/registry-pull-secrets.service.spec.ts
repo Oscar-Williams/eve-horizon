@@ -78,7 +78,7 @@ describe('RegistryPullSecretsService.resign', () => {
   });
 
   it('re-signs a pull secret signed with the internal key, at a new epoch, and records its key version', async () => {
-    const report = await service.resign();
+    const report = await service.resign(registryKeyVersion(KEY));
 
     expect(applyManifest).toHaveBeenCalledTimes(1);
     const [namespace, manifest] = applyManifest.mock.calls[0] as [string, string];
@@ -96,14 +96,14 @@ describe('RegistryPullSecretsService.resign', () => {
   });
 
   it('only records a secret already signed with the current key at the current epoch', async () => {
-    const report = await service.resign();
+    const report = await service.resign(registryKeyVersion(KEY));
     expect(applyManifest.mock.calls.map(([ns]) => ns)).not.toContain('shop-current');
     expect(recordRegistryKeyVersion).toHaveBeenCalledWith('env_current', registryKeyVersion(KEY), 7);
     expect(report.already_current).toBe(1);
   });
 
   it('leaves a bring-your-own secret and a missing one alone, and records that nothing needs re-signing', async () => {
-    const report = await service.resign();
+    const report = await service.resign(registryKeyVersion(KEY));
     expect(applyManifest.mock.calls.map(([ns]) => ns)).toEqual(['eve-acme-shop-old']);
     expect(recordRegistryKeyVersion).toHaveBeenCalledWith('env_byo', registryKeyVersion(KEY), 2);
     expect(recordRegistryKeyVersion).toHaveBeenCalledWith('env_none', registryKeyVersion(KEY), 5);
@@ -113,21 +113,21 @@ describe('RegistryPullSecretsService.resign', () => {
   it('reports an environment it could not re-sign, records nothing for it, and carries on', async () => {
     candidates = [candidate('env_old', 3), candidate('env_none', 5)];
     applyManifest.mockRejectedValueOnce(new Error('namespace is terminating'));
-    const report = await service.resign();
+    const report = await service.resign(registryKeyVersion(KEY));
     expect(report.failed).toEqual([{ environment_id: 'env_old', error: 'namespace is terminating' }]);
     expect(recordRegistryKeyVersion).not.toHaveBeenCalledWith('env_old', expect.anything(), expect.anything());
     expect(recordRegistryKeyVersion).toHaveBeenCalledWith('env_none', registryKeyVersion(KEY), 5);
   });
 
   it('asks for the stale environments only', async () => {
-    await service.resign();
+    await service.resign(registryKeyVersion(KEY));
     expect((service as any).environments.listRegistryKeyCandidates).toHaveBeenCalledWith(registryKeyVersion(KEY));
   });
 
   it('moves pull secrets back to the internal key when no credential key is set (the way back for a rollback)', async () => {
     vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
     candidates = [candidate('env_current', 7, 'shop-current')];
-    const report = await service.resign();
+    const report = await service.resign('internal');
     expect((service as any).environments.listRegistryKeyCandidates).toHaveBeenCalledWith('internal');
     const [, manifest] = applyManifest.mock.calls[0] as [string, string];
     const entry = JSON.parse(Buffer.from((yaml.parse(manifest) as { data: Record<string, string> }).data['.dockerconfigjson'], 'base64')
@@ -140,7 +140,24 @@ describe('RegistryPullSecretsService.resign', () => {
   it('refuses to run with no registry key at all', async () => {
     vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
     vi.stubEnv('EVE_INTERNAL_API_KEY', '');
-    await expect(service.resign()).rejects.toThrow(/EVE_REGISTRY_CREDENTIAL_KEY/);
+    await expect(service.resign(null)).rejects.toThrow(/EVE_REGISTRY_CREDENTIAL_KEY/);
+    expect(applyManifest).not.toHaveBeenCalled();
+  });
+
+  it('refuses to re-sign with a key the API does not verify with, and touches no environment', async () => {
+    // The API holds another credential key, or still only the internal key.
+    await expect(service.resign(registryKeyVersion('another-credential-key'))).rejects.toThrow(/registry key version/);
+    await expect(service.resign('internal')).rejects.toThrow(/registry key version/);
+    // An API that did not say which key it holds.
+    await expect(service.resign(undefined)).rejects.toThrow(/registry key version/);
+    expect((service as any).environments.listRegistryKeyCandidates).not.toHaveBeenCalled();
+    expect(applyManifest).not.toHaveBeenCalled();
+    expect(recordRegistryKeyVersion).not.toHaveBeenCalled();
+  });
+
+  it('refuses the internal-key way back while the API still holds a credential key', async () => {
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', '');
+    await expect(service.resign(registryKeyVersion(KEY))).rejects.toThrow(/registry key version/);
     expect(applyManifest).not.toHaveBeenCalled();
   });
 });

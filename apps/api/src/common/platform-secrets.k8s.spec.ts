@@ -83,6 +83,14 @@ describe('k8s/base platform secrets', () => {
     expect(holdersOf('EVE_REGISTRY_CREDENTIAL_KEY')).toEqual(['eve-api', 'eve-worker']);
   });
 
+  it('the registry credential key is required where it is read, so the API and the worker cannot start on different keys', () => {
+    for (const name of ['eve-api', 'eve-worker']) {
+      const ref = envOf(name).get('EVE_REGISTRY_CREDENTIAL_KEY')?.valueFrom?.secretKeyRef;
+      expect(ref, name).toMatchObject({ name: 'eve-app', key: 'EVE_REGISTRY_CREDENTIAL_KEY' });
+      expect(ref?.optional, name).not.toBe(true);
+    }
+  });
+
   it('the gateway holds no database URL, master key or core key', () => {
     const gateway = envOf('eve-gateway');
     for (const key of ['DATABASE_URL', 'EVE_SECRETS_MASTER_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_INTERNAL_DELIVER_KEY', 'EVE_REGISTRY_CREDENTIAL_KEY']) {
@@ -97,7 +105,7 @@ describe('k8s/base platform secrets', () => {
     }
   });
 
-  it('every eve-app key a platform service takes is optional, as with envFrom, and the internal keys are declared', () => {
+  it('every other eve-app key a platform service takes is optional, as with envFrom, and the internal keys are declared', () => {
     const declared = new Set(Object.keys(manifests.find((m) => m.kind === 'Secret' && m.metadata.name === 'eve-app')?.stringData ?? {}));
     const services = ['eve-api', 'eve-worker', 'eve-orchestrator', 'eve-agent-runtime', 'eve-gateway', 'eve-sso'];
     const refs = workloads.filter((w) => services.includes(w.metadata.name))
@@ -105,8 +113,9 @@ describe('k8s/base platform secrets', () => {
       .map((e) => e.valueFrom?.secretKeyRef)
       .filter((ref): ref is SecretKeyRef => ref?.name === 'eve-app');
     expect(refs.length).toBeGreaterThan(0);
-    // A required ref to a key the Secret lacks would stop the pod from starting.
-    expect(refs.filter((ref) => ref.optional !== true).map((ref) => ref.key)).toEqual([]);
+    // A required ref to a key the Secret lacks would stop the pod from starting:
+    // only the registry credential key is required, and the Secret declares it.
+    expect([...new Set(refs.filter((ref) => ref.optional !== true).map((ref) => ref.key))]).toEqual(['EVE_REGISTRY_CREDENTIAL_KEY']);
     expect([...NEW_KEYS, 'EVE_INTERNAL_API_KEY'].filter((key) => !declared.has(key))).toEqual([]);
   });
 });
