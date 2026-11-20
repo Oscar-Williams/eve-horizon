@@ -1,7 +1,7 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, ConflictException, ForbiddenException, MessageEvent } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import type { Db } from '@eve/db';
-import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
+import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, ReviewDecidedError, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
 import type { AccessBindingScope, JobGit, JobWorkspace, JobHarnessOptions, JobCompareResponse, JobTarget, ResourceRef, CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, InlineProfileBundle } from '@eve/shared';
 import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, storedActor, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
 import * as yaml from 'yaml';
@@ -290,6 +290,14 @@ function changesProgress(job: Job, updates: UpdateJobRequest): boolean {
     (updates.phase && updates.phase !== job.phase)
     || (updates.review_required !== undefined && updates.review_required !== job.review_required),
   );
+}
+
+/** A failed review decision as an HTTP error: 409 when the review was already decided, 400 otherwise. */
+function reviewDecisionError(error: unknown): Error {
+  if (error instanceof ReviewDecidedError) {
+    return new ConflictException(`${error.message}; read the job again`);
+  }
+  return new BadRequestException(error instanceof Error ? error.message : String(error));
 }
 
 @Injectable()
@@ -1381,7 +1389,7 @@ export class JobsService {
         try {
           await txJobs.approveReview(job.id, options.decider.id, undefined, options.decider.type);
         } catch (error) {
-          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+          throw reviewDecisionError(error);
         }
       } else if (job.phase === 'review' && updates.phase === 'active') {
         // A rejection, as the reject route makes it: the caller's allowlist
@@ -1395,7 +1403,7 @@ export class JobsService {
             options.decider.type,
           );
         } catch (error) {
-          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+          throw reviewDecisionError(error);
         }
       } else if (updates.phase === 'cancelled') {
         const cancelled = await txJobs.cancelJob(job.id, updates.close_reason ?? undefined, { cascade: options.cascade });
@@ -2161,7 +2169,8 @@ export class JobsService {
 
   /**
    * Approve a job in review. The decider recorded is the caller (deciderOf),
-   * never a reviewer named in the body.
+   * never a reviewer named in the body. The decision is made once, in a
+   * transaction holding the job's row: a review already decided gets 409.
    */
   async approve(jobId: string, data: ApproveRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
@@ -2172,10 +2181,13 @@ export class JobsService {
     await this.guardRunJob(current, caller, 'approve');
     const decider = deciderOf(caller);
     try {
-      const job = await this.jobs.approveReview(jobId, decider.id, data.comment, decider.type);
-      return this.toJobResponse(job);
+      const job = await this.db.begin(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        return jobQueries(tx).approveReview(jobId, decider.id, data.comment, decider.type);
+      });
+      return this.toJobResponse(job as Job);
     } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : String(error));
+      throw reviewDecisionError(error);
     }
   }
 
@@ -2200,7 +2212,8 @@ export class JobsService {
    * Reject a job in review, which runs it again. The job keeps its actor, but
    * a rejecter with a secrets allowlist (a restricted job's token) narrows the
    * job to it, so rejecting cannot re-run work that receives more secrets. The
-   * decider recorded is the caller, as on approve.
+   * decider recorded is the caller, as on approve, and the decision is made
+   * once: a review already decided gets 409 and no new attempt.
    */
   async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
@@ -2218,7 +2231,7 @@ export class JobsService {
       });
       return this.toJobResponse(job as Job);
     } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : String(error));
+      throw reviewDecisionError(error);
     }
   }
 
