@@ -225,11 +225,20 @@ const isRefusal = (value: string | MintRefusal | null): value is MintRefusal =>
 
 const byUrgency = (a: SecretWork, b: SecretWork) => (a.urgency === b.urgency ? 0 : a.urgency < b.urgency ? -1 : 1);
 
-/** Why a token is renewed now, or null to leave it. */
+/** The API refuses the token: it was issued before its environment's floor. */
+function isRevoked(token: DecodedToken, policy: RenewalPolicy): boolean {
+  return policy.notBefore !== null && token.iat < policy.notBefore;
+}
+
+/**
+ * Why a token is renewed now, or null to leave it. Revoked comes first,
+ * whatever else holds: it puts the token first in the pass and rolls a
+ * Recreate Deployment at once.
+ */
 export function renewalReason(token: DecodedToken, policy: RenewalPolicy): RenewalReason | null {
+  if (isRevoked(token, policy)) return 'revoked';
   if (policy.renewWithinSeconds > 0 && token.exp - policy.now <= policy.renewWithinSeconds) return 'expiring';
   if (policy.signingKey && !signedWith(token, policy.signingKey)) return 'retired_key';
-  if (policy.notBefore !== null && token.iat < policy.notBefore) return 'revoked';
   return null;
 }
 
