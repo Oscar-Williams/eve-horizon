@@ -107,4 +107,39 @@ describe('secret storage queries', () => {
     expect(await configs.swapClientSecret(`oac_a${suffix}`, 'v2:looks-like-a-prefix', sealed('a'))).toBe(true);
     expect((await configs.findByOrgAndProvider(org, 'slack'))?.client_secret).toBe(sealed('a'));
   });
+
+  it('lists, counts and swaps Slack signing secrets inside config_json, leaving the rest of it', async () => {
+    const slack = `oac_s${suffix}`;
+    const sealedOne = `oac_t${suffix}`;
+    await db`
+      INSERT INTO orgs (id, name, slug) VALUES (${`${org}s`}, ${`${org}s`}, ${`acmes${suffix}`})
+    `;
+    await db`
+      INSERT INTO oauth_app_configs (id, org_id, provider, client_id, client_secret, config_json) VALUES
+        (${slack}, ${`${org}s`}, 'slack', 'client-s', 'plain-secret',
+          ${db.json({ signing_secret: 'v2:looks-like-a-prefix', scopes: ['chat:write'] } as never)}),
+        (${sealedOne}, ${`${org}s`}, 'google_drive', 'client-t', 'plain-secret',
+          ${db.json({ signing_secret: sealed('t') } as never)})
+    `;
+    try {
+      const configs = oauthAppConfigQueries(db);
+      const plain = (await configs.listPlainSigningSecrets('', 1000)).filter((r) => r.id.endsWith(suffix));
+      expect(plain).toEqual([{ id: slack, signing_secret: 'v2:looks-like-a-prefix' }]);
+      const counts = await configs.countSigningSecretFormats();
+      expect(counts.plain).toBeGreaterThanOrEqual(1);
+      expect(counts.sealed).toBeGreaterThanOrEqual(1);
+
+      expect(await configs.swapSigningSecret(slack, 'stale-signing-secret', sealed('s'))).toBe(false);
+      expect(await configs.swapSigningSecret(slack, 'v2:looks-like-a-prefix', sealed('s'))).toBe(true);
+      expect((await configs.findByOrgAndProvider(`${org}s`, 'slack'))?.config_json)
+        .toEqual({ signing_secret: sealed('s'), scopes: ['chat:write'] });
+
+      expect(await configs.updateSigningSecret(slack, 'rotated')).toBe(true);
+      expect((await configs.findByOrgAndProvider(`${org}s`, 'slack'))?.config_json)
+        .toEqual({ signing_secret: 'rotated', scopes: ['chat:write'] });
+    } finally {
+      await db`DELETE FROM oauth_app_configs WHERE org_id = ${`${org}s`}`;
+      await db`DELETE FROM orgs WHERE id = ${`${org}s`}`;
+    }
+  });
 });
