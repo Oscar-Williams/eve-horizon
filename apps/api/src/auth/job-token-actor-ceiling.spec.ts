@@ -112,7 +112,11 @@ vi.mock('@eve/db', async (importOriginal) => {
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-const rawSql = (async () => []) as never;
+/** A tagged-template DB stand-in; `begin` runs the transaction body inline. */
+const sqlStub: unknown = Object.assign(async () => [], {
+  begin: async (work: (tx: unknown) => unknown) => work(sqlStub),
+});
+const rawSql = sqlStub as never;
 
 const OUT_OF_REACH = ['system:admin', 'system:read', 'orgs:admin', 'orgs:invite'];
 
