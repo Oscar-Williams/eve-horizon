@@ -14,7 +14,9 @@
 #   and never a static one. Never set Pod Security enforce=privileged (one an
 #   operator set stays, and the worker can still change other labels).
 # - RoleBindings only to the ClusterRole eve-worker-tenant, for the worker
-#   alone (created, or deleted, in either form).
+#   alone (created, or deleted, in either form), and none at all in the static
+#   namespaces: their rights come from the template (in eve, a binding of
+#   eve-worker-tenant would give back the platform's Secrets).
 # - No service account token Secret (it would mint a token for any account).
 #
 # eve-worker-workload-guard, on pods and every pod template it writes
@@ -102,6 +104,8 @@ spec:
           'namespace' in variables.binding.subjects[0] &&
           variables.binding.subjects[0]['namespace'] == 'eve')
       message: "The Eve worker binds only the ClusterRole eve-worker-tenant, for itself"
+    - expression: "!variables.isRoleBinding || !(request.namespace in variables.staticNamespaces)"
+      message: "The Eve worker makes or removes no RoleBinding in the platform's static namespaces (eve, eve-runners, eve-builds): their rights come from the template"
     - expression: >-
         !variables.isSecret || request.operation == 'DELETE' ||
         !has(object.type) || object.type != 'kubernetes.io/service-account-token'

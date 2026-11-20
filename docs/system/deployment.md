@@ -440,7 +440,9 @@ The admission policies live in their own kustomization, `k8s/admission`
   has neither that label nor `eve.env_id`; deleting one without the label,
   or a static one; setting Pod Security `enforce: privileged`;
 - a RoleBinding (created or deleted) to any role but `eve-worker-tenant`, or
-  for any subject but the worker;
+  for any subject but the worker, and any RoleBinding in `eve`, `eve-runners`
+  or `eve-builds` (their rights come from the template; `eve-worker-tenant`
+  in `eve` would give back the platform's Secrets);
 - a Secret of type `kubernetes.io/service-account-token`.
 
 `eve-worker-workload-guard` holds every pod and pod template the worker
