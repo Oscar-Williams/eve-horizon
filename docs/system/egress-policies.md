@@ -296,8 +296,8 @@ eve system settings set network.private_cidrs "198.18.0.0/15"
 
 - **The worker's rights:** the worker manages NetworkPolicies through
   `eve-worker-tenant`, bound in the namespaces it manages and statically in
-  the platform and runner namespaces (see
-  [deployment](deployment.md#worker-rights)). Hold its writes in the
+  the runner namespace, and through its Role `eve-worker` in the platform
+  namespace (see [deployment](deployment.md#worker-rights)). Hold its writes in the
   platform and runner namespaces to `eve-runner-<project>` policies with an
   admission policy:
   name prefix `eve-runner-`, not `eve-runner-deny` or `eve-runner-ingress`,

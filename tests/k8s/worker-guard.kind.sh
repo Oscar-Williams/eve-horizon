@@ -67,8 +67,14 @@ done
 "${K[@]}" -n eve-acme-shop-prod create rolebinding other --clusterrole=view --user=user_alice --dry-run=client -o yaml \
   | "${K[@]}" apply -f - >/dev/null
 # A managed env namespace the worker is bound in, with an app Deployment.
+"${K[@]}" label namespace eve-acme-shop-prod pod-security.kubernetes.io/enforce- >/dev/null 2>&1 || true
 "${K[@]}" -n eve-acme-shop-prod create deployment web --image=registry.example/web:1 --replicas=1 --dry-run=client -o yaml \
   | "${K[@]}" apply -f - >/dev/null
+# A running pod in the platform namespace to try exec on (the pause image is
+# on every kind node).
+"${K[@]}" -n eve delete pod exec-probe --ignore-not-found --wait=true >/dev/null
+"${K[@]}" -n eve run exec-probe --image=registry.k8s.io/pause:3.10 --image-pull-policy=IfNotPresent --restart=Never >/dev/null
+"${K[@]}" -n eve wait --for=condition=Ready pod/exec-probe --timeout=90s >/dev/null
 
 binding() { # namespace role subject-name
   cat <<YAML
@@ -206,7 +212,9 @@ run deny "create a ClusterRole" "${W[@]}" create clusterrole probe --verb=get --
 run deny "update a namespace (only patch is granted)" "${W[@]}" replace -f - <<<"$("${K[@]}" get namespace eve-acme-shop-prod -o json)"
 
 echo "== refused: the platform namespace"
-run deny "exec into a pod in the platform namespace" "${W[@]}" auth can-i create pods/exec -n eve
+# A real exec: `kubectl auth can-i create pods/exec` answers yes from the
+# client side for anyone who may create pods; the API server refuses.
+guard 'cannot create resource "pods/exec"' "exec into a pod in the platform namespace" "${W[@]}" -n eve exec exec-probe -- /pause
 run deny "read a Secret in the platform namespace" "${W[@]}" auth can-i get secrets -n eve
 run deny "list Secrets in the platform namespace" "${W[@]}" auth can-i list secrets -n eve
 run deny "write a ConfigMap in the platform namespace" "${W[@]}" auth can-i create configmaps -n eve
@@ -224,10 +232,10 @@ guard $WG "a host-PID Job in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(wo
 guard $WG "a CronJob mounting a host path" "${W[@]}" "${DRY[@]}" <<<"$(workload CronJob eve-acme-shop-prod probe "$(spec '"volumes":[{"name":"h","hostPath":{"path":"/"}}]')")"
 guard $WG "a container adding SYS_ADMIN" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod probe "$(spec '' '{"name":"main","image":"registry.example/app:1","securityContext":{"capabilities":{"add":["SYS_ADMIN"]}}}')")"
 guard $WG "a Deployment as eve-api's account in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod probe "$(spec '"serviceAccountName":"eve-api"')")"
-guard $WG "a pod as eve-worker in the runner namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-runners probe "$(spec '"serviceAccountName":"eve-worker"')")"
+guard $WG "a Deployment as eve-worker in the runner namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-runners probe "$(spec '"serviceAccountName":"eve-worker"')")"
 run deny "a DaemonSet in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload DaemonSet eve-acme-shop-prod probe "$(spec '' )")"
 guard $NG "a service account token Secret in a managed namespace" "${W[@]}" "${DRY[@]}" <<<'{"apiVersion":"v1","kind":"Secret","metadata":{"name":"probe","namespace":"eve-acme-shop-prod","annotations":{"kubernetes.io/service-account.name":"default"}},"type":"kubernetes.io/service-account-token"}'
-guard $NG "Pod Security enforce=privileged on a managed namespace" "${W[@]}" patch namespace eve-acme-shop-prod --type=merge -p '{"metadata":{"labels":{"pod-security.kubernetes.io/enforce":"privileged"}}}'
+guard $NG "Pod Security enforce=privileged on a managed namespace" "${W[@]}" patch namespace eve-acme-shop-prod --type=merge -p '{"metadata":{"labels":{"pod-security.kubernetes.io/enforce":"privileged"}}}' --dry-run=server
 guard $NG "a new namespace with Pod Security enforce=privileged" "${W[@]}" "${DRY[@]}" <<<'{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"eve-acme-shop-priv","labels":{"eve.horizon/managed":"true","pod-security.kubernetes.io/enforce":"privileged"}}}'
 
 echo "== refused: the orchestrator"
@@ -237,6 +245,7 @@ guard $OG "the orchestrator scales a Deployment outside the managed namespaces (
 
 "${K[@]}" -n eve delete configmap guard-probe --ignore-not-found >/dev/null
 "${K[@]}" -n eve delete secret kaniko-cfg-probe --ignore-not-found >/dev/null
+"${K[@]}" -n eve delete pod exec-probe --ignore-not-found --wait=false >/dev/null
 "${K[@]}" -n eve delete networkpolicy eve-runner-probe --ignore-not-found >/dev/null
 "${K[@]}" -n eve-runners delete networkpolicy eve-runner-probe --ignore-not-found >/dev/null
 echo

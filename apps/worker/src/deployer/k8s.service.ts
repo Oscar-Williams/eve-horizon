@@ -795,20 +795,15 @@ export class K8sService {
       stringData,
     };
 
+    // Create first, replace only on a conflict, never read: in the platform
+    // namespace the worker may create and delete Secrets (kaniko build
+    // credentials) but not read any.
     try {
-      await this.coreApi!.readNamespacedSecret(name, namespace);
-    } catch (err) {
-      if (isK8sNotFound(err)) {
-        try {
-          await this.coreApi!.createNamespacedSecret(namespace, secret);
-          this.logger.log(`Created Secret ${name} in namespace ${namespace}`);
-          return;
-        } catch (createErr) {
-          if (isK8sConflict(createErr)) return;
-          throw wrapK8sError(createErr, 'create', { kind: 'Secret', name, namespace });
-        }
-      }
-      throw wrapK8sError(err, 'read', { kind: 'Secret', name, namespace });
+      await this.coreApi!.createNamespacedSecret(namespace, secret);
+      this.logger.log(`Created Secret ${name} in namespace ${namespace}`);
+      return;
+    } catch (createErr) {
+      if (!isK8sConflict(createErr)) throw wrapK8sError(createErr, 'create', { kind: 'Secret', name, namespace });
     }
 
     try {

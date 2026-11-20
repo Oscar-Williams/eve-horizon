@@ -4,7 +4,7 @@
  * policies come from the ClusterRole `eve-worker-tenant`, bound in each
  * namespace it manages. Every namespace it creates carries
  * `eve.horizon/managed=true`, and the template's admission policy
- * (k8s/base/worker-admission-policy.yaml) refuses the worker's writes
+ * (k8s/admission/worker-admission-policy.yaml) refuses the worker's writes
  * anywhere else, bar the platform's own static namespaces.
  */
 

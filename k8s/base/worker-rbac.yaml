@@ -1,20 +1,37 @@
 # The worker's rights (0.1.328). Cluster-wide it handles namespaces and the
-# RoleBindings that give it eve-worker-tenant; everything namespaced
-# (workloads, Secrets, ConfigMaps, ingresses and policies) comes from
-# eve-worker-tenant, bound per namespace: here in eve, in runner-rbac.yaml in
+# RoleBindings that give it eve-worker-tenant; everything namespaced in the
+# tenants' namespaces (workloads, Secrets, ConfigMaps, ingresses and policies)
+# comes from eve-worker-tenant, bound per namespace: in runner-rbac.yaml in
 # eve-runners, and by the worker in each namespace it creates or adopts (it
-# labels those eve.horizon/managed=true). worker-admission-policy.yaml refuses
-# the worker's writes anywhere else. Rollout order: these objects, the worker
-# (its start-up reconcile labels and binds existing env namespaces), the
-# admission policy, then delete the old all-namespace ClusterRole and
-# ClusterRoleBinding `eve-worker`. Rollback: re-apply the previous template
-# (it brings `eve-worker` back); the objects below are then unused.
+# labels those eve.horizon/managed=true). In the platform namespace (eve) it
+# holds only the Role eve-worker below, never eve-worker-tenant: tenant code
+# runs there too (kaniko builds, legacy pipeline steps in the worker), so
+# nothing there may read the platform's Secrets, exec, or start workloads
+# beyond runner pods and kaniko Jobs. The admission policies in k8s/admission
+# hold the worker's writes everywhere (namespaces, RoleBindings, pods and
+# their templates). Rollout order: these objects, the worker (its start-up
+# reconcile labels and binds existing env namespaces), k8s/admission, then
+# delete the old all-namespace ClusterRole and ClusterRoleBinding
+# `eve-worker`, and the RoleBinding eve/eve-worker-tenant an earlier render
+# of this file made. Rollback: re-apply the previous template (it brings
+# `eve-worker` back) and delete k8s/admission; the objects below are then
+# unused.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: eve-worker
   namespace: eve
 ---
+# What the worker does in the platform namespace, and nothing more:
+# - plain runner pods for org filesystem jobs and their workspace claims
+#   (kubectl apply: get, create, patch), read and removed by the reaper;
+# - kaniko build Jobs, their pods (read for the build's outcome) and their
+#   credentials Secret (kaniko-cfg-*), which it writes and removes but never
+#   reads, so eve-app and the platform's other Secrets stay out of reach;
+# - a registry Service's ClusterIP, read when an image names one here;
+# - the runner egress policies of plain runner pods (eve-runner-<project>
+#   NetworkPolicies, and GKE FQDN policies under egress.allow_hosts).
+# No pods/exec (the worker never execs), no ConfigMaps, no Deployments.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -24,18 +41,54 @@ rules:
   - apiGroups: [""]
     resources:
       - pods
-      - pods/status
-      - pods/exec
       - persistentvolumeclaims
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - delete
+  - apiGroups: [""]
+    resources:
       - services
+    verbs:
+      - get
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
     verbs:
       - get
       - list
       - watch
       - create
       - delete
-      - patch
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - create
       - update
+      - patch
+      - delete
+  - apiGroups: ["networking.gke.io"]
+    resources:
+      - fqdnnetworkpolicies
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - delete
 ---
 # Namespaced rights, never bound cluster-wide.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -59,12 +112,13 @@ rules:
       - delete
       - patch
       - update
+  # No DaemonSets: the worker never makes one (the workload guard refuses
+  # them too).
   - apiGroups: ["apps"]
     resources:
       - deployments
       - replicasets
       - statefulsets
-      - daemonsets
     verbs:
       - get
       - list
@@ -155,22 +209,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: eve-worker
-subjects:
-  - kind: ServiceAccount
-    name: eve-worker
-    namespace: eve
----
-# The platform namespace: Secrets, ConfigMaps, kaniko Jobs, plain runner pods
-# for org filesystem jobs and their runner policies.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: eve-worker-tenant
-  namespace: eve
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: eve-worker-tenant
 subjects:
   - kind: ServiceAccount
     name: eve-worker

@@ -24,7 +24,6 @@ resources:
   - orchestrator-deployment.yaml
   - orchestrator-service.yaml
   - worker-rbac.yaml
-  - worker-admission-policy.yaml
   - runner-serviceaccount.yaml
   - runner-namespace.yaml
   - runner-rbac.yaml
