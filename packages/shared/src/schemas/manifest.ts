@@ -18,6 +18,7 @@ import {
   MANAGED_DB_ROLE_NAME_PATTERN,
 } from '../managed-db/roles.js';
 import { IngressByteSizeSchema, IngressDurationSchema } from './ingress-units.js';
+import { EGRESS_HOSTS_MAX, egressHostProblem } from '../k8s/egress-hosts.js';
 
 export const SyncManifestRequestSchema = z.object({
   yaml: z.string().min(1, 'manifest yaml cannot be empty'),
@@ -283,6 +284,29 @@ export const ServiceNetworkingSchema = z.object({
 export type ServiceNetworking = z.infer<typeof ServiceNetworkingSchema>;
 
 /**
+ * `x-eve.egress.hosts` (project level and per service): the internet hosts
+ * the project's pods may reach under a strict `egress.allow_hosts` profile.
+ * Each entry is a host name, a `*.` pattern one label deep, or
+ * `{ name | pattern, port }` (port 443 by default); at most 50 per list.
+ * See docs/system/egress-policies.md#host-allow-lists.
+ */
+export const EgressHostEntrySchema = z.union([
+  z.string(),
+  z.object({ name: z.string().optional(), pattern: z.string().optional(), port: z.number().optional() }).passthrough(),
+]).superRefine((entry, ctx) => {
+  const problem = egressHostProblem(entry);
+  if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+});
+
+export const EgressConfigSchema = z.object({
+  hosts: z.array(EgressHostEntrySchema)
+    .max(EGRESS_HOSTS_MAX, `at most ${EGRESS_HOSTS_MAX} hosts per list`)
+    .optional(),
+}).strict();
+
+export type EgressConfig = z.infer<typeof EgressConfigSchema>;
+
+/**
  * Capabilities a service may add back under the strict pod security profile
  * (`isolation.pod_security`); every other one stays dropped.
  */
@@ -324,6 +348,8 @@ export const ServiceXeveSchema: z.ZodTypeAny = z.object({
   managed: ManagedDbConfigSchema.optional(),
   object_store: ObjectStoreConfigSchema.optional(),
   networking: ServiceNetworkingSchema.optional(),
+  /** Internet hosts this service's pods may reach (egress.allow_hosts), beside the project's list. */
+  egress: EgressConfigSchema.optional(),
   security: ServiceSecuritySchema.optional(),
   audit_log_table: z.string().optional(),
   request_id_column: z.string().optional(),
@@ -743,6 +769,8 @@ export const ManifestXeveSchema = z.object({
   packs: z.array(PackEntrySchema).optional(),
   skill_modes: z.record(ManifestSkillModeSchema).optional(),
   app_links: AppLinksSchema.optional(),
+  /** Internet hosts every pod and runner of the project may reach (egress.allow_hosts). */
+  egress: EgressConfigSchema.optional(),
 }).passthrough();
 
 export type ManifestXeve = z.infer<typeof ManifestXeveSchema>;

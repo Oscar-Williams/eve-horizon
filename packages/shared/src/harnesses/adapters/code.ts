@@ -18,6 +18,9 @@ function createCodexFamilyAdapter(params: {
     ...(params.aliases ? { aliases: params.aliases } : {}),
     description: params.description,
     reasoningMode: 'effort',
+    // The OpenAI API with an API key; ChatGPT sign-in (CODEX_AUTH_JSON) talks to
+    // chatgpt.com/backend-api and refreshes its token at auth.openai.com.
+    egressHosts: ['api.openai.com', 'chatgpt.com', 'auth.openai.com'],
     capabilities: {
       supports_model: true,
       model_notes: 'Model override supported via --model.',

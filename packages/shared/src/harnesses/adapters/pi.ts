@@ -5,6 +5,9 @@ export const piAdapter: HarnessAdapter = {
   name: 'pi',
   description: 'pi coding agent — multi-provider, extensible.',
   reasoningMode: 'effort',
+  // The providers Eve's credential check accepts for pi; any other provider
+  // (Mistral, xAI, Groq, OpenRouter) is declared in x-eve.egress.hosts.
+  egressHosts: ['api.anthropic.com', 'api.openai.com', 'generativelanguage.googleapis.com', 'api.z.ai'],
   capabilities: {
     supports_model: true,
     model_notes: 'Use provider/model format (e.g., anthropic/claude-sonnet-4).',

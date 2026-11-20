@@ -5,6 +5,9 @@ export const geminiAdapter: HarnessAdapter = {
   name: 'gemini',
   description: 'Gemini CLI harness.',
   reasoningMode: 'passthrough',
+  // The Gemini API with GOOGLE_API_KEY or GEMINI_API_KEY (the only sign-in Eve
+  // passes). The address is shared with every Google API.
+  egressHosts: ['generativelanguage.googleapis.com'],
   capabilities: {
     supports_model: true,
     model_notes: 'Gemini CLI supports --model; thinking settings vary by model family.',

@@ -15,6 +15,9 @@ function createClaudeFamilyAdapter(
     name,
     description,
     reasoningMode: 'thinking_tokens',
+    // Claude Code with ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (a long-lived
+    // token: no refresh). Telemetry is off in the runner image.
+    egressHosts: ['api.anthropic.com'],
     capabilities: {
       supports_model: true,
       model_notes: 'Model override supported via CLAUDE_MODEL or --model. Opus 4.7 forms such as opus4.7 and opus-4-7 are normalized to claude-opus-4-7; the bare opus alias resolves to Opus 5.5.',

@@ -16,6 +16,10 @@
  *   `audit` and, because the deny is always there, under `legacy` alone.
  *   The static `eve-runner-ingress` lets only the worker reach runner pods.
  *
+ * egress.allow_hosts (rule set 3) at `strict` leaves the internet rule and
+ * the allow-all companions out of both sets; the GKE FQDN policies in
+ * fqdn-policies.ts then decide which internet hosts a pod reaches.
+ *
  * NetworkPolicy matches the destination pod's port after Service
  * translation, so in-cluster ports here are container ports.
  */
@@ -204,14 +208,28 @@ function dedupeRules(rules: EgressRule[]): EgressRule[] {
   });
 }
 
-/** DNS, the API on its public port, the ingress controller and the internet outside private ranges. */
-function baseRules(settings: EgressSettings): EgressRule[] {
+/**
+ * DNS, the API on its public port, the ingress controller and, unless
+ * egress.allow_hosts is strict (where only the FQDN policies open the
+ * internet), the internet outside private ranges.
+ */
+function baseRules(settings: EgressSettings, internet = true): EgressRule[] {
   return [
     dnsRule(),
     apiRule(settings.platformNamespace ?? DEFAULT_PLATFORM_NAMESPACE),
     ingressControllerRule(),
-    internetRule(settings.privateCidrs ?? []),
+    ...(internet ? [internetRule(settings.privateCidrs ?? [])] : []),
   ];
+}
+
+/**
+ * The profile the policies are rendered under, and whether they open the
+ * internet. egress.allow_hosts at `strict` leaves out the internet rule and
+ * every allow-all companion, whatever egress.default_deny says (a rule set 3
+ * `strict` stamp also makes default_deny strict, so they agree in practice).
+ */
+function egressMode(profile: SecurityProfile, allowHosts: SecurityProfile): { profile: SecurityProfile; internet: boolean } {
+  return allowHosts === 'strict' ? { profile: 'strict', internet: false } : { profile, internet: true };
 }
 
 function policy(
@@ -237,17 +255,21 @@ function policy(
  * The policies an env namespace should hold under a profile, in the order to
  * write them: the companion before the strict set, so moving from `legacy`
  * to `audit` never blocks anything. Any other Eve env policy in the namespace
- * is to be deleted after these are written.
+ * is to be deleted after these are written. With egress.allow_hosts at
+ * `strict` the set is the strict one without the internet rule
+ * (fqdn-policies.ts allows the declared hosts).
  */
 export function envEgressPolicies(
   namespace: string,
-  profile: SecurityProfile,
+  defaultDeny: SecurityProfile,
   extras: EgressExtras,
   settings: EgressSettings = {},
+  allowHosts: SecurityProfile = 'legacy',
 ): EgressNetworkPolicy[] {
+  const { profile, internet } = egressMode(defaultDeny, allowHosts);
   if (profile === 'legacy') return [];
   const labels = { [EGRESS_POLICY_LABEL]: 'env' };
-  const [dns, ...rest] = baseRules(settings);
+  const [dns, ...rest] = baseRules(settings, internet);
   const strict = policy(ENV_EGRESS_POLICY, namespace, labels, {}, [
     dns,
     { to: [{ podSelector: {} }] },
@@ -296,16 +318,18 @@ export function runnerPolicyName(projectId: string): string {
 export function runnerEgressPolicies(
   namespace: string,
   projectId: string,
-  profile: SecurityProfile,
+  defaultDeny: SecurityProfile,
   extras: EgressExtras,
   settings: EgressSettings = {},
+  allowHosts: SecurityProfile = 'legacy',
 ): EgressNetworkPolicy[] {
+  const { profile, internet } = egressMode(defaultDeny, allowHosts);
   const name = runnerPolicyName(projectId);
   const labels = { [EGRESS_POLICY_LABEL]: 'runner', [RUNNER_PROJECT_LABEL]: projectId };
   const selector = { matchLabels: { [RUNNER_LABEL]: 'true', [RUNNER_PROJECT_LABEL]: projectId } };
   const companion = policy(`${name}${AUDIT_SUFFIX}`, namespace, labels, selector, [{}]);
   if (profile === 'legacy') return [companion];
-  const strict = policy(name, namespace, labels, selector, [...baseRules(settings), ...extraRules(extras)]);
+  const strict = policy(name, namespace, labels, selector, [...baseRules(settings, internet), ...extraRules(extras)]);
   return profile === 'strict' ? [strict] : [companion, strict];
 }
 

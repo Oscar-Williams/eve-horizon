@@ -6,6 +6,8 @@ export const zaiAdapter: HarnessAdapter = {
   name: 'zai',
   description: 'Z.ai via cc-mirror.',
   reasoningMode: 'thinking_tokens',
+  // cc-mirror's Z.ai provider: https://api.z.ai/api/anthropic.
+  egressHosts: ['api.z.ai'],
   capabilities: {
     supports_model: true,
     model_notes: 'Model override supported via ZAI_MODEL or --model.',
