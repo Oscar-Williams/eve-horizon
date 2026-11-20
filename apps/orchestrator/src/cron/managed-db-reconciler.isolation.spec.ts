@@ -235,4 +235,35 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 25`);
     expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE "acme-lab-test-4d5e6f"'))).toBe(false);
   });
+
+  it('isolates a tenant again when a change to it finishes, before it is ready', async () => {
+    const roleUser = `${OWNER}-app`;
+    const adminSql = createFakeSql({ [OWNER]: -1, [roleUser]: -1 }, { [DB]: -1 });
+    const { service, managedDb } = createService(
+      [buildTenant({ status: 'modifying', desired_roles: [{ name: 'app', grants: 'readwrite' }] })],
+      {
+        listTenantRoles: vi.fn().mockResolvedValue([
+          { id: 'mdbr_app', tenant_id: 'mdbt_1', name: 'app', grants: 'readwrite', db_user: roleUser, credential_secret_ref: null },
+        ]),
+        transitionStatus: vi.fn().mockImplementation(async () => {
+          adminSql.statements.push('-- ready');
+          return buildTenant({ status: 'ready' });
+        }),
+      },
+    );
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.reconcile();
+
+    const revoke = `REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`;
+    expect(adminSql.statements).toEqual(expect.arrayContaining([
+      revoke,
+      `ALTER DATABASE "${DB}" CONNECTION LIMIT 25`,
+      `ALTER ROLE "${OWNER}" CONNECTION LIMIT 25`,
+      `ALTER ROLE "${roleUser}" CONNECTION LIMIT 25`,
+    ]));
+    expect(adminSql.statements.indexOf(revoke)).toBeGreaterThanOrEqual(0);
+    expect(adminSql.statements.indexOf('-- ready')).toBeGreaterThan(adminSql.statements.indexOf(revoke));
+    expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', expect.anything());
+  });
 });
