@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EgressProviderMissingError } from '@eve/shared';
 import { ensureRunnerEgress, registerRunnerEgress } from './runner-egress.js';
 
 /**
@@ -31,5 +32,11 @@ describe('ensureRunnerEgress', () => {
     await expect(ensureRunnerEgress('proj_shop')).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/proj_shop.*forbidden/));
     warn.mockRestore();
+  });
+
+  it('refuses the job when egress.allow_hosts is strict with no provider', async () => {
+    registerRunnerEgress({ ensureRunnersForDispatch: vi.fn(async () => { throw new EgressProviderMissingError(); }) });
+    await expect(ensureRunnerEgress('proj_shop')).resolves
+      .toBe('egress allow lists need a provider (EVE_EGRESS_FQDN_PROVIDER) (rule egress.allow_hosts)');
   });
 });

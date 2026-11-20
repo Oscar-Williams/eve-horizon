@@ -61,6 +61,14 @@ describe('k8s/base worker rights and API URLs', () => {
     expect(verbs).toEqual(expect.arrayContaining(['get', 'list', 'create', 'patch', 'update', 'delete']));
   });
 
+  it('lets the worker manage GKE FQDN policies (harmless where the CRD is absent)', () => {
+    const role = find('ClusterRole', 'eve-worker');
+    const verbs = (role.rules ?? [])
+      .filter((r) => r.apiGroups.includes('networking.gke.io') && r.resources.includes('fqdnnetworkpolicies'))
+      .flatMap((r) => r.verbs);
+    expect(verbs).toEqual(expect.arrayContaining(['get', 'list', 'create', 'update', 'delete']));
+  });
+
   it('gives apps and runners the public API port, and platform services the internal one', () => {
     const config = find('ConfigMap', 'eve-cluster-config').data!;
     expect(config.EVE_API_APP_URL).toBe('http://eve-api.eve.svc.cluster.local:4701');

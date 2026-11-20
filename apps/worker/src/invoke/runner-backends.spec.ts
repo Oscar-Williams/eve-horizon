@@ -25,6 +25,8 @@ const k = vi.hoisted(() => ({
   podPhase: 'Running',
   applied: [] as Array<Record<string, any>>,
   calls: [] as string[][],
+  /** What the egress hook refuses the job with (egress.allow_hosts with no provider). */
+  egressRefusal: undefined as string | undefined,
 }));
 
 vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: vi.fn((_c: string, args: string[]) => {
@@ -79,7 +81,7 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
 
 // egress.default_deny: the project's runner policies come before any claim or pod.
 vi.mock('../network/runner-egress.js', () => ({
-  ensureRunnerEgress: vi.fn(async (projectId: string) => { k.calls.push(['ensure-runner-egress', projectId]); }),
+  ensureRunnerEgress: vi.fn(async (projectId: string) => { k.calls.push(['ensure-runner-egress', projectId]); return k.egressRefusal; }),
 }));
 
 const submit = { kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', project_id: 'proj_shop', job_token: 't', api_url: 'http://api.test' };
@@ -90,6 +92,7 @@ let submittedKeys: string[] = [];
 
 beforeEach(() => {
   k.crds = true; k.pool = true; k.poolReplicas = 3; k.runnerNamespace = true; k.podPoolHash = sha256(POOL_KEY); k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
+  k.egressRefusal = undefined;
   submittedTo = [];
   submittedKeys = [];
   resetSandboxDiscovery();
@@ -126,6 +129,16 @@ const podsApplied = () => k.applied.filter((o) => o.kind === 'Pod');
 const deleted = (kind: string) => k.calls.filter((a) => a[0] === '--request-timeout=10s' ? a[1] === 'delete' && a[2] === kind : a[0] === 'delete' && a[1] === kind);
 
 describe('runner pod backends', () => {
+  it('fails the job before any claim or pod when the egress hook refuses it', async () => {
+    k.egressRefusal = 'egress allow lists need a provider (EVE_EGRESS_FQDN_PROVIDER) (rule egress.allow_hosts)';
+    const outcome = await run();
+    expect(outcome.success).toBe(false);
+    expect(outcome.error).toContain('egress allow lists need a provider (EVE_EGRESS_FQDN_PROVIDER)');
+    expect(claimsApplied()).toEqual([]);
+    expect(podsApplied()).toEqual([]);
+    expect(submittedTo).toEqual([]);
+  });
+
   it('claims a sandbox when the CRDs are present, reaches it at its pod IP, and deletes the claim', async () => {
     const outcome = await run();
     expect(outcome.success).toBe(true);
