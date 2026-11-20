@@ -184,7 +184,7 @@ describe('provider none', () => {
 describe('provider gke', () => {
   beforeEach(() => { vi.stubEnv('EVE_EGRESS_FQDN_PROVIDER', 'gke'); });
 
-  it('under strict writes one FQDN policy per host before removing the internet rule from the env namespace', async () => {
+  it('under strict writes the NetworkPolicies first, then one FQDN policy per host', async () => {
     strict();
     const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
     await egressFor(cluster).applyEnv(PROD);
@@ -197,9 +197,77 @@ describe('provider gke', () => {
     });
     expect(cluster.npNames(NS)).toEqual(['eve-egress', 'eve-egress-metadata']);
     expect(hasInternet(cluster.np(NS, 'eve-egress'))).toBe(false);
-    const lastFqdn = Math.max(...cluster.log.map((entry, i) => (entry.startsWith('fqdn:apply') ? i : -1)));
+    // A failed FQDN write must never leave an older, wider NetworkPolicy in place.
+    const firstFqdn = cluster.log.findIndex((entry) => entry.startsWith('fqdn:apply'));
     const egressWrite = cluster.log.indexOf(`np:apply:${NS}/eve-egress`);
-    expect(lastFqdn).toBeLessThan(egressWrite);
+    expect(egressWrite).toBeGreaterThanOrEqual(0);
+    expect(egressWrite).toBeLessThan(firstFqdn);
+  });
+
+  it('under audit (a rule set 2 stamp beside a strict default deny) a failed FQDN write is recorded and blocks nothing', async () => {
+    db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'audit' });
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const missingCrd = Object.assign(new Error('the server could not find the requested resource'), { statusCode: 404 });
+    cluster.api.applyFqdnNetworkPolicy.mockRejectedValue(missingCrd);
+    const egress = egressFor(cluster);
+
+    await expect(egress.applyEnv(PROD)).resolves.toBeDefined();
+    expect(cluster.npNames(NS)).toEqual(['eve-egress', 'eve-egress-metadata']);
+    await expect(egress.applyRunners(SHOP)).resolves.toBeDefined();
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBeDefined();
+    expect(cluster.npNames('eve-runners')).toEqual([expect.stringMatching(/^eve-runner-/)]);
+    expect(db.findings).toEqual(expect.arrayContaining([expect.objectContaining({
+      rule: 'egress.allow_hosts',
+      detail: expect.objectContaining({ reason: 'fqdn_write_failed', scope: 'env', env: 'prod' }),
+    }), expect.objectContaining({
+      rule: 'egress.allow_hosts',
+      detail: expect.objectContaining({ reason: 'fqdn_write_failed', scope: 'runner' }),
+    })]));
+  });
+
+  it('under strict a failed FQDN write leaves the runners no internet rule and refuses the job', async () => {
+    audit();
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    expect(cluster.npNames('eve-runners').some((name) => name.endsWith('-audit'))).toBe(true);
+
+    strict();
+    cluster.api.applyFqdnNetworkPolicy.mockRejectedValue(new Error('admission webhook denied the request'));
+    const refusal = await egress.ensureRunnersForDispatch(SHOP).then(() => null, (error: Error) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal!.name).toBe('RunnerEgressSyncError');
+    expect(refusal!.message).toMatch(/proj_shop/);
+    expect(refusal!.message).toMatch(/admission webhook denied the request/);
+    for (const namespace of ['eve-runners', 'eve']) {
+      expect(cluster.npNames(namespace).some((name) => name.endsWith('-audit'))).toBe(false);
+      for (const name of cluster.npNames(namespace)) expect(hasInternet(cluster.np(namespace, name))).toBe(false);
+    }
+  });
+
+  it('under strict refuses the job when the runner NetworkPolicies cannot be written', async () => {
+    strict();
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    cluster.api.applyNetworkPolicy.mockRejectedValue(new Error('networkpolicies is forbidden'));
+    const refusal = await egressFor(cluster).ensureRunnersForDispatch(SHOP).then(() => null, (error: Error) => error);
+    expect(refusal?.name).toBe('RunnerEgressSyncError');
+    expect(refusal?.message).toMatch(/networkpolicies is forbidden/);
+  });
+
+  it('at dispatch rewrites a runner policy whose content changed under the same name (egress.allow_hosts audit to strict)', async () => {
+    db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'audit' });
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
+    const [name] = cluster.npNames('eve-runners');
+    expect(hasInternet(cluster.np('eve-runners', name))).toBe(true);
+
+    strict();
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
+    expect(cluster.npNames('eve-runners')).toEqual([name]);
+    expect(hasInternet(cluster.np('eve-runners', name))).toBe(false);
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
   });
 
   it('takes the hosts of the manifest passed at deploy over the stored release', async () => {
