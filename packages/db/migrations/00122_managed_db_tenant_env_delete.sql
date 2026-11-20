@@ -18,3 +18,12 @@ ALTER TABLE managed_db_tenants DROP CONSTRAINT IF EXISTS managed_db_tenants_env_
 ALTER TABLE managed_db_tenants
   ADD CONSTRAINT managed_db_tenants_env_id_fkey
   FOREIGN KEY (env_id) REFERENCES environments(id) ON DELETE SET NULL;
+
+-- A tenant's snapshots outlive its environment (a pre-delete snapshot is
+-- taken after the environment row is gone, and is what a restore needs).
+ALTER TABLE managed_db_snapshots ALTER COLUMN env_id DROP NOT NULL;
+
+ALTER TABLE managed_db_snapshots DROP CONSTRAINT IF EXISTS managed_db_snapshots_env_id_fkey;
+ALTER TABLE managed_db_snapshots
+  ADD CONSTRAINT managed_db_snapshots_env_id_fkey
+  FOREIGN KEY (env_id) REFERENCES environments(id) ON DELETE SET NULL;

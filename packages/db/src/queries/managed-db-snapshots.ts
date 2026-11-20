@@ -9,7 +9,7 @@ export interface ManagedDbSnapshot {
   tenant_id: string;
   org_id: string;
   project_id: string;
-  env_id: string;
+  env_id: string | null;
   instance_id: string;
   created_by: string | null;
   trigger: string;
@@ -31,7 +31,7 @@ export interface CreateSnapshotInput {
   tenant_id: string;
   org_id: string;
   project_id: string;
-  env_id: string;
+  env_id: string | null;
   instance_id: string;
   created_by?: string | null;
   trigger: 'manual' | 'scheduled' | 'pre_delete' | 'pre_reset';

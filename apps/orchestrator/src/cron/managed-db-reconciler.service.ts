@@ -196,11 +196,12 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     snapshot_on_delete: boolean | null;
     org_id: string;
     project_id: string;
-    env_id: string;
+    env_id: string | null;
     backup_retention: string | null;
     desired_extensions: string[];
     enabled_extensions: string[];
     desired_roles: ManagedDbRoleDeclaration[];
+    deleted_at?: Date | string | null;
   }): Promise<void> {
     const token = crypto.randomUUID();
     const locked = await this.managedDb.acquireOperationLock(tenant.id, token);
@@ -234,7 +235,14 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
             code: 'reconcile_error',
             message: err instanceof Error ? err.message : String(err),
           };
-      // On failure, transition to failed state and release lock
+      // A drop that fails stays queued (lock released, error recorded) for
+      // a day, so a busy database or a passing outage does not strand it.
+      // Anything else, or a drop failing for longer, parks at failed.
+      if (tenant.status === 'deleting' && withinDropRetryWindow(tenant.deleted_at)) {
+        this.logger.warn(`[managed-db-reconciler] Drop of tenant ${tenant.id} failed; will retry: ${error.message}`);
+        await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
+        return;
+      }
       await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
         error,
       });
@@ -416,7 +424,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       snapshot_on_delete: boolean | null;
       org_id: string;
       project_id: string;
-      env_id: string;
+      env_id: string | null;
       class: string;
       backup_retention: string | null;
     },
@@ -431,7 +439,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         const [org, project, environment] = await Promise.all([
           this.orgs.findById(tenant.org_id),
           this.projects.findById(tenant.project_id),
-          this.environments.findById(tenant.env_id),
+          tenant.env_id ? this.environments.findById(tenant.env_id) : Promise.resolve(null),
         ]);
 
         await this.createPreDeleteSnapshot({
@@ -439,11 +447,16 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           credential_secret_ref: tenant.credential_secret_ref,
           org_slug: org?.slug ?? tenant.org_id,
           project_slug: project?.slug ?? tenant.project_id,
-          env_name: environment?.name ?? tenant.env_id,
+          env_name: environment?.name ?? tenant.env_id ?? 'deleted-env',
         });
       } catch (err) {
-        // Best-effort: log warning but don't block teardown
-        this.logger.warn(`[managed-db-reconciler] Pre-delete snapshot failed for ${tenant.id}: ${err instanceof Error ? err.message : String(err)}`);
+        // A snapshot was asked for: keep the database until one exists. The
+        // drop is retried (see reconcileTenant) and parks at failed after a
+        // day, with the database still in place.
+        throw new ManagedDbProvisioningError(
+          'snapshot_failed',
+          `Pre-delete snapshot failed, so the database was kept: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
@@ -463,7 +476,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     instance_id: string;
     org_id: string;
     project_id: string;
-    env_id: string;
+    env_id: string | null;
     class: string;
     backup_retention: string | null;
     org_slug: string;
@@ -473,8 +486,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   }): Promise<void> {
     const snapshotStorage = createSnapshotStorageClient();
     if (!snapshotStorage) {
-      this.logger.warn('[managed-db-reconciler] Storage not configured, skipping pre-delete snapshot');
-      return;
+      throw new Error('snapshot storage is not configured (EVE_DB_SNAPSHOT_BUCKET)');
     }
     const snapshotId = generateManagedDbSnapshotId();
     const retention = resolveManagedDbSnapshotRetention(undefined, {
@@ -1083,4 +1095,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 /** The class's per-login connection limit, or null for an unknown class. */
 function connectionLimitFor(dbClass: string): number | null {
   return getManagedDbLimits(dbClass)?.connectionLimitSql ?? null;
+}
+
+/** How long a failing drop is retried before the tenant parks at failed. */
+const DROP_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function withinDropRetryWindow(deletedAt: Date | string | null | undefined): boolean {
+  if (!deletedAt) return false;
+  const since = Date.now() - new Date(deletedAt).getTime();
+  return Number.isFinite(since) && since < DROP_RETRY_WINDOW_MS;
 }
