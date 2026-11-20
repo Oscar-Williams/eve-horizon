@@ -272,6 +272,29 @@ describe('repository scan', () => {
   });
 });
 
+describe('the worker image', () => {
+  // The entrypoint installs nothing at start, so a variant hidden as built
+  // would leave its harness silently missing (or, for zai, holding the
+  // placeholder key that overrides the runtime one).
+  it('fails its build when a cc-mirror variant cannot be built', async () => {
+    const { readFileSync } = await import('node:fs');
+    // As Docker reads it: comment lines dropped (also inside a continued
+    // instruction), then continuation lines joined.
+    const run = readFileSync(join(ROOT, 'apps', 'worker', 'Dockerfile'), 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*#/.test(line))
+      .join('\n')
+      .replace(/\\\n/g, ' ')
+      .split('\n')
+      .find((line) => /^RUN\b.*cc-mirror quick/.test(line));
+    assert.ok(run, 'the worker Dockerfile builds the cc-mirror variants');
+    assert.match(run, /^RUN set -eu;/, 'the variant step stops at the first failure');
+    assert.doesNotMatch(run, /\|\||2>\/dev\/null/, 'no failure in the variant step is hidden');
+    assert.match(run, /--name mclaude\b/);
+    assert.match(run, /--name zai\b/);
+  });
+});
+
 describe('the harness CLI lock', () => {
   it('is committed, so npm ci in the image builds installs exactly what was reviewed', async () => {
     const { execFileSync } = await import('node:child_process');
