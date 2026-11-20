@@ -18,6 +18,13 @@ import { quotePostgresIdentifier } from './extensions.js';
 
 export const MANAGED_DB_ROLE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,15}$/;
 
+/**
+ * Declared roles per managed database. Each is a login with its own
+ * connection limit, so the cap keeps one tenant's logins within reach of the
+ * database-wide limit its class sets.
+ */
+export const MANAGED_DB_MAX_ROLES = 8;
+
 export const MANAGED_DB_ROLE_GRANTS = ['readwrite', 'readonly'] as const;
 
 export type ManagedDbRoleGrants = (typeof MANAGED_DB_ROLE_GRANTS)[number];

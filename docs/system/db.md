@@ -176,6 +176,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
   password. `eve db destroy` drops the roles with the database.
 - `eve db status --env <name>` lists declared and provisioned roles (names and
   logins only, never passwords).
+- A managed database declares at most 8 roles; manifest sync refuses more.
+  Each login (owner and roles) gets the class's connection limit, and the
+  database as a whole gets the class's maximum (25, 100 or 200) unless an
+  operator already set one.
 - Roles are supported on the local provider; cloud providers reject them with
   `provider_unsupported` until provider support lands.
 

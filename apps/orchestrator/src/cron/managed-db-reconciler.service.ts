@@ -919,9 +919,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
   /**
    * A tenant database accepts only its own logins: the owner (by ownership)
-   * and declared roles (granted CONNECT explicitly). Each login also gets its
-   * class's connection limit, unless one is already set, so an operator's
-   * own limit is never changed. Idempotent.
+   * and declared roles (granted CONNECT explicitly). Each login gets its
+   * class's per-login limit, and the database its class's maximum across all
+   * logins, unless one is already set, so an operator's own limit is never
+   * changed. Idempotent.
    */
   private async isolateLocalTenantDb(
     adminSql: Db,
@@ -929,11 +930,22 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     roleUsers: string[],
   ): Promise<void> {
     await adminSql.unsafe(`REVOKE CONNECT ON DATABASE ${quotePostgresIdentifier(tenant.db_name)} FROM PUBLIC`);
-    const limit = connectionLimitFor(tenant.class);
-    if (!limit) return;
+    const limits = getManagedDbLimits(tenant.class);
+    if (!limits) return;
+    await this.applyDatabaseConnectionLimit(adminSql, tenant.db_name, limits.maxConnections);
     for (const login of [tenant.db_user, ...roleUsers]) {
-      await this.applyConnectionLimit(adminSql, login, limit);
+      await this.applyConnectionLimit(adminSql, login, limits.connectionLimitSql);
     }
+  }
+
+  /** Sets a database's connection limit only when it has none (-1). */
+  private async applyDatabaseConnectionLimit(adminSql: Db, dbName: string, limit: number): Promise<void> {
+    const [row] = await adminSql`
+      SELECT datconnlimit FROM pg_database WHERE datname = ${dbName}
+    `;
+    if (!row || Number((row as { datconnlimit: unknown }).datconnlimit) !== -1) return;
+    await adminSql.unsafe(`ALTER DATABASE ${quotePostgresIdentifier(dbName)} CONNECTION LIMIT ${limit}`);
+    this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on database ${dbName}`);
   }
 
   /** Sets a login's connection limit only when it has none (-1). */

@@ -192,10 +192,12 @@ RoleBinding to `eve-worker-tenant`), and the template's admission policy
 holds its writes there (see [deployment](deployment.md#worker-rights));
 each managed database accepts
 only its own logins (`CONNECT` is revoked from `PUBLIC`; the owner keeps it
-by ownership and declared roles by grant), and every login without a
-connection limit gets its class's limit (25, 100 or 200), applied at
-provisioning and once to existing tenants when the orchestrator starts. A
-limit an operator set is never changed. `eve db reset` and `wipe` reinstall
+by ownership and declared roles by grant), every login without a
+connection limit gets its class's limit (25, 100 or 200), and so does the
+database as a whole across all its logins, applied at provisioning, when a
+change to the tenant finishes and once to existing tenants when the
+orchestrator starts. A limit an operator set is never changed. A managed
+database declares at most 8 roles. `eve db reset` and `wipe` reinstall
 the extensions that lived in `public` and the declared roles' grants, in the
 same transaction as the drop. `eve db sql` reports an error in the tenant's
 own SQL as 400 with the Postgres code and message. Deleting an environment
