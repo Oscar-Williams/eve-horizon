@@ -96,30 +96,66 @@ describe('envIngressPolicies', () => {
   });
 });
 
-describe('podSecurityAdmissionLabels', () => {
-  it('under strict enforces the namespace level, beside warn and audit', () => {
-    expect(api.podSecurityAdmissionLabels('strict', 'restricted')).toEqual({
-      'pod-security.kubernetes.io/enforce': 'restricted',
-      'pod-security.kubernetes.io/enforce-version': 'latest',
-      'pod-security.kubernetes.io/warn': 'restricted',
-      'pod-security.kubernetes.io/audit': 'restricted',
-    });
-    expect(api.podSecurityAdmissionLabels('strict', 'baseline')['pod-security.kubernetes.io/enforce']).toBe('baseline');
-  });
+describe('podSecurityAdmissionPatch', () => {
+  const MARK = 'eve.horizon/pod-security-enforce';
+  const PSA = 'pod-security.kubernetes.io';
+  const none = { labels: {}, annotations: {} };
+  const patch = (input: Record<string, unknown>) => api.podSecurityAdmissionPatch({ current: none, ...input });
 
-  it('under audit sets warn and audit only, and takes enforce away', () => {
-    expect(api.podSecurityAdmissionLabels('audit', 'restricted')).toEqual({
-      'pod-security.kubernetes.io/enforce': null,
-      'pod-security.kubernetes.io/enforce-version': null,
-      'pod-security.kubernetes.io/warn': 'restricted',
-      'pod-security.kubernetes.io/audit': 'restricted',
+  it('under strict, before the workloads: warn and audit only, never a new enforce', () => {
+    expect(patch({ profile: 'strict', level: 'restricted', phase: 'before' })).toEqual({
+      labels: { [`${PSA}/warn`]: 'restricted', [`${PSA}/audit`]: 'restricted' },
+      annotations: {},
     });
   });
 
-  it('under legacy sets nothing, and takes away an enforce a strict profile left', () => {
-    expect(api.podSecurityAdmissionLabels('legacy', 'restricted')).toEqual({
-      'pod-security.kubernetes.io/enforce': null,
-      'pod-security.kubernetes.io/enforce-version': null,
+  it('under strict, after a rollout that succeeded: enforce at the level, pinned to a version (not latest), marked as set by Eve', () => {
+    const after = patch({ profile: 'strict', level: 'baseline', phase: 'after' });
+    expect(after.labels).toEqual({
+      [`${PSA}/enforce`]: 'baseline',
+      [`${PSA}/enforce-version`]: api.DEFAULT_POD_SECURITY_VERSION,
+      [`${PSA}/warn`]: 'baseline',
+      [`${PSA}/audit`]: 'baseline',
     });
+    expect(api.DEFAULT_POD_SECURITY_VERSION).toMatch(/^v1\.\d+$/);
+    expect(after.annotations).toEqual({ [MARK]: 'baseline' });
+    expect(patch({ profile: 'strict', level: 'restricted', phase: 'after', version: 'v1.31' }).labels[`${PSA}/enforce-version`]).toBe('v1.31');
+  });
+
+  it('writes only what differs', () => {
+    const current = {
+      labels: { [`${PSA}/enforce`]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30', [`${PSA}/warn`]: 'restricted', [`${PSA}/audit`]: 'restricted' },
+      annotations: { [MARK]: 'restricted' },
+    };
+    expect(patch({ profile: 'strict', level: 'restricted', phase: 'after', version: 'v1.30', current })).toEqual({ labels: {}, annotations: {} });
+    expect(patch({ profile: 'strict', level: 'restricted', phase: 'before', current })).toEqual({ labels: {}, annotations: {} });
+  });
+
+  it('under strict, before the workloads, lowers an enforce Eve set when the level drops, so the new pods are admitted', () => {
+    const current = { labels: { [`${PSA}/enforce`]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30' }, annotations: { [MARK]: 'restricted' } };
+    expect(patch({ profile: 'strict', level: 'baseline', phase: 'before', current })).toEqual({
+      labels: { [`${PSA}/enforce`]: 'baseline', [`${PSA}/warn`]: 'baseline', [`${PSA}/audit`]: 'baseline' },
+      annotations: { [MARK]: 'baseline' },
+    });
+  });
+
+  it('under audit and legacy removes an enforce Eve set, with its version and mark, and leaves one it did not set', () => {
+    const eves = { labels: { [`${PSA}/enforce`]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30' }, annotations: { [MARK]: 'restricted' } };
+    const operators = { labels: { [`${PSA}/enforce`]: 'baseline', [`${PSA}/enforce-version`]: 'v1.29' }, annotations: {} };
+    expect(patch({ profile: 'audit', level: 'restricted', phase: 'before', current: eves })).toEqual({
+      labels: { [`${PSA}/enforce`]: null, [`${PSA}/enforce-version`]: null, [`${PSA}/warn`]: 'restricted', [`${PSA}/audit`]: 'restricted' },
+      annotations: { [MARK]: null },
+    });
+    expect(patch({ profile: 'legacy', level: 'restricted', phase: 'before', current: eves })).toEqual({
+      labels: { [`${PSA}/enforce`]: null, [`${PSA}/enforce-version`]: null },
+      annotations: { [MARK]: null },
+    });
+    expect(patch({ profile: 'legacy', level: 'restricted', phase: 'before', current: operators })).toEqual({ labels: {}, annotations: {} });
+    expect(patch({ profile: 'audit', level: 'restricted', phase: 'before', current: operators }).labels[`${PSA}/enforce`]).toBeUndefined();
+  });
+
+  it('after the rollout changes nothing under audit and legacy', () => {
+    expect(patch({ profile: 'audit', level: 'restricted', phase: 'after' })).toEqual({ labels: {}, annotations: {} });
+    expect(patch({ profile: 'legacy', level: 'restricted', phase: 'after' })).toEqual({ labels: {}, annotations: {} });
   });
 });
