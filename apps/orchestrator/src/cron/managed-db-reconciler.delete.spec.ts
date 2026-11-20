@@ -195,6 +195,79 @@ describe('ManagedDbReconcilerService tenant drop', () => {
     });
   });
 
+  // The race: the reconciler's check finds the tenant live, then the delete
+  // lands (deleted_at set, status deleting) before the operation's failure is
+  // written. The row, faked here with the store's own rules (transitionStatus
+  // lets a deleted tenant move only to deleting, deleted or failed), must end
+  // queued for its drop, never at failed with its database kept.
+  describe('a delete that lands after the check and before the failure is written', () => {
+    beforeEach(() => {
+      vi.stubEnv('DATABASE_URL', 'postgres://eve:eve@localhost:5432/eve?sslmode=disable');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    function racingStore(tenant: ReturnType<typeof deletingTenant>, deletedAt: Date | null) {
+      const row = { status: tenant.status as string, deleted_at: deletedAt, token: null as string | null };
+      const overrides = {
+        acquireOperationLock: vi.fn(async (_id: string, token: string) => { row.token = token; return tenant; }),
+        // What the check reads: the tenant as it was before the delete.
+        findTenantById: vi.fn(async () => ({ ...tenant, deleted_at: null })),
+        findInstanceById: vi.fn().mockResolvedValue(instance),
+        transitionStatus: vi.fn(async (_id: string, token: string, status: string) => {
+          if (token !== row.token) return null;
+          if (row.deleted_at && !['deleting', 'deleted', 'failed'].includes(status)) return null;
+          row.status = status;
+          row.token = null;
+          return { ...tenant, status, deleted_at: row.deleted_at };
+        }),
+        failOperation: vi.fn(async (_id: string, token: string) => {
+          if (token !== row.token) return null;
+          row.status = row.deleted_at ? 'deleting' : 'failed';
+          row.token = null;
+          return { ...tenant, status: row.status, deleted_at: row.deleted_at };
+        }),
+      };
+      return { row, overrides };
+    }
+
+    const provisioning = () => deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
+
+    it('leaves a tenant whose operation failed queued for its drop', async () => {
+      const tenant = provisioning();
+      const { row, overrides } = racingStore(tenant, new Date());
+      const { service } = createService(tenant, overrides);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(createFakeSql(/^CREATE DATABASE/));
+
+      await service.reconcile();
+
+      expect(row.status).toBe('deleting');
+    });
+
+    it('leaves a tenant whose instance is gone queued for its drop', async () => {
+      const tenant = provisioning();
+      const { row, overrides } = racingStore(tenant, new Date());
+      const { service } = createService(tenant, { ...overrides, findInstanceById: vi.fn().mockResolvedValue(null) });
+
+      await service.reconcile();
+
+      expect(row.status).toBe('deleting');
+    });
+
+    it('still parks a failed operation at failed when no delete landed', async () => {
+      const tenant = provisioning();
+      const { row, overrides } = racingStore(tenant, null);
+      const { service } = createService(tenant, overrides);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(createFakeSql(/^CREATE DATABASE/));
+
+      await service.reconcile();
+
+      expect(row.status).toBe('failed');
+    });
+  });
+
   // A failed drop (its error recorded, updated_at its last try) is retried
   // after a wait that doubles with the time since the delete, from 1 minute
   // to at most an hour, so a failing drop or snapshot is not repeated every
