@@ -15,6 +15,7 @@ import {
   generateManagedDbRoleUser,
   generateManagedDbSnapshotId,
   generateManagedDbTenantRoleId,
+  getManagedDbLimits,
   createSnapshotStorageClient,
   executeSnapshot,
   resolveManagedDbSnapshotRetention,
@@ -65,6 +66,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   private readonly logger = new Logger(ManagedDbReconcilerService.name);
   private cronJob: CronJob | null = null;
   private reconciling = false;
+  /** The one-off isolation pass over existing tenants, started at boot. */
+  private isolationBackfill: Promise<void> | null = null;
 
   private readonly managedDb: ReturnType<typeof managedDbQueries>;
   private readonly snapshots: ReturnType<typeof managedDbSnapshotQueries>;
@@ -90,6 +93,12 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     if (process.env.EVE_MANAGED_DB_LOCAL_SEED === 'true') {
       await this.seedLocalInstance();
     }
+
+    // Tenants provisioned before isolation existed get it once, in the
+    // background, so a slow instance cannot hold up start-up.
+    this.isolationBackfill = this.isolateReadyTenants().catch((err) => {
+      this.logger.error(`[managed-db-reconciler] Isolation pass failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     const cron = process.env.EVE_MANAGED_DB_RECONCILER_CRON ?? '*/30 * * * * *';
 
@@ -306,6 +315,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       instance_id: string;
       db_name: string;
       db_user: string;
+      class: string;
       desired_class: string | null;
       desired_extensions: string[];
       enabled_extensions: string[];
@@ -715,7 +725,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    */
   private async provisionLocalDb(
     instance: { host: string; port: number },
-    tenant: { db_name: string; db_user: string },
+    tenant: { db_name: string; db_user: string; class: string },
   ): Promise<string> {
     const password = crypto.randomBytes(16).toString('hex');
     const adminSql = this.connectToInstance(instance);
@@ -751,6 +761,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           `CREATE DATABASE "${tenant.db_name}" OWNER "${tenant.db_user}"`,
         );
       }
+
+      await this.isolateLocalTenantDb(adminSql, tenant, []);
 
       return this.buildTenantConnectionUrl(instance, tenant, password);
     } finally {
@@ -821,7 +833,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    */
   private async applyLocalTenantRoleChanges(
     instance: { host: string; port: number },
-    tenant: { id: string; db_name: string; db_user: string },
+    tenant: { id: string; db_name: string; db_user: string; class: string },
     plan: { diff: ManagedDbRoleDiff<ManagedDbTenantRole>; provisioned: ManagedDbTenantRole[] },
   ): Promise<void> {
     const { diff, provisioned } = plan;
@@ -853,7 +865,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       for (const role of diff.create) {
         const roleUser = generateManagedDbRoleUser(tenant.db_user, role.name);
         const password = crypto.randomBytes(16).toString('hex');
-        await this.ensureLocalRoleLogin(adminSql, roleUser, password);
+        await this.ensureLocalRoleLogin(adminSql, roleUser, password, connectionLimitFor(tenant.class));
         await this.grantLocalTenantRole(adminSql, tenantSql, tenant, roleUser, role.grants);
         await this.managedDb.upsertTenantRole({
           id: generateManagedDbTenantRoleId(),
@@ -878,14 +890,86 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    * Create (or reset) a least-privilege login role. Idempotent so a retry
    * after a partial failure converges instead of erroring on "already exists".
    */
-  private async ensureLocalRoleLogin(adminSql: Db, roleUser: string, password: string): Promise<void> {
+  private async ensureLocalRoleLogin(
+    adminSql: Db,
+    roleUser: string,
+    password: string,
+    connectionLimit: number | null,
+  ): Promise<void> {
     const [existingRole] = await adminSql`
       SELECT 1 FROM pg_roles WHERE rolname = ${roleUser}
     `;
-    const attributes = `WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '${password}'`;
+    if (existingRole) {
+      await adminSql.unsafe(
+        `ALTER ROLE ${quotePostgresIdentifier(roleUser)} WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '${password}'`,
+      );
+      if (connectionLimit) await this.applyConnectionLimit(adminSql, roleUser, connectionLimit);
+      return;
+    }
+    const limit = connectionLimit ? ` CONNECTION LIMIT ${connectionLimit}` : '';
     await adminSql.unsafe(
-      `${existingRole ? 'ALTER' : 'CREATE'} ROLE ${quotePostgresIdentifier(roleUser)} ${attributes}`,
+      `CREATE ROLE ${quotePostgresIdentifier(roleUser)} WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT${limit} PASSWORD '${password}'`,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tenant isolation (local provider)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A tenant database accepts only its own logins: the owner (by ownership)
+   * and declared roles (granted CONNECT explicitly). Each login also gets its
+   * class's connection limit, unless one is already set, so an operator's
+   * own limit is never changed. Idempotent.
+   */
+  private async isolateLocalTenantDb(
+    adminSql: Db,
+    tenant: { db_name: string; db_user: string; class: string },
+    roleUsers: string[],
+  ): Promise<void> {
+    await adminSql.unsafe(`REVOKE CONNECT ON DATABASE ${quotePostgresIdentifier(tenant.db_name)} FROM PUBLIC`);
+    const limit = connectionLimitFor(tenant.class);
+    if (!limit) return;
+    for (const login of [tenant.db_user, ...roleUsers]) {
+      await this.applyConnectionLimit(adminSql, login, limit);
+    }
+  }
+
+  /** Sets a login's connection limit only when it has none (-1). */
+  private async applyConnectionLimit(adminSql: Db, login: string, limit: number): Promise<void> {
+    const [row] = await adminSql`
+      SELECT rolconnlimit FROM pg_roles WHERE rolname = ${login}
+    `;
+    if (!row || Number((row as { rolconnlimit: unknown }).rolconnlimit) !== -1) return;
+    await adminSql.unsafe(`ALTER ROLE ${quotePostgresIdentifier(login)} CONNECTION LIMIT ${limit}`);
+    this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on ${login}`);
+  }
+
+  /** One pass over every ready tenant on a local instance (start-up). */
+  private async isolateReadyTenants(): Promise<void> {
+    const instances = await this.managedDb.listInstances();
+    for (const instance of instances) {
+      if (instance.provider !== 'local') continue;
+      const tenants = (await this.managedDb.listTenantsByInstance(instance.id))
+        .filter((tenant) => tenant.status === 'ready' && !tenant.deleted_at);
+      if (tenants.length === 0) continue;
+      const adminSql = this.connectToInstance(instance);
+      try {
+        for (const tenant of tenants) {
+          try {
+            const roles = await this.managedDb.listTenantRoles(tenant.id);
+            await this.isolateLocalTenantDb(adminSql, tenant, roles.map((role) => role.db_user));
+          } catch (err) {
+            this.logger.error(
+              `[managed-db-reconciler] Could not isolate tenant ${tenant.id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        this.logger.log(`[managed-db-reconciler] Isolation pass: ${tenants.length} tenant(s) on ${instance.id}`);
+      } finally {
+        await adminSql.end();
+      }
+    }
   }
 
   private async grantLocalTenantRole(
@@ -994,4 +1078,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
     this.logger.log(`[managed-db-reconciler] Seeded local managed DB instance: ${instance.id} (${host}:${port})`);
   }
+}
+
+/** The class's per-login connection limit, or null for an unknown class. */
+function connectionLimitFor(dbClass: string): number | null {
+  return getManagedDbLimits(dbClass)?.connectionLimitSql ?? null;
 }

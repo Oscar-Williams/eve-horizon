@@ -145,9 +145,9 @@ describe('ManagedDbReconcilerService tenant roles', () => {
     await service.reconcile();
 
     expect(adminSql.statements).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-app" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '[0-9a-f]{32}'$`)),
+      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-app" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 25 PASSWORD '[0-9a-f]{32}'$`)),
       `GRANT CONNECT ON DATABASE "${DB}" TO "${OWNER}-app"`,
-      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-reports" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '[0-9a-f]{32}'$`)),
+      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-reports" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 25 PASSWORD '[0-9a-f]{32}'$`)),
       `GRANT CONNECT ON DATABASE "${DB}" TO "${OWNER}-reports"`,
     ]));
     expect(tenantSql.statements).toEqual([
@@ -240,7 +240,7 @@ describe('ManagedDbReconcilerService tenant roles', () => {
 
     // New role: created with a fresh credential.
     expect(adminSql.statements).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-new_role" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '[0-9a-f]{32}'$`)),
+      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-new_role" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 25 PASSWORD '[0-9a-f]{32}'$`)),
       `GRANT CONNECT ON DATABASE "${DB}" TO "${OWNER}-new_role"`,
     ]));
     expect(managedDb.upsertTenantRole).toHaveBeenCalledTimes(1);
