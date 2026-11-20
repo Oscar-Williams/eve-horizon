@@ -55,6 +55,9 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
         : k.claim === 'failed'
           ? { status: { conditions: [{ type: 'Ready', status: 'False', reason: 'InvalidMetadata' }] } }
           : { status: {} });
+    } else if (has('get', 'pods', '-l')) {
+      // The claimed pod, found by the attempt label the claim puts on it.
+      out = JSON.stringify({ items: [{ metadata: { name: 'eve-runner-chat-x1' }, status: { phase: k.podPhase, podIP: '10.1.0.7' } }] });
     } else if (has('get', 'pod')) {
       out = JSON.stringify({ status: { phase: k.podPhase, podIP: '10.2.0.9', conditions: [{ type: 'Ready', status: 'True' }] } });
     }
