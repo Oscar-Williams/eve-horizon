@@ -420,6 +420,21 @@ describe('service token renewal', () => {
     expect(issuer.mintServiceToken).not.toHaveBeenCalled();
   });
 
+  it('renews one environment on request (a rotation), its revoked tokens even with the hourly pass off', async () => {
+    process.env.EVE_SERVICE_TOKEN_RENEW_DAYS = '0';
+    mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
+      { ...ENV, service_tokens_not_before: new Date(NOW) },
+    ]);
+    const revoked = serviceToken({ days: 80, issuedAgo: 5 });
+    cluster.addService('api', { EVE_SERVICE_TOKEN: revoked });
+
+    const renewed = await renewal.renewEnvironment('env_prod');
+
+    expect(mocks.environments.listForServiceTokenRenewal).toHaveBeenCalledWith('env_prod');
+    expect(renewed).toEqual([expect.objectContaining({ env_id: 'env_prod', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' })]);
+    expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(revoked);
+  });
+
   it('renews nothing with EVE_SERVICE_TOKEN_RENEW_DAYS=0', async () => {
     process.env.EVE_SERVICE_TOKEN_RENEW_DAYS = '0';
     const old = serviceToken({ days: 1, key: retired });
