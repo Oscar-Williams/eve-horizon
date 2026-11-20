@@ -449,12 +449,24 @@ The admission policies live in their own kustomization, `k8s/admission`
 writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
 SandboxTemplates), in every namespace: no DaemonSet, no privileged
 container, no host namespace (`hostNetwork`, `hostPID`, `hostIPC`), no
-`hostPath`, no `hostPort`, no capability beyond Pod Security baseline, and a
+`hostPath`, no ephemeral volume (its claim template could clone another
+claim), no `hostPort`, no capability beyond Pod Security baseline, and a
 service account of `default`, `eve-runner` or, outside `eve`, an app account
 (`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label
 (`app.kubernetes.io/name`, `app`: they name the platform's own pods to
 network policies), any Secret but `kaniko-cfg-*` (volumes, `env`,
 `envFrom`), and any claim but `eve-ws-*` and `eve-org-fs-*`.
+
+`eve-worker-platform-guard` holds every write of the worker's in `eve`
+(create, update and delete) to what it makes there, judged by name or label
+on the object before and after the write: Secrets named `kaniko-cfg-*`;
+claims named `eve-ws-*` or `eve-org-fs-*` that clone or bind no volume (no
+`dataSource`, `dataSourceRef`, `volumeName` or `selector`); pods labelled
+`eve.type=runner` or `eve.horizon/component=kaniko-build`, and Jobs with the
+kaniko label; NetworkPolicies and FQDN policies labelled
+`eve.horizon/egress`; nothing else. So the worker can neither replace nor
+remove the platform's Secrets (`eve-app`), pods, claims, Jobs or policies,
+whatever its Role in `eve` allows by verb.
 `x-eve.networking.egress: stable` on EKS runs a host-network pod, which the
 guard refuses: an instance that needs it drops that rule in its overlay.
 

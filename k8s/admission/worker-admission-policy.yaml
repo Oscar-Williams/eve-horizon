@@ -29,10 +29,26 @@
 #   namespace) an app account: eve-app (IRSA) or eve-app-<env> (GKE Workload
 #   Identity). x-eve.networking.egress: stable on EKS (hostNetwork) is
 #   refused: drop that rule in the instance overlay to run it.
+# - no ephemeral volume (its claim template could clone any claim in the
+#   namespace, and the claim is made by a controller, not the worker);
 # - in the platform namespace, where only runner pods (org filesystem jobs)
 #   and kaniko builds belong: no workload name label (app.kubernetes.io/name,
 #   app, which name the platform's own pods to network policies), no Secret
 #   but kaniko-cfg-*, no claim but eve-ws-* and eve-org-fs-*.
+#
+# eve-worker-platform-guard, on every write in the platform namespace (eve),
+# where the platform's own pods, Secrets, volumes and policies live: the
+# worker writes there only what it makes there, judged by name or label on
+# the object before the write (update, delete) and after it (create, update):
+# - Secrets named kaniko-cfg-* (a kaniko build's credentials);
+# - claims named eve-ws-* or eve-org-fs-* that clone or bind no existing
+#   volume (no dataSource, dataSourceRef, volumeName or selector, and a
+#   volumeName never changed);
+# - pods labelled eve.type=runner (plain runner pods) or
+#   eve.horizon/component=kaniko-build, and Jobs with that kaniko label;
+# - NetworkPolicies and GKE FQDN policies labelled eve.horizon/egress (the
+#   runner egress policies);
+# - nothing else.
 #
 # Cluster-scoped: kustomize stamps a namespace on them in overlays that set
 # one; the API server ignores it.
@@ -189,6 +205,8 @@ spec:
       message: "Pods the Eve worker writes use no host namespace (hostNetwork, hostPID, hostIPC)"
     - expression: "variables.volumes.all(v, !has(v.hostPath))"
       message: "Pods the Eve worker writes mount no hostPath volume"
+    - expression: "variables.volumes.all(v, !has(v.ephemeral))"
+      message: "Pods the Eve worker writes have no ephemeral volume (its claim template could clone another claim)"
     - expression: >-
         variables.containers.all(c, !has(c.securityContext) ||
         !has(c.securityContext.privileged) || !c.securityContext.privileged)
@@ -233,4 +251,88 @@ metadata:
   name: eve-worker-workload-guard
 spec:
   policyName: eve-worker-workload-guard
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eve-worker-platform-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["*/*"]
+  matchConditions:
+    - name: the-worker
+      expression: "request.userInfo.username == 'system:serviceaccount:eve:eve-worker'"
+    - name: in-the-platform-namespace
+      expression: "request.namespace == 'eve'"
+  variables:
+    - name: kind
+      expression: "request.resource.group + '/' + request.resource.resource"
+    # What the write leaves (create, update) and what it changes (update,
+    # delete): each must pass.
+    - name: checksNew
+      expression: "request.operation != 'DELETE'"
+    - name: checksOld
+      expression: "request.operation != 'CREATE'"
+    - name: name
+      expression: "variables.checksNew ? object.metadata.name : oldObject.metadata.name"
+    - name: newLabels
+      expression: "variables.checksNew && has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: oldLabels
+      expression: "variables.checksOld && has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    - name: newIsKaniko
+      expression: "'eve.horizon/component' in variables.newLabels && variables.newLabels['eve.horizon/component'] == 'kaniko-build'"
+    - name: oldIsKaniko
+      expression: "'eve.horizon/component' in variables.oldLabels && variables.oldLabels['eve.horizon/component'] == 'kaniko-build'"
+    - name: newIsRunner
+      expression: "'eve.type' in variables.newLabels && variables.newLabels['eve.type'] == 'runner'"
+    - name: oldIsRunner
+      expression: "'eve.type' in variables.oldLabels && variables.oldLabels['eve.type'] == 'runner'"
+  validations:
+    - expression: >-
+        variables.kind in ['/secrets', '/persistentvolumeclaims', '/pods', 'batch/jobs',
+        'networking.k8s.io/networkpolicies', 'networking.gke.io/fqdnnetworkpolicies']
+      message: "In the platform namespace the Eve worker writes only kaniko build Secrets and Jobs, runner pods and claims, and runner egress policies"
+    - expression: "variables.kind != '/secrets' || variables.name.startsWith('kaniko-cfg-')"
+      message: "In the platform namespace the Eve worker writes no Secret but kaniko build credentials (kaniko-cfg-*)"
+    - expression: >-
+        variables.kind != '/persistentvolumeclaims' ||
+        variables.name.startsWith('eve-ws-') || variables.name.startsWith('eve-org-fs-')
+      message: "In the platform namespace the Eve worker writes no claim but runner workspaces (eve-ws-*) and the org filesystem (eve-org-fs-*)"
+    - expression: >-
+        variables.kind != '/persistentvolumeclaims' || request.operation != 'CREATE' ||
+        (!has(object.spec.dataSource) && !has(object.spec.dataSourceRef) &&
+         !has(object.spec.volumeName) && !has(object.spec.selector))
+      message: "In the platform namespace a claim the Eve worker creates clones and binds no existing volume (dataSource, dataSourceRef, volumeName, selector)"
+    - expression: >-
+        variables.kind != '/persistentvolumeclaims' || request.operation != 'UPDATE' ||
+        (has(object.spec.volumeName) ? object.spec.volumeName : '') ==
+        (has(oldObject.spec.volumeName) ? oldObject.spec.volumeName : '')
+      message: "In the platform namespace the Eve worker never changes a claim's volumeName"
+    - expression: >-
+        variables.kind != '/pods' ||
+        ((!variables.checksNew || variables.newIsRunner || variables.newIsKaniko) &&
+         (!variables.checksOld || variables.oldIsRunner || variables.oldIsKaniko))
+      message: "In the platform namespace the Eve worker writes only runner pods (eve.type=runner) and kaniko build pods (eve.horizon/component=kaniko-build)"
+    - expression: >-
+        variables.kind != 'batch/jobs' ||
+        ((!variables.checksNew || variables.newIsKaniko) && (!variables.checksOld || variables.oldIsKaniko))
+      message: "In the platform namespace the Eve worker writes only kaniko build Jobs (eve.horizon/component=kaniko-build)"
+    - expression: >-
+        !(variables.kind in ['networking.k8s.io/networkpolicies', 'networking.gke.io/fqdnnetworkpolicies']) ||
+        ((!variables.checksNew || 'eve.horizon/egress' in variables.newLabels) &&
+         (!variables.checksOld || 'eve.horizon/egress' in variables.oldLabels))
+      message: "In the platform namespace the Eve worker writes only its own egress policies (labelled eve.horizon/egress)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eve-worker-platform-guard
+spec:
+  policyName: eve-worker-platform-guard
   validationActions: [Deny]
