@@ -365,6 +365,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       await this.applyLocalTenantRoleChanges(instance, tenant, rolePlan);
     }
 
+    // Isolation is applied again on every change (idempotent), so a tenant
+    // that changed after the start-up pass is not left without it.
+    const instance = await this.managedDb.findInstanceById(tenant.instance_id);
+    if (instance?.provider === 'local') {
+      await this.isolateTenant(instance, tenant);
+    }
+
     if (tenant.desired_class) {
       this.logger.log(`[managed-db-reconciler] Scaling tenant ${tenant.id} to ${tenant.desired_class}`);
     }
@@ -956,6 +963,20 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     if (!row || Number((row as { rolconnlimit: unknown }).rolconnlimit) !== -1) return;
     await adminSql.unsafe(`ALTER ROLE ${quotePostgresIdentifier(login)} CONNECTION LIMIT ${limit}`);
     this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on ${login}`);
+  }
+
+  /** Isolates one tenant (with its declared roles) on a local instance. */
+  private async isolateTenant(
+    instance: { host: string; port: number },
+    tenant: { id: string; db_name: string; db_user: string; class: string },
+  ): Promise<void> {
+    const adminSql = this.connectToInstance(instance);
+    try {
+      const roles = await this.managedDb.listTenantRoles(tenant.id);
+      await this.isolateLocalTenantDb(adminSql, tenant, roles.map((role) => role.db_user));
+    } finally {
+      await adminSql.end();
+    }
   }
 
   /** One pass over every ready tenant on a local instance (start-up). */
