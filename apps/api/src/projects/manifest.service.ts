@@ -11,6 +11,7 @@ import {
   appLinkSubscriptionQueries,
   membershipQueries,
   agentConfigQueries,
+  systemSettingsQueries,
   type Project,
   type ProjectAppLinkGrant,
 } from '@eve/db';
@@ -57,6 +58,10 @@ import {
   findUndeclaredHarnessNames,
   describeHarnessNameGaps,
   alwaysRefusedEnvKeys,
+  egressHostAddressProblems,
+  manifestEgressHosts,
+  NETWORK_PRIVATE_CIDRS_SETTING,
+  parseCidrList,
   type AppLinks,
   type Service,
 } from '@eve/shared';
@@ -116,6 +121,8 @@ export class ManifestService {
   private appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
   private memberships: ReturnType<typeof membershipQueries>;
   private agentConfigs: ReturnType<typeof agentConfigQueries>;
+  /** Every address a declared egress host resolves to (the system resolver; tests replace it). */
+  private resolveHost?: (host: string) => Promise<string[]>;
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -320,6 +327,7 @@ export class ManifestService {
       authEnabled: loadConfig().EVE_AUTH_ENABLED,
     });
 
+    await this.checkEgressHostAddresses(validatedManifest);
     await this.checkReservedEnvOverrides(projectId, validatedManifest, caller);
     const profileWarnings = await this.checkWorkflowHarnessProfiles(projectId, validatedManifest, caller);
     const privateDomainWarnings = this.privateServiceDomainWarnings(validatedManifest);
@@ -395,6 +403,31 @@ export class ManifestService {
     if (secretValidation) response.secret_validation = secretValidation;
     if (warnings) response.warnings = warnings;
     return response;
+  }
+
+  /**
+   * egress.allow_hosts: each exact host the manifest declares (project and
+   * service lists) is resolved once; one that resolves to a private, CGNAT,
+   * link-local or loopback address, or into the instance's
+   * `network.private_cidrs`, is refused, since an FQDN policy would open
+   * that address to the project's pods. DNS can change later; this stops a
+   * mistake or a naive attempt, not the owner of the name's DNS.
+   */
+  private async checkEgressHostAddresses(manifest: Manifest): Promise<void> {
+    const lists = manifestEgressHosts(manifest);
+    const hosts = [...lists.project, ...Object.values(lists.services).flat()];
+    if (!hosts.some((host) => host.name)) return;
+    const setting = await systemSettingsQueries(this.db).get(NETWORK_PRIVATE_CIDRS_SETTING);
+    const problems = await egressHostAddressProblems(hosts, {
+      privateCidrs: parseCidrList(setting?.value).cidrs,
+      ...(this.resolveHost ? { resolve: this.resolveHost } : {}),
+    });
+    if (problems.length > 0) {
+      throw new BadRequestException(
+        `x-eve.egress.hosts refused: ${problems.join('; ')}. An allow list opens internet hosts only; ` +
+          'in-cluster and private peers (managed databases, app links) are allowed without an entry',
+      );
+    }
   }
 
   /**

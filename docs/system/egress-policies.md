@@ -195,6 +195,13 @@ from `audit` to `strict` takes effect at the next job).
   name opens the CDN's other customers.
 - **DNS:** lookups succeed for any name, so a pod can still leak data in
   DNS queries to a name server it does not control.
+- **Names that move:** the API resolves each declared name at sync and
+  refuses one that points at a private, CGNAT, link-local or loopback
+  address or into `network.private_cidrs`, and refuses names under wildcard
+  DNS services. GKE resolves the names again on its own schedule, so a name
+  whose owner later points it inside the network opens that address. Test
+  this on the cluster (a name moved to a private address after sync) before
+  setting `EVE_EGRESS_FQDN_PROVIDER=gke`.
 - **Model APIs:** an allowed model API (and the git host) accepts any
   account's key, so job code can still send data out through it under a key
   of its own. Only the harnesses a project can run are allowed, which keeps
