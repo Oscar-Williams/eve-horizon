@@ -43,6 +43,8 @@
  *   exclusions, are refused.
  * - A checkout MCP server that names a credential or routing variable is
  *   refused for every harness.
+ * - A settings file the scan cannot parse (JSON; Gemini's JSON with
+ *   comments; TOML) is `(unreadable)`, and refused.
  * - A harness with no confirmed mechanism is refused.
  */
 
@@ -210,26 +212,27 @@ export function cleanClaudeSettings(value: unknown): Record<string, unknown> {
  * user settings. A config directory inside the checkout that sets routing is
  * refused: it would have to be edited. So is an MCP server, in `.mcp.json`
  * or the config directory's `.claude.json`, that names a credential or
- * routing variable.
+ * routing variable, and any of these files that cannot be parsed.
  */
 export function strictClaudeSettingsArgs(workspace: string, configDir: string | undefined, harness = 'claude'): string[] {
-  refuseMcpHandoffs(checkoutMcpFindings(workspace, harness, configDir));
-  if (configDir) {
-    const userSettingsPath = path.join(configDir, 'settings.json');
-    const user = readJson(userSettingsPath);
-    if (claudeRoutingSettings(user).length > 0) {
-      if (isInside(workspace, configDir)) {
-        throw new Error(checkoutSettingsRefusal(
-          `The harness config directory ${path.relative(workspace, configDir)} in the checkout sets routing settings`,
-        ));
-      }
-      fs.writeFileSync(userSettingsPath, JSON.stringify(cleanClaudeSettings(user), null, 2));
+  refuseFindings(checkoutMcpFindings(workspace, harness, configDir));
+  const [project, local] = CLAUDE_CHECKOUT_FILES.map((name) => readJson(path.join(workspace, name)));
+  const userSettingsPath = configDir ? path.join(configDir, 'settings.json') : undefined;
+  const user = userSettingsPath ? readJson(userSettingsPath) : null;
+  refuseFindings([
+    { file: CLAUDE_CHECKOUT_FILES[0], value: project },
+    { file: CLAUDE_CHECKOUT_FILES[1], value: local },
+    ...(configDir ? [{ file: configLabel(workspace, harness, configDir, 'settings.json'), value: user }] : []),
+  ].filter(({ value }) => value === UNPARSED).map(({ file }) => ({ file, settings: [UNREADABLE] })));
+  if (configDir && userSettingsPath && claudeRoutingSettings(user).length > 0) {
+    if (isInside(workspace, configDir)) {
+      throw new Error(checkoutSettingsRefusal(
+        `The harness config directory ${path.relative(workspace, configDir)} in the checkout sets routing settings`,
+      ));
     }
+    fs.writeFileSync(userSettingsPath, JSON.stringify(cleanClaudeSettings(user), null, 2));
   }
-  const merged = mergeSettings(
-    readJson(path.join(workspace, '.claude', 'settings.json')),
-    readJson(path.join(workspace, '.claude', 'settings.local.json')),
-  );
+  const merged = mergeSettings(project, local);
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eve-claude-settings-')), 'settings.json');
   fs.writeFileSync(file, JSON.stringify(cleanClaudeSettings(merged), null, 2), { mode: 0o600 });
   return ['--settings', file, '--setting-sources', 'user'];
@@ -262,7 +265,7 @@ export function strictCodexArgs(workspace: string, codexHome: string | undefined
  * credential or routing variable.
  */
 export function strictGeminiSystemSettings(workspace: string): { advanced: { excludedEnvVars: string[] } } {
-  refuseMcpHandoffs(checkoutMcpFindings(workspace, 'gemini'));
+  refuseFindings(checkoutMcpFindings(workspace, 'gemini'));
   const pinned = envFileRoutingNames(readText(path.join(workspace, '.gemini', '.env')));
   if (pinned.length > 0) {
     throw new Error(checkoutSettingsRefusal(`The checkout's .gemini/.env sets ${pinned.join(', ')}`));
@@ -313,6 +316,7 @@ const GEMINI_ENV_FILES = ['.gemini/.env', '.env'];
 const GEMINI_DEFAULT_EXCLUDED_ENV_VARS = ['DEBUG', 'DEBUG_MODE'];
 
 function claudeRoutingSettings(value: unknown): string[] {
+  if (value === UNPARSED) return [UNREADABLE];
   if (!isRecord(value)) return [];
   const settings: string[] = [];
   if ('apiKeyHelper' in value) settings.push('apiKeyHelper');
@@ -343,7 +347,7 @@ function codexRoutingSettings(text: string | null, harness: string): string[] {
   try {
     doc = parseToml(text);
   } catch {
-    return ['(unreadable)'];
+    return [UNREADABLE];
   }
   const settings = new Set<string>();
   const walk = (table: TomlTable, keys: string[]) => {
@@ -460,18 +464,19 @@ const ENV_REFERENCE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g;
  * references, and a header helper runs in a shell that can.
  */
 function checkoutMcpFindings(workspace: string, harness: string, configDir?: string): CheckoutRoutingFinding[] {
-  const files: Array<[string, string]> = checkoutSettingsMechanism(harness) === 'gemini'
-    ? [['.gemini/settings.json', path.join(workspace, '.gemini', 'settings.json')]]
+  const files: Array<[string, unknown]> = checkoutSettingsMechanism(harness) === 'gemini'
+    ? [['.gemini/settings.json', readJson(path.join(workspace, '.gemini', 'settings.json'), parseJsonWithComments)]]
     : [
-      ['.mcp.json', path.join(workspace, '.mcp.json')],
-      ...(configDir ? [[configLabel(workspace, harness, configDir, '.claude.json'), path.join(configDir, '.claude.json')] as [string, string]] : []),
+      ['.mcp.json', readJson(path.join(workspace, '.mcp.json'))],
+      ...(configDir ? [[configLabel(workspace, harness, configDir, '.claude.json'), readJson(path.join(configDir, '.claude.json'))] as [string, unknown]] : []),
     ];
   return files
-    .map(([file, full]) => ({ file, settings: jsonMcpHandoffs(readJson(full), harness) }))
+    .map(([file, value]) => ({ file, settings: jsonMcpHandoffs(value, harness) }))
     .filter((finding) => finding.settings.length > 0);
 }
 
 function jsonMcpHandoffs(value: unknown, harness: string): string[] {
+  if (value === UNPARSED) return [UNREADABLE];
   if (!isRecord(value)) return [];
   const found: string[] = [];
   const scan = (item: unknown, at: string) => {
@@ -494,10 +499,10 @@ function jsonMcpHandoffs(value: unknown, harness: string): string[] {
   return [...new Set(found)];
 }
 
-function refuseMcpHandoffs(findings: CheckoutRoutingFinding[]): void {
+function refuseFindings(findings: CheckoutRoutingFinding[]): void {
   if (findings.length === 0) return;
   const named = findings.flatMap((finding) => finding.settings.map((setting) => `${finding.file}: ${setting}`));
-  throw new Error(checkoutSettingsRefusal(`A checkout MCP server takes a credential or routing variable: ${named.join(', ')}`));
+  throw new Error(checkoutSettingsRefusal(`Checkout settings hand over a credential or routing variable, or cannot be read: ${named.join(', ')}`));
 }
 
 function isTable(value: TomlValue | undefined): value is TomlTable {
@@ -558,14 +563,25 @@ function readText(file: string): string | null {
   }
 }
 
-function readJson(file: string): unknown {
+/** The setting a file that exists but cannot be parsed stands for. */
+const UNREADABLE = '(unreadable)';
+/** What `readJson` returns for a file that exists but cannot be parsed. */
+const UNPARSED = Symbol('unparsed');
+
+/** A JSON file's value: null when it does not exist, `UNPARSED` when it cannot be parsed. */
+function readJson(file: string, parse: (text: string) => unknown = JSON.parse): unknown {
   const text = readText(file);
   if (text === null) return null;
   try {
-    return JSON.parse(text);
+    return parse(text);
   } catch {
-    return null;
+    return UNPARSED;
   }
+}
+
+/** JSON with `//` and block comments outside strings, which Gemini CLI strips before parsing its settings. */
+function parseJsonWithComments(text: string): unknown {
+  return JSON.parse(text.replace(/("(?:\\.|[^"\\])*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_comment, string?: string) => string ?? ' '));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
