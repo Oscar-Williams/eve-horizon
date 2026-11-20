@@ -83,7 +83,7 @@ names allow no `_`); the label keeps the real id.
 |---|---|
 | `legacy` | `eve-runner-<project>-audit` alone (allows all egress): the static deny would otherwise leave the project's jobs DNS and the API. |
 | `audit` | `eve-runner-<project>-audit`, then `eve-runner-<project>`. |
-| `strict` | `eve-runner-<project>`: DNS, the API's public port, the ingress controller, the internet rule above, the project's own env namespaces (any port, for app APIs) and its app-link producers. |
+| `strict` | `eve-runner-<project>`: DNS, the API's public port, the ingress controller, the internet rule above, the project's own env namespaces (any port, for app APIs) and its app-link producers: for a link with a fixed producer env, that env whether or not the project has environments of its own (jobs resolve such links with none); for a `same` link, the producer env of each of the project's envs. |
 
 The worker writes them at deploy and reconcile. Before it starts a runner
 pod, it checks the project's set and writes only when a namespace lacks it or
