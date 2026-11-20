@@ -82,6 +82,7 @@ const db = vi.hoisted(() => {
   };
   const oauthAppConfigs = {
     countClientSecretFormats: vi.fn(async () => ({ plain: state.storage.plainClientSecrets, sealed: 0 })),
+    countSigningSecretFormats: vi.fn(async () => ({ plain: 0, sealed: 0 })),
   };
 
   const environments = {

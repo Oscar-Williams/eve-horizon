@@ -150,6 +150,8 @@ export const SecretStorageCountsSchema = z.object({
   secrets: z.object({ v1: z.number(), v2: z.number(), other: z.number() }),
   integration_tokens: z.object({ plain: z.number(), sealed: z.number() }),
   oauth_client_secrets: z.object({ plain: z.number(), sealed: z.number() }),
+  /** Slack signing secrets in OAuth app configs (`config_json.signing_secret`). */
+  oauth_signing_secrets: z.object({ plain: z.number(), sealed: z.number() }),
 });
 
 export type SecretStorageCounts = z.infer<typeof SecretStorageCountsSchema>;
@@ -164,6 +166,7 @@ export const SecretsReencryptResponseSchema = z.object({
     secrets: z.number(),
     integration_tokens: z.number(),
     oauth_client_secrets: z.number(),
+    oauth_signing_secrets: z.number(),
   }),
   skipped: z.object({
     /** Rows written while this pass ran: they keep their new value; the next pass takes them. */

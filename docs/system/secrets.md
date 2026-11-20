@@ -62,14 +62,16 @@ keys or instances.
 ## Storage at rest
 
 Secret values are encrypted with AES-256-GCM under `EVE_SECRETS_MASTER_KEY`.
-Integration tokens (`integrations.tokens_json`) and OAuth app client secrets
-(`oauth_app_configs.client_secret`) are covered too.
+Integration tokens (`integrations.tokens_json`), OAuth app client secrets
+(`oauth_app_configs.client_secret`) and Slack signing secrets
+(`oauth_app_configs.config_json.signing_secret`, field `signing_secret`) are
+covered too.
 
 | Format | What it is |
 |---|---|
 | `v1:iv:tag:data` | A secret encrypted with no associated data. |
-| `v2:iv:tag:data` | A secret encrypted with associated data `scope_type\|scope_id\|key`: it opens only in its own row. Integration tokens and client secrets use the same envelope with `table\|id\|field`. |
-| plain | Integration tokens and client secrets before re-encryption. |
+| `v2:iv:tag:data` | A secret encrypted with associated data `scope_type\|scope_id\|key`: it opens only in its own row. Integration tokens, client secrets and signing secrets use the same envelope with `table\|id\|field`. |
+| plain | Integration tokens, client secrets and signing secrets before re-encryption. |
 
 Every release from 0.1.327 reads all three. New writes stay `v1` (and plain
 for the OAuth columns) until a system admin runs the re-encryption command,

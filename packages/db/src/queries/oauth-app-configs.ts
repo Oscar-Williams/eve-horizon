@@ -8,6 +8,7 @@ export interface OAuthAppConfig {
   client_id: string;
   /** Plain, or a `v2` envelope once the instance seals credentials at rest. */
   client_secret: string;
+  /** `signing_secret` (Slack) is plain, or a `v2` envelope like `client_secret`. */
   config_json: Record<string, unknown>;
   label: string | null;
   status: string;
@@ -99,6 +100,50 @@ export function oauthAppConfigQueries(db: Db) {
       const result = await db`
         UPDATE oauth_app_configs SET client_secret = ${to}
         WHERE id = ${id} AND client_secret = ${from}
+      `;
+      return result.count > 0;
+    },
+
+    /** Set the Slack signing secret in a config, leaving the rest of `config_json`. */
+    async updateSigningSecret(id: string, signingSecret: string): Promise<boolean> {
+      const result = await db`
+        UPDATE oauth_app_configs
+        SET config_json = jsonb_set(config_json, '{signing_secret}', to_jsonb(${signingSecret}::text))
+        WHERE id = ${id}
+      `;
+      return result.count > 0;
+    },
+
+    /** Signing secrets (`config_json.signing_secret`) by how they are stored: plain or a whole `v2` envelope. */
+    async countSigningSecretFormats(): Promise<{ plain: number; sealed: number }> {
+      const [row] = await db<{ plain: number; sealed: number }[]>`
+        SELECT
+          COUNT(*) FILTER (WHERE config_json->>'signing_secret' !~ ${SEALED_ENVELOPE_PATTERN})::int AS plain,
+          COUNT(*) FILTER (WHERE config_json->>'signing_secret' ~ ${SEALED_ENVELOPE_PATTERN})::int AS sealed
+        FROM oauth_app_configs
+        WHERE COALESCE(config_json->>'signing_secret', '') <> ''
+      `;
+      return { plain: row?.plain ?? 0, sealed: row?.sealed ?? 0 };
+    },
+
+    /** Up to `limit` configs whose signing secret is plain, after `afterId`, in id order. */
+    async listPlainSigningSecrets(afterId: string, limit: number): Promise<Array<{ id: string; signing_secret: string }>> {
+      return db<Array<{ id: string; signing_secret: string }>>`
+        SELECT id, config_json->>'signing_secret' AS signing_secret FROM oauth_app_configs
+        WHERE COALESCE(config_json->>'signing_secret', '') <> ''
+          AND config_json->>'signing_secret' !~ ${SEALED_ENVELOPE_PATTERN}
+          AND id > ${afterId}
+        ORDER BY id
+        LIMIT ${limit}
+      `;
+    },
+
+    /** Replace a signing secret only while it still holds `from`. */
+    async swapSigningSecret(id: string, from: string, to: string): Promise<boolean> {
+      const result = await db`
+        UPDATE oauth_app_configs
+        SET config_json = jsonb_set(config_json, '{signing_secret}', to_jsonb(${to}::text))
+        WHERE id = ${id} AND config_json->>'signing_secret' = ${from}
       `;
       return result.count > 0;
     },
