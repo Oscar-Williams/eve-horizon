@@ -154,9 +154,26 @@ harness hosts and the git host.
 The rule is rule set 3: a profile stamped before it runs it as `audit`, and
 under rule set 3 `strict` makes `egress.default_deny` strict too.
 
-Dispatch writes a project's runner FQDN policies when their names differ
-from what its manifest, harnesses and repository want (a first job, a
-changed list), before the pod starts.
+Order and failures: a deploy, dispatch or reconcile writes the
+NetworkPolicies first (in every runner namespace), then the FQDN policies.
+A failed FQDN write (the CRD missing, the feature off, a refusal) never
+leaves an older, wider NetworkPolicy behind:
+
+- under `strict` it fails the deploy, and a job of the project is refused
+  ("The runner egress policies of project ... could not be written, so the
+  strict profile refuses the job"); until the hosts are written the
+  project's pods have no internet at all. A job is refused the same way
+  under a strict `egress.default_deny` whenever its runner NetworkPolicies
+  cannot be written.
+- under `audit` it is logged and recorded (`reason: fqdn_write_failed`),
+  and blocks nothing.
+
+Dispatch writes a project's runner policies when what a runner namespace
+holds differs from what its profiles, manifest, harnesses, repository, envs
+and app links want: FQDN policies by name (a name is a hash of the host and
+port), runner NetworkPolicies by name and content (each carries
+`eve.horizon/spec-hash`, a hash of its spec, so an `egress.allow_hosts` move
+from `audit` to `strict` takes effect at the next job).
 
 ### Leaks
 
