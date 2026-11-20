@@ -62,6 +62,8 @@ import {
   type TcpIngressConfig,
   EGRESS_RULE,
   ALLOW_HOSTS_RULE,
+  POD_SECURITY_ADMISSION_RULE,
+  podSecurityAdmissionLabels,
   EgressProviderMissingError,
   egressFqdnProvider,
   WORKLOAD_IDENTITY_LABEL,
@@ -439,6 +441,11 @@ export class DeployerService {
         ...podSecurityNamespaceLabels(renderResult.podSecurityLevel ?? 'restricted'),
       }, { ownerLabel: 'eve.env_id' });
     }
+
+    await this.applyPodSecurityAdmission(
+      { orgId: project.org_id, projectId: project.id, envName: environment.name, namespace },
+      renderResult.podSecurityLevel ?? 'restricted',
+    );
 
     await this.applyEgressPolicies(
       { id: envId, projectId: project.id, name: environment.name, namespace },
@@ -2892,6 +2899,50 @@ export class DeployerService {
       this.logger.warn(
         `Could not write the runner egress policies of project ${env.projectId}: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+  }
+
+  /**
+   * isolation.pod_security_admission: the namespace's Pod Security labels
+   * (`enforce` at its level under strict, `warn` and `audit` under audit;
+   * an `enforce` a strict profile left is removed otherwise), written only
+   * when they differ, before the workloads. Under strict a failure stops the
+   * deploy; otherwise it is logged.
+   */
+  private async applyPodSecurityAdmission(
+    scope: { orgId: string; projectId: string; envName: string; namespace: string },
+    level: 'restricted' | 'baseline',
+  ): Promise<void> {
+    const profile = await governingSecurityProfile(this.db, {
+      projectId: scope.projectId,
+      governing: 'project',
+      rule: POD_SECURITY_ADMISSION_RULE,
+    });
+    if (profile !== 'legacy') {
+      await decideSecurityRule(this.db, POD_SECURITY_ADMISSION_RULE, {
+        orgId: scope.orgId,
+        projectId: scope.projectId,
+        governing: 'project',
+        actorType: 'deployer',
+        actorId: scope.envName,
+        detail: { env: scope.envName, level, enforce: profile === 'strict' },
+      });
+    }
+    try {
+      const wanted = podSecurityAdmissionLabels(profile, level);
+      const current = (await this.k8sService.getNamespaceLabels(scope.namespace)) ?? {};
+      const patch = Object.fromEntries(Object.entries(wanted)
+        .filter(([key, value]) => (value === null ? key in current : current[key] !== value)));
+      if (Object.keys(patch).length > 0) await this.k8sService.setNamespaceLabels(scope.namespace, patch);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (profile === 'strict') {
+        throw new Error(
+          `The strict profile needs Pod Security enforce on namespace ${scope.namespace}, which could not be set: ${message} ` +
+            `(rule ${POD_SECURITY_ADMISSION_RULE})`,
+        );
+      }
+      this.logger.warn(`Could not set the Pod Security labels of ${scope.namespace} (${profile}): ${message}`);
     }
   }
 

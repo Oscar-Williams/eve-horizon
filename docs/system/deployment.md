@@ -457,8 +457,18 @@ numeric user from `x-eve.security.run_as_user` or the image's numeric `USER`
 whose service has neither is refused before anything is applied, naming the
 fields; see [manifest](manifest.md#x-evesecurity). The namespace gets the
 Pod Security `warn` and `audit` labels (`restricted`, or `baseline` after an
-opt-out), never `enforce`. Under `audit` and `legacy` pod specs are unchanged;
+opt-out); `enforce` comes from the rule `isolation.pod_security_admission`
+below. Under `audit` and `legacy` pod specs are unchanged;
 `audit` records each service's image user and what `strict` would add.
+
+Under the rule `isolation.pod_security_admission` (rule set 3) the deploy
+also sets, before any workload is applied, `pod-security.kubernetes.io/enforce`
+at the namespace's level (`restricted`, or `baseline` after an opt-out) with
+`enforce-version: latest`, beside `warn` and `audit`. Under `audit` the
+namespace carries `warn` and `audit` only, and under `audit` and `legacy` an
+`enforce` a strict profile left is removed at the next deploy. Labels are
+written only when they differ. Under `strict` a failure to set them stops the
+deploy. Each `audit` and `strict` deploy is recorded with the env and level.
 
 ### Load Balancer Recovery
 

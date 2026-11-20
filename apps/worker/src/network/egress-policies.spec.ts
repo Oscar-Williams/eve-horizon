@@ -21,9 +21,10 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@eve/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@eve/db')>()),
-  // egress.allow_hosts stays legacy here (egress-allow-hosts.spec.ts covers it).
+  // egress.allow_hosts and network.ingress_isolation stay legacy here
+  // (egress-allow-hosts.spec.ts and ingress-isolation.spec.ts cover them).
   governingSecurityProfile: vi.fn(async (_db: unknown, ctx: { projectId: string; rule: string }) => {
-    expect(['egress.default_deny', 'egress.allow_hosts']).toContain(ctx.rule);
+    expect(['egress.default_deny', 'egress.allow_hosts', 'network.ingress_isolation']).toContain(ctx.rule);
     return ctx.rule === 'egress.default_deny' ? db.profiles.get(ctx.projectId) ?? 'legacy' : 'legacy';
   }),
   systemSettingsQueries: () => ({

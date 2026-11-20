@@ -177,6 +177,40 @@ Dataplane V2 network logging with `allow.log`) and list connections whose
 destination is not one of the declared hosts. Fourteen days of that is the
 evidence before a project flips.
 
+## Ingress isolation
+
+The project rule `network.ingress_isolation` limits who may connect to an
+env namespace's pods. The worker writes the policies with the egress ones
+(deploy, service job, reconcile), labelled `eve.horizon/ingress=env`, so
+neither sync deletes the other's.
+
+| Profile | Policies |
+|---|---|
+| `legacy` | None. A deploy or reconcile removes any it finds. |
+| `audit` | `eve-ingress-audit` (admits everything), then `eve-ingress`. Nothing is refused. |
+| `strict` | `eve-ingress` alone. |
+
+`eve-ingress` selects every pod in the namespace and admits, on any port:
+
+- the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
+  `kube-system`), for the env's hosts;
+- the platform's own services in the platform namespace (`eve-api` fetches
+  app API specs and proxies app calls), but no runner pod there (pods
+  without `eve.horizon/runner`);
+- the project's own env namespaces, this one included;
+- the project's runner pods (`eve.horizon/runner=true` and its
+  `eve.horizon/project-id`, in `eve-runners` and the platform namespace);
+- the env namespaces and runner pods of projects that consume its app links
+  through a live API grant for this env: for a `same` link, the consumer's
+  env of the same name; for a link fixed to this env, every env of the
+  consumer.
+
+Not admitted under `strict`: other tenants' namespaces and runners, and
+anything outside the cluster that does not come through the ingress
+controller, such as public TCP listeners (`x-eve.tcp_ingress`, through a
+load balancer straight to the pods). Kubelet health checks come from the
+node and are not subject to these policies on GKE Dataplane V2.
+
 ## The API URL apps and runners get
 
 Apps and runner pods get `EVE_API_APP_URL` as their `EVE_API_URL` (default
@@ -247,8 +281,8 @@ eve system settings set network.private_cidrs "198.18.0.0/15"
   its address changes, `strict` blocks it until the next deploy or reconcile.
 - DNS is allowed to `kube-dns` pods only; a node-local DNS cache on a
   link-local address is not covered.
-- Ingress to tenant namespaces is not restricted by these policies; the
-  egress side already stops one tenant's pods connecting to another's.
+- Ingress to tenant namespaces is the rule `network.ingress_isolation`
+  (see [ingress isolation](#ingress-isolation)).
 
 ## Rollback
 

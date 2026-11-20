@@ -24,6 +24,8 @@ import {
   EGRESS_RULE,
   EgressProviderMissingError,
   FQDN_POLICY_LABEL,
+  INGRESS_POLICY_LABEL,
+  INGRESS_RULE,
   FQDN_POLICY_LABEL_VALUE,
   NETWORK_PRIVATE_CIDRS_SETTING,
   RUNNER_PROJECT_LABEL,
@@ -31,6 +33,7 @@ import {
   egressFqdnProvider,
   envEgressPolicies,
   envFqdnPolicies,
+  envIngressPolicies,
   manifestEgressHosts,
   parseCidrList,
   runnerAllowHosts,
@@ -41,14 +44,16 @@ import {
   type EgressHost,
   type EgressNetworkPolicy,
   type EgressSettings,
+  type EnvIngressNetworkPolicy,
   type FqdnNetworkPolicy,
+  type IngressPeers,
   type SecurityProfile,
 } from '@eve/shared';
 
 /** What EgressPolicies needs of the Kubernetes API (K8sService). */
 export interface NetworkPolicyApi {
   /** Create or replace; false when the cluster already holds it unchanged. */
-  applyNetworkPolicy(policy: EgressNetworkPolicy): Promise<boolean>;
+  applyNetworkPolicy(policy: EgressNetworkPolicy | EnvIngressNetworkPolicy): Promise<boolean>;
   deleteNetworkPolicy(namespace: string, name: string): Promise<void>;
   listNetworkPolicies(namespace: string, labelSelector: string): Promise<Array<{ name: string; labels: Record<string, string> }>>;
   /** Null when the namespace does not exist. */
@@ -110,6 +115,8 @@ const runnerSelector = (projectId: string) => `${RUNNER_SELECTOR},${RUNNER_PROJE
 /** Every FQDN policy Eve wrote in a namespace; in a runner namespace, one project's. */
 const FQDN_SELECTOR = `${FQDN_POLICY_LABEL}=${FQDN_POLICY_LABEL_VALUE}`;
 const runnerFqdnSelector = (projectId: string) => `${FQDN_SELECTOR},${RUNNER_PROJECT_LABEL}=${projectId}`;
+/** network.ingress_isolation's policies in an env namespace. */
+const INGRESS_SELECTOR = `${INGRESS_POLICY_LABEL}=env`;
 const CLUSTER_HOST = /^[a-z0-9-]+\.([a-z0-9-]+)\.svc(?:\.cluster\.local)?\.?$/i;
 
 /**
@@ -164,6 +171,11 @@ export class EgressPolicies {
     return governingSecurityProfile(this.db, { projectId, governing: 'project', rule: ALLOW_HOSTS_RULE });
   }
 
+  /** The profile network.ingress_isolation runs under for a project (stamps honoured). */
+  ingressProfile(projectId: string): Promise<SecurityProfile> {
+    return governingSecurityProfile(this.db, { projectId, governing: 'project', rule: INGRESS_RULE });
+  }
+
   /**
    * Bring an env namespace's egress policies in line with the project's
    * profiles. With the GKE provider and egress.allow_hosts above `legacy`,
@@ -190,6 +202,16 @@ export class EgressPolicies {
       ? []
       : envEgressPolicies(env.namespace, resolved, await this.envExtras(env), await this.settings(), allowHosts);
     merge(result, await this.sync(env.namespace, ENV_SELECTOR, desired));
+
+    // network.ingress_isolation: who may connect in.
+    const ingress = await this.ingressProfile(env.projectId);
+    const ingressPolicies = ingress === 'legacy'
+      ? []
+      : envIngressPolicies(env.namespace, ingress, await this.ingressPeers(env), {
+        platformNamespace: this.platformNamespace,
+        runnerNamespace: process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE,
+      });
+    merge(result, await this.sync(env.namespace, INGRESS_SELECTOR, ingressPolicies));
     return result;
   }
 
@@ -346,7 +368,7 @@ export class EgressPolicies {
   private async sync(
     namespace: string,
     selector: string,
-    desired: EgressNetworkPolicy[],
+    desired: Array<EgressNetworkPolicy | EnvIngressNetworkPolicy>,
   ): Promise<{ applied: string[]; removed: string[] }> {
     const existing = await this.k8s.listNetworkPolicies(namespace, selector);
     const applied: string[] = [];
@@ -463,6 +485,46 @@ export class EgressPolicies {
     }
     extras.namespaces.push(...await this.producerPeers(env.projectId, [env.name]));
     return extras;
+  }
+
+  /**
+   * Who may call an env namespace (network.ingress_isolation): the project's
+   * own env namespaces and runners, and the projects consuming its app links
+   * through a live API grant for this env. A `same` link admits the
+   * consumer's env of the same name (and its runners, when it has one); a
+   * link fixed to this env admits all the consumer's envs and its runners.
+   */
+  private async ingressPeers(env: EgressEnvRef): Promise<IngressPeers> {
+    const project = await this.projects.findById(env.projectId);
+    const org = project ? await this.orgs.findById(project.org_id) : null;
+    const projectNamespaces = [env.namespace];
+    if (project && org) {
+      projectNamespaces.push(...(await this.activeEnvs(env.projectId))
+        .map((e) => deriveNamespace(org.slug, project.slug, e.name, e.namespace)));
+    }
+    const consumerNamespaces: string[] = [];
+    const runnerProjects = new Set([env.projectId]);
+    for (const subscription of await this.appLinks.listWithGrants({ producer_project_id: env.projectId })) {
+      const grant = subscription.api_grant;
+      if (!grant || grant.revoked_at || grant.producer_project_id !== env.projectId) continue;
+      if (grant.envs.length > 0 && !grant.envs.includes(env.name)) continue;
+      const consumer = await this.projects.findById(subscription.consumer_project_id);
+      const consumerOrg = consumer ? await this.orgs.findById(consumer.org_id) : null;
+      if (!consumer || !consumerOrg) continue;
+      const consumerEnvs = await this.activeEnvs(consumer.id);
+      let callers: typeof consumerEnvs;
+      if (subscription.environment_strategy === 'same') {
+        callers = consumerEnvs.filter((e) => e.name === env.name);
+        if (callers.length === 0) continue;
+      } else if (subscription.producer_env_name === env.name) {
+        callers = consumerEnvs;
+      } else {
+        continue;
+      }
+      runnerProjects.add(consumer.id);
+      consumerNamespaces.push(...callers.map((e) => deriveNamespace(consumerOrg.slug, consumer.slug, e.name, e.namespace)));
+    }
+    return { projectNamespaces, consumerNamespaces, runnerProjects: [...runnerProjects] };
   }
 
   /** A project's runner pods call its own envs (app APIs, any port) and its app-link producers. */

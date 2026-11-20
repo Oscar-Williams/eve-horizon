@@ -5,3 +5,4 @@ export * from './names.js';
 export * from './egress-hosts.js';
 export * from './fqdn-policies.js';
 export * from './managed-namespaces.js';
+export * from './ingress-policies.js';

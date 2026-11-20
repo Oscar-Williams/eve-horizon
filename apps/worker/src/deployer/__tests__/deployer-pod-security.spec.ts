@@ -87,9 +87,10 @@ beforeEach(() => {
   mocks.profile = 'legacy';
   mocks.config = {};
   mocks.decide.mockImplementation(async () => mocks.profile);
-  // egress.allow_hosts has its own spec (deployer-allow-hosts.spec.ts).
+  // Rule set 3's egress.allow_hosts and isolation.pod_security_admission have
+  // their own specs (deployer-allow-hosts, deployer-pod-security-admission).
   mocks.governing.mockImplementation(async (_db: unknown, ctx: { rule?: string }) =>
-    (ctx?.rule === 'egress.allow_hosts' ? 'legacy' : mocks.profile));
+    (ctx?.rule === 'egress.allow_hosts' || ctx?.rule === 'isolation.pod_security_admission' ? 'legacy' : mocks.profile));
   imageUsers = { 'web:1': '1000:1001', 'api:1': 'node', 'root:1': '', 'nginx:1': '0' };
 });
 
