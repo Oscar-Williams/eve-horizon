@@ -17,6 +17,7 @@ import {
   HEAVY_WORKSPACE_SIZE,
   createRunnerInboundKey,
   getCorrelationHeaders,
+  runnerPoolKey,
   runnerClassLabels,
   runnerClassResources,
   runnerJobLabels,
@@ -41,8 +42,12 @@ import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
 export interface RunnerPodBackend {
-  /** Create the pod and wait until it is Ready with an IP. */
-  start(signal?: AbortSignal): Promise<{ ip: string; podName: string; namespace: string }>;
+  /**
+   * Create the pod and wait until it is Ready with an IP. `submitKey` is the
+   * key the pod takes a submit with, when it is not the dispatch's own
+   * per-pod key (a claimed pod takes the worker's pool key).
+   */
+  start(signal?: AbortSignal): Promise<{ ip: string; podName: string; namespace: string; submitKey?: string }>;
   /** Whether the pod has terminated (or is gone). */
   podEnded(): Promise<boolean>;
   /** Remove the pod (and anything created with it). Idempotent. */
@@ -101,7 +106,7 @@ export async function runInRunnerPod(submit: RunnerSubmit, deps: RunnerDispatchD
   const graceMs = opts.resultGraceMs ?? 30_000;
   try {
     const pod = await deps.backend.start(signal);
-    await deps.submit(pod.ip, submit, opts.inboundKey, signal);
+    await deps.submit(pod.ip, submit, pod.submitKey ?? opts.inboundKey, signal);
     await opts.onSubmitted?.();
 
     const deadline = now() + timeoutMs;
@@ -217,20 +222,23 @@ async function runnerBackendFor(
     onPodCreated: opts.onPodCreated && ((meta) => opts.onPodCreated!({ ...meta, ...(fallback ? { fallback } : {}) })),
   });
   const varies = (plan.toolchains?.length ?? 0) > 0 || (plan.appClis?.length ?? 0) > 0 || Boolean(plan.resources);
-  if (varies || !(await sandboxCrdsPresent()) || !(await sandboxPoolSize(namespace, jobClass))) return plain();
+  // A warm pod takes a submit only with the worker's pool key; without one, claim nothing.
+  const poolKey = runnerPoolKey();
+  if (varies || !poolKey || !(await sandboxCrdsPresent()) || !(await sandboxPoolSize(namespace, jobClass))) return plain();
 
   const claim = createSandboxClaimBackend({
     namespace,
     jobClass,
     submit,
     timeoutSeconds: plan.timeoutSeconds ?? Math.ceil(parseInt(process.env.EVE_K8S_POLL_TIMEOUT_MS ?? '1800000', 10) / 1000),
+    poolKeySha256: poolKey.sha256,
     onPodCreated: opts.onPodCreated as never,
   });
   let active: RunnerPodBackend = claim;
   return {
     async start(signal) {
       try {
-        return await claim.start(signal);
+        return { ...(await claim.start(signal)), submitKey: poolKey.key };
       } catch (err) {
         if (signal?.aborted || !(err instanceof SandboxClaimUnavailable)) throw err;
         // A controller outage costs latency, never the job: drop the claim, create the pod directly.

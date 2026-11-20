@@ -1,10 +1,9 @@
 import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Inject, Post, UnauthorizedException } from '@nestjs/common';
 import {
   RUNNER_INBOUND_KEY_HEADER,
-  RUNNER_INBOUND_KEY_SHA256_ENV,
   RunnerApiClient,
-  runnerInboundKeyMatches,
   runnerSubmitError,
+  runnerSubmitKeyMatches,
   withCorrelationContext,
   type RunnerResultReport,
   type RunnerSubmit,
@@ -14,10 +13,10 @@ import { RUNNER_SELF_CHECK, type RunnerSelfCheck } from './runner-self-check.js'
 
 /**
  * A runner pod's only routes. /health answers from the process alone. The
- * submit takes one job, authenticated by the inbound key whose hash the pod
- * carries (a warm-pool pod, which carries none, takes its first submit), and
- * runs it in the background. The result goes to the API with the job's own
- * token, and the pod then exits.
+ * submit takes one job, authenticated by a key whose hash the pod carries:
+ * its own inbound key (a plain pod) or the worker's pool key (a warm-pool
+ * pod); a pod with neither takes none. It runs the job in the background. The
+ * result goes to the API with the job's own token, and the pod then exits.
  */
 @Controller()
 export class RunnerController {
@@ -39,8 +38,7 @@ export class RunnerController {
     @Headers(RUNNER_INBOUND_KEY_HEADER) key: string | undefined,
     @Body() body: RunnerSubmit,
   ): { accepted: true; attempt_id: string } {
-    const sha256 = process.env[RUNNER_INBOUND_KEY_SHA256_ENV];
-    if (sha256 ? !runnerInboundKeyMatches(key, sha256) : !key) {
+    if (!runnerSubmitKeyMatches(key)) {
       throw new UnauthorizedException('Runner inbound key required');
     }
     const error = runnerSubmitError(body);

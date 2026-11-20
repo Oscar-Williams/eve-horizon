@@ -126,6 +126,8 @@ export interface RunnerTemplateOptions {
   /** Service account and placement (EVE_RUNNER_* on the worker); no token mount by default. */
   isolation?: RunnerPodIsolation;
   heavyWorkspaceSize?: string;
+  /** SHA-256 of the worker's pool key: a warm pod takes only a submit that presents the key. */
+  poolKeySha256?: string;
 }
 
 /** The pod labels every runner pod of a class carries. */
@@ -145,6 +147,7 @@ export function renderRunnerTemplates(opts: RunnerTemplateOptions): Array<Record
       resources: runnerClassResources(cls),
       isolation: opts.isolation ?? { automountServiceAccountToken: false },
       runtime,
+      poolKeySha256: opts.poolKeySha256,
     });
     // The controller adds a volume for each volumeClaimTemplate; the pod only mounts it.
     if (heavy) podSpec.volumes = (podSpec.volumes as Array<{ name: string }>).filter((v) => v.name !== 'workspace');

@@ -71,8 +71,8 @@ jobs), in the platform namespace:
   reach nothing else. (A deny that waited for the project label would leave
   the pod open in between.)
 - `eve-runner-ingress` lets only `eve-worker` pods reach runner pods, only
-  on the submit port (4749). A warm pod accepts the first submit that brings
-  a key, so nothing else may reach it.
+  on the submit port (4749). Behind it, a submit must still present the
+  pod's own key or the worker's pool key (see [runner pods](runner-pods.md)).
 
 Each project then has `eve-runner-<project>` in both namespaces, selecting
 `eve.horizon/runner=true` and `eve.horizon/project-id=<project>`. The name is

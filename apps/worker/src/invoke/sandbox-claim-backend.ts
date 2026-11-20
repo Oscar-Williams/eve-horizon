@@ -14,6 +14,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
   RUNNER_LABELS,
+  RUNNER_POOL_KEY_SHA256_ENV,
   SANDBOX_API_GROUP,
   SANDBOX_CLAIM_RESOURCE,
   buildRunnerSandboxClaim,
@@ -104,7 +105,13 @@ export function resetSandboxDiscovery(): void {
   namespaceSeen = null;
 }
 
-type PodList = { items?: Array<{ metadata?: { name?: string }; status?: { podIP?: string; podIPs?: Array<{ ip?: string }> } }> };
+type PodList = {
+  items?: Array<{
+    metadata?: { name?: string };
+    spec?: { containers?: Array<{ name?: string; env?: Array<{ name?: string; value?: string }> }> };
+    status?: { podIP?: string; podIPs?: Array<{ ip?: string }> };
+  }>;
+};
 
 type ClaimStatus = {
   status?: {
@@ -124,19 +131,33 @@ export function createSandboxClaimBackend(opts: {
   jobClass: RunnerClass;
   submit: { job_id: string; attempt_id: string; project_id: string };
   timeoutSeconds: number;
+  /** SHA-256 of the worker's pool key: a claimed pod from a template with another key is not used. */
+  poolKeySha256?: string;
   onPodCreated?: (meta: { runtime: string; backend: string; pod_name: string; namespace: string; claim: string }) => Promise<void>;
 }): RunnerPodBackend & { claimName: string } {
   const claimName = sandboxClaimName(opts.submit.attempt_id);
   const attemptLabel = runnerJobLabels({ projectId: opts.submit.project_id, attemptId: opts.submit.attempt_id, jobClass: opts.jobClass })[RUNNER_LABELS.attemptId];
   let podName: string | null = null;
 
-  /** The pod carrying this attempt's label at the claim's IP, once the claim has labelled it. */
+  /**
+   * The pod carrying this attempt's label at the claim's IP, once the claim
+   * has labelled it. A pod whose template carried another pool key (one
+   * warmed before the key changed, not yet replaced) is not usable.
+   */
   async function claimedPodName(ip: string, signal?: AbortSignal): Promise<string | null> {
     const result = await execKubectl(['get', 'pods', '-l', `${RUNNER_LABELS.attemptId}=${attemptLabel}`, `--namespace=${opts.namespace}`, '-o', 'json'], undefined, signal);
     if (result.exitCode !== 0) return null;
     const pod = ((JSON.parse(result.stdout || '{}') as PodList).items ?? [])
       .find((item) => item.status?.podIP === ip || item.status?.podIPs?.some((entry) => entry.ip === ip));
-    return pod?.metadata?.name ?? null;
+    if (!pod?.metadata?.name) return null;
+    if (opts.poolKeySha256) {
+      const runner = pod.spec?.containers?.find((container) => container.name === 'runner') ?? pod.spec?.containers?.[0];
+      const held = runner?.env?.find((entry) => entry.name === RUNNER_POOL_KEY_SHA256_ENV)?.value;
+      if (held !== opts.poolKeySha256) {
+        throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} got pod ${pod.metadata.name} from a template with another pool key`);
+      }
+    }
+    return pod.metadata.name;
   }
   const claimTimeoutMs = parseDurationMs(process.env.EVE_SANDBOX_CLAIM_TIMEOUT ?? '10s', 'EVE_SANDBOX_CLAIM_TIMEOUT');
   const pollMs = parseInt(process.env.EVE_SANDBOX_CLAIM_POLL_MS ?? '250', 10);

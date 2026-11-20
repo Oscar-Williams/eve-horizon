@@ -19,7 +19,7 @@
  * docs/system/job-execution.md ("Runner pod labels").
  */
 
-import { RUNNER_INBOUND_KEY_SHA256_ENV, RUNNER_PORT } from './runner-protocol.js';
+import { RUNNER_INBOUND_KEY_SHA256_ENV, RUNNER_POOL_KEY_SHA256_ENV, RUNNER_PORT } from './runner-protocol.js';
 import { resolveRunnerPodIsolation, type RunnerPodIsolation } from './runner-pod.js';
 
 /** The runner entrypoint, started through the image's tini + entrypoint script (`exec "$@"`). */
@@ -40,6 +40,8 @@ export interface RunnerPodOptions {
   annotations?: Record<string, string>;
   /** SHA-256 of the pod's inbound key; omitted for warm-pool templates. */
   inboundKeySha256?: string;
+  /** SHA-256 of the worker's pool key; warm-pool templates only. */
+  poolKeySha256?: string;
   /** The job's workspace: a claim (plain pods), or a pod-local emptyDir. */
   workspace: { kind: 'pvc'; claimName: string } | { kind: 'emptyDir'; sizeLimit?: string };
   /** The org filesystem claim; null or omitted mounts none. */
@@ -93,6 +95,7 @@ export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> 
     { name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' },
   ];
   if (opts.inboundKeySha256) env.push({ name: RUNNER_INBOUND_KEY_SHA256_ENV, value: opts.inboundKeySha256 });
+  if (opts.poolKeySha256) env.push({ name: RUNNER_POOL_KEY_SHA256_ENV, value: opts.poolKeySha256 });
   if (opts.orgFs) env.push({ name: 'EVE_ORG_FS_ROOT', value: '/org' });
   if (toolchains.length > 0) {
     env.push({ name: 'EVE_TOOLCHAIN_PATHS', value: toolchains.map((tc) => `/opt/eve/toolchains/${tc}/bin`).join(':') });

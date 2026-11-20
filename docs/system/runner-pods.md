@@ -38,12 +38,29 @@ deployer, builder, reaper or pipeline modules. It serves two routes:
 | `GET /health` | Answers from the process alone (readiness). |
 | `POST /runner/submit` | Takes one job (`RunnerSubmit`, `packages/shared/src/invoke/runner-protocol.ts`). A second submit gets 409. |
 
-The submit is authenticated with a key made for that pod: the worker
-generates 32 random bytes, puts only their SHA-256 in the pod's env
-(`EVE_RUNNER_INBOUND_KEY_SHA256`), and presents the key in
-`x-eve-runner-key`. The runner compares hashes in constant time. A pod
-started from a warm pool cannot carry per-job env; with no hash it takes the
-first submit that carries a key, which is all a one-job pod ever takes.
+The submit presents a key in `x-eve-runner-key`, and the pod holds only its
+SHA-256; the runner compares hashes in constant time, and a pod with no hash
+takes no submit:
+
+- **a plain pod:** a key made for that pod. The worker generates 32 random
+  bytes and puts only their SHA-256 in the pod's env
+  (`EVE_RUNNER_INBOUND_KEY_SHA256`);
+- **a pod from a warm pool,** which cannot carry per-job env: the worker's
+  pool key. Each SandboxTemplate carries its SHA-256
+  (`EVE_RUNNER_POOL_KEY_SHA256`). The key is `EVE_RUNNER_POOL_KEY` on the
+  worker when set (a Secret value), else an HMAC-SHA256 of the worker's
+  internal core key (or the legacy `EVE_INTERNAL_API_KEY`) with a fixed
+  label. Job code never sees it: the runner reads it from the request header
+  only. A worker with none of them claims no warm pod and renders no
+  template.
+
+**Rotating the pool key:** set or change `EVE_RUNNER_POOL_KEY` (or rotate the
+core key it is derived from) and restart the worker. At startup (or on
+`eve system security reconcile`) it renders the templates with the new hash;
+the warm pools (update strategy `Recreate`) then replace their warm pods,
+while claimed pods run on. A claim that lands on a warm pod from the older
+template before it is replaced is dropped and the job's pod created directly,
+so a rotation costs latency, not jobs.
 
 The runner reports its result, then exits (`EVE_RUNNER_SELF_TERMINATE=1`),
 so the pod ends `Succeeded`.
