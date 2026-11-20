@@ -64,9 +64,13 @@ case "$action" in
       release_check_tag_absent "$ref"
       output=$(docker push "$ref")
       echo "$output"
-      registry_config=$(docker buildx imagetools inspect --raw "$ref" | jq -er '.config.digest')
+      # The manifest digest this push reported is what the workflow signs and attests.
+      digest=$(sed -n 's/^.*: digest: \(sha256:[0-9a-f]\{64\}\) size: [0-9]\{1,\}$/\1/p' <<<"$output" | tail -n 1)
+      [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || release_die "push reported no manifest digest for $ref"
+      registry_config=$(docker buildx imagetools inspect --raw "${ref%:*}@$digest" | jq -er '.config.digest')
       [[ $registry_config == "$expected_id" ]] || release_die "published config differs from qualified artifact: $registry_config != $expected_id"
-      echo "published $ref config=$registry_config"
+      printf 'image=%s\ndigest=%s\n' "${ref%:*}" "$digest" > "$directory/published.txt"
+      echo "published $ref digest=$digest config=$registry_config"
     fi
     ;;
   *) release_die "unknown action $action" ;;

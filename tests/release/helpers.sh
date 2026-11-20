@@ -16,6 +16,11 @@ expect_fail bash -c 'source scripts/release/common.sh; release_ref service api 0
 expect_fail env GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/release-v1.2.3 bash scripts/release/validate-tag.sh service
 expect_fail env GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/toolchain-images/v0.2.0 bash scripts/release/validate-tag.sh toolchain
 [[ $(env GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/toolchain-images/v0.1.0 bash scripts/release/validate-tag.sh toolchain) == 0.1.0 ]]
+[[ $(env GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/cli-v0.2.77 bash scripts/release/validate-tag.sh cli) == 0.2.77 ]]
+[[ $(env GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/chat-v0.0.3 bash scripts/release/validate-tag.sh chat) == 0.0.3 ]]
+expect_fail env GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/sdk-v0.1.6 bash scripts/release/validate-tag.sh cli
+expect_fail env GITHUB_EVENT_NAME=push GITHUB_REF='refs/tags/sdk-v0.1.6;id' bash scripts/release/validate-tag.sh sdk
+expect_fail env GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/sdk-v0.1.6 bash scripts/release/validate-tag.sh sdk
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -58,4 +63,37 @@ actual_hash=$(sha256sum "$tmp/artifact/image.tar.gz" | awk '{print $1}')
 sed "s/^sha256=.*/sha256=$actual_hash/" "$tmp/artifact/receipt.txt" > "$tmp/artifact/receipt.new"
 mv "$tmp/artifact/receipt.new" "$tmp/artifact/receipt.txt"
 expect_fail env GITHUB_SHA="$(printf '%040d' 0)" PATH="$tmp:$PATH" bash scripts/release/image.sh load service api 1.2.3 "$tmp/artifact"
+
+# Publication ancestry: only commits on origin/main or an origin/hotfix/* branch.
+root=$PWD
+repo="$tmp/ancestry"
+git init -q -b main "$repo"
+g() { git -C "$repo" -c user.name=release-test -c user.email=release-test@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+commit() { g commit -q --allow-empty -m "$1" && g rev-parse HEAD; }
+released=$(commit released)
+on_main=$(commit later-on-main)
+g checkout -q -b hotfix/1.2.4 "$released"
+hotfix=$(commit hotfix)
+g checkout -q -b feature "$released"
+feature=$(commit feature)
+g checkout -q -b nothotfix/1.2.5 "$released"
+lookalike=$(commit lookalike)
+g update-ref refs/remotes/origin/main "$on_main"
+g update-ref refs/remotes/origin/hotfix/1.2.4 "$hotfix"
+g update-ref refs/remotes/origin/feature "$feature"
+g update-ref refs/remotes/origin/nothotfix/1.2.5 "$lookalike"
+g tag -a -m annotated release-v1.2.3 "$released"
+ancestry() { (cd "$repo" && bash "$root/scripts/release/ancestry.sh" "$@"); }
+ancestry "$released" >/dev/null
+ancestry "$on_main" >/dev/null
+ancestry "$hotfix" >/dev/null
+ancestry refs/tags/release-v1.2.3 >/dev/null
+expect_fail ancestry "$feature"
+expect_fail ancestry "$lookalike"
+expect_fail ancestry 0000000000000000000000000000000000000000
+expect_fail ancestry
+# Local branches do not count, only what reached the remote.
+g update-ref -d refs/remotes/origin/main
+expect_fail ancestry "$on_main"
+
 echo 'release helper rejection paths passed'
