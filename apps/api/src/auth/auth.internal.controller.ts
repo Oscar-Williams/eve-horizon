@@ -43,6 +43,7 @@ import { SecurityService } from '../security/security.service.js';
 import { jobTokenPermissionsFor } from './token-scope.js';
 import { AppLinkTokenMinter, type AppLinkMintRequest } from './app-link-token-minter.js';
 import { isRunningAttempt } from './job-liveness.js';
+import { serviceTokenFloor } from './service-token-floor.js';
 
 @ApiTags('internal')
 @Controller('internal/auth')
@@ -289,6 +290,7 @@ export class AuthInternalController {
       serviceName: body.service_name,
       permissions,
       ttlSeconds: body.ttl_seconds,
+      notBefore: serviceTokenFloor(environment),
     });
 
     const parts = accessToken.split('.');

@@ -1,7 +1,8 @@
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { type Db, appLinkSubscriptionQueries, jobQueries, projectQueries } from '@eve/db';
+import { type Db, appLinkSubscriptionQueries, environmentQueries, jobQueries, projectQueries } from '@eve/db';
 import type { AuthService } from './auth.service.js';
 import { isRunningAttempt } from './job-liveness.js';
+import { serviceTokenFloor } from './service-token-floor.js';
 
 export interface AppLinkMintRequest {
   subscription_id: string;
@@ -30,11 +31,13 @@ export class AppLinkTokenMinter {
   private readonly jobs: ReturnType<typeof jobQueries>;
   private readonly projects: ReturnType<typeof projectQueries>;
   private readonly appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
+  private readonly environments: ReturnType<typeof environmentQueries>;
 
   constructor(private readonly authService: AuthService, db: Db) {
     this.jobs = jobQueries(db);
     this.projects = projectQueries(db);
     this.appLinkSubscriptions = appLinkSubscriptionQueries(db);
+    this.environments = environmentQueries(db);
   }
 
   async mint(body: AppLinkMintRequest): Promise<MintedToken> {
@@ -73,6 +76,7 @@ export class AppLinkTokenMinter {
       throw new UnauthorizedException(`Producer env ${producerEnv} is not allowed by this app-link grant`);
     }
 
+    const notBefore = await this.serviceFloor(body, subscription.consumer_project_id);
     const accessToken = this.authService.mintAppLinkToken({
       subscriptionId: subscription.id,
       consumerProjectId: subscription.consumer_project_id,
@@ -85,6 +89,7 @@ export class AppLinkTokenMinter {
       scopes: subscription.requested_scopes,
       ttlSeconds: body.ttl_seconds,
       ...(attemptId ? { attemptId } : {}),
+      ...(notBefore !== null ? { notBefore } : {}),
     });
 
     const parts = accessToken.split('.');
@@ -100,6 +105,18 @@ export class AppLinkTokenMinter {
       token_type: 'bearer',
       expires_at: payload.exp,
     };
+  }
+
+  /**
+   * For a deployed service's token (principal `service:<name>` with its
+   * environment), the consumer environment's floor: the API holds the token
+   * to it (token-verifier), so it is issued no earlier. Null otherwise.
+   */
+  private async serviceFloor(body: AppLinkMintRequest, consumerProjectId: string): Promise<number | null> {
+    const principal = typeof body.consumer_principal === 'string' ? body.consumer_principal : '';
+    if (!principal.startsWith('service:') || !body.consumer_env) return null;
+    const environment = await this.environments.findByProjectAndName(consumerProjectId, body.consumer_env);
+    return environment ? serviceTokenFloor(environment) : null;
   }
 
   /**
