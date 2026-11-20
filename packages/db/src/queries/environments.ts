@@ -39,6 +39,10 @@ export interface ServiceTokenRenewalTarget {
   namespace: string;
   /** The release applied last: the one whose service Secrets the cluster holds. */
   release_id: string;
+  /** The environment's current release; renewal mints against it when release_id is gone. */
+  current_release_id: string | null;
+  /** With service_tokens_not_before, the floor a token's iat is held to (serviceTokenFloor). */
+  created_at: Date;
   service_tokens_not_before: Date | null;
 }
 
@@ -65,6 +69,24 @@ export function environmentQueries(db: Db) {
       const [row] = await db<Environment[]>`
         SELECT * FROM environments
         WHERE project_id = ${projectId} AND name = ${name}
+      `;
+      return row ?? null;
+    },
+
+    /**
+     * The environment a service token names, while it and its project exist
+     * (a soft-deleted project's environments count as gone): its creation and
+     * its service_tokens_not_before, the two floors a token's `iat` is held to.
+     */
+    async findForServiceTokens(
+      projectId: string,
+      name: string,
+    ): Promise<Pick<Environment, 'id' | 'created_at' | 'service_tokens_not_before'> | null> {
+      const [row] = await db<Array<Pick<Environment, 'id' | 'created_at' | 'service_tokens_not_before'>>>`
+        SELECT e.id, e.created_at, e.service_tokens_not_before
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        WHERE e.project_id = ${projectId} AND e.name = ${name}
       `;
       return row ?? null;
     },
@@ -443,6 +465,8 @@ export function environmentQueries(db: Db) {
       return db<ServiceTokenRenewalTarget[]>`
         SELECT e.id, e.project_id, p.org_id, e.name, e.namespace,
                COALESCE(e.last_applied_release_id, e.current_release_id) AS release_id,
+               e.current_release_id,
+               e.created_at,
                e.service_tokens_not_before
         FROM environments e
         JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL

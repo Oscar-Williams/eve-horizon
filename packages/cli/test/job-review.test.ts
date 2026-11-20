@@ -41,4 +41,18 @@ describe('eve job approve and reject', () => {
 
     expect(requestJson).toHaveBeenCalledWith(context, '/jobs/job-1/reject', { method: 'POST', body: { reason: 'Cite the sources' } });
   });
+
+  it('approve and reject send the attempt the decider reviewed, with --attempt-id', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.mocked(requestJson).mockResolvedValueOnce(reviewed);
+    await handleJob('approve', ['job-1'], { 'attempt-id': 'att_2' }, context as never);
+    expect(requestJson).toHaveBeenCalledWith(context, '/jobs/job-1/approve', { method: 'POST', body: { attempt_id: 'att_2' } });
+
+    vi.mocked(requestJson).mockResolvedValueOnce({ ...reviewed, phase: 'active', review_status: 'rejected' });
+    await handleJob('reject', ['job-1'], { reason: 'Cite the sources', 'attempt-id': 'att_2' }, context as never);
+    expect(requestJson).toHaveBeenLastCalledWith(context, '/jobs/job-1/reject', {
+      method: 'POST',
+      body: { reason: 'Cite the sources', attempt_id: 'att_2' },
+    });
+  });
 });

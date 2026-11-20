@@ -189,11 +189,62 @@ pass off), was signed by a key other than the API's current one
 (`GET /internal/auth/signing-key`), or was issued before the environment's
 `service_tokens_not_before`. It writes the new token into the service's
 Secret and the service's pods roll once. A value the manifest sets for
-`EVE_SERVICE_TOKEN` is never touched. The API refuses a service token issued
-before its environment's `service_tokens_not_before`, or one whose environment
-no longer exists (read at most once a minute per API replica).
-`eve env rotate-service-tokens <env>` (`envs:write`) sets that time to now and
-has the worker renew the environment at once.
+`EVE_SERVICE_TOKEN` is never touched.
+
+Renewal rolls pods unattended, so it is paced:
+
+- **A few a pass.** Each hourly pass first reads every deployed
+  environment's service Secrets, then renews and rolls at most
+  `EVE_SERVICE_TOKEN_RENEW_BATCH` Deployments (default 3, at least 1): a
+  revoked token first, then the soonest to expire. The rest wait for the next
+  pass. A rotation renews its whole environment at once.
+- **Recreate Deployments wait.** A Deployment with the `Recreate` strategy (a
+  `database` role, a ReadWriteOnce volume, stable egress, or
+  `x-eve.rollout: recreate`) stops serving while it rolls. Its Secret is
+  renewed, but it rolls only once the token its pods hold is revoked or within
+  7 days of expiry; the Secret's `eve.tokens-roll-by` annotation records when,
+  and the worker log says so. A pod that restarts by itself picks up the new
+  token sooner. A token signed by a retired key is renewed in the Secret but
+  does not roll a Recreate Deployment early: keep a retired key in the API's
+  key ring until those services have restarted or rolled.
+- **Rollouts are checked.** On its next pass the worker checks each roll it
+  started (the same rollout test deploys use). One not done 180 s after it
+  started gets a warning in the worker log and a
+  `system.service_token.rollout_stuck` event (payload: `env_id`, `namespace`,
+  `deployment`, `started_at`). The check lives in the worker's memory: a
+  worker restart forgets it.
+- **A missing release.** Renewal mints against the release applied last,
+  whose manifest holds the service's `x-eve.permissions`. Eve does not delete
+  a release an environment names as current or last applied (the delete route
+  answers 409, prune keeps it). If that release is gone anyway, the API
+  answers 404; the worker logs an error naming the environment and mints
+  against the environment's current release when that differs, or else waits
+  for a deploy.
+
+**Revocation.** The API refuses a service token, and an app-link token
+injected into a service (principal `service:<name>`), when its environment or
+its project is gone (a soft-deleted project's environments count as gone),
+when it was issued before the environment row was created (an environment
+deleted and created again under the same name gets a fresh floor), and when
+it was issued before the environment's `service_tokens_not_before`. The
+environment is read at most once a minute per API replica. A token minted for
+an environment whose floor is ahead of the minting replica's clock is issued
+at the floor, so clock skew between replicas cannot make a renewed token look
+revoked. `eve env rotate-service-tokens <env>` (`envs:write`) sets that time
+to now and has the worker renew the environment at once. It answers
+`renewal: done` when every token was renewed, `incomplete` when some were not
+(`conflicted`: a deploy wrote the Secret meanwhile; `failed`: the API minted
+nothing, or the Secret was renewed but the Deployment did not roll), and
+`scheduled` when the worker could not be reached; `counts` gives the numbers.
+The hourly pass retries what is left.
+
+Revocation is enforced where Eve verifies a token: the API's guard and
+`GET /auth/token/verify`, which the auth SDK's default `remote` strategy
+calls. A producer that verifies app-link tokens itself against Eve's JWKS
+(`@eve-horizon/auth` with `strategy: 'local'`) checks the signature and `exp`
+only: it does not see the floor, the environment's deletion or a rotation, so
+a revoked token keeps working there until it expires (up to 90 days). Verify
+service principals remotely where revocation matters.
 
 The key is a network-level credential, not a substitute for network policy:
 keep the worker, agent runtime and BuildKit reachable only from platform pods.

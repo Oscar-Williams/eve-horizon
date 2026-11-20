@@ -3,12 +3,14 @@
  * and a reject that race must not both succeed: the second waits for the
  * first, then finds the review decided and changes nothing (no attempt is
  * created for a reject that loses). Each race holds the first decision's
- * transaction open until the second is waiting on the job's row.
+ * transaction open until the second is waiting on the job's row. A decider
+ * who names the attempt they reviewed decides that round only: once the job
+ * is back in review on a later attempt, the decision is refused.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { jobQueries, ReviewDecidedError } from './jobs.js';
+import { jobQueries, ReviewDecidedError, ReviewRoundChangedError } from './jobs.js';
 import type { Db } from '../client.js';
 
 const testDbUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -160,5 +162,37 @@ describe('review decisions', () => {
 
     await expect(refused).rejects.toThrow(/must be in 'review' phase/);
     await expect(refused).rejects.not.toBeInstanceOf(ReviewDecidedError);
+  });
+
+  /** Rejects the review of attempt 1; attempt 2 runs and is sent for review. Returns both attempts' ids. */
+  async function backInReview(id: string): Promise<{ first: string; second: string }> {
+    await rejectAs('user_alice')(jobQueries(db), id);
+    await db`UPDATE job_attempts SET status = 'succeeded' WHERE job_id = ${id} AND attempt_number = 2`;
+    await db`UPDATE jobs SET phase = 'review', review_status = 'pending' WHERE id = ${id}`;
+    const rows = await db<Array<{ id: string; attempt_number: number }>>`
+      SELECT id, attempt_number FROM job_attempts WHERE job_id = ${id} ORDER BY attempt_number
+    `;
+    return { first: String(rows[0].id), second: String(rows[1].id) };
+  }
+
+  it('refuse a decision on the round before, once the job is back in review on a later attempt', async () => {
+    const id = await inReview();
+    const { first } = await backInReview(id);
+
+    const approve = jobQueries(db).approveReview(id, 'user_bob', 'looks right', 'user', { attemptId: first });
+    await expect(approve).rejects.toBeInstanceOf(ReviewRoundChangedError);
+    await expect(approve).rejects.toBeInstanceOf(ReviewDecidedError);
+    await expect(jobQueries(db).rejectReview(id, 'user_bob', 'count again', 'user', { attemptId: first }))
+      .rejects.toBeInstanceOf(ReviewRoundChangedError);
+    expect(await state(id)).toEqual({ phase: 'review', review_status: 'pending', reviewer: 'user_alice', attempts: [1, 2] });
+  });
+
+  it('decide the round the decider names when it is the one in review', async () => {
+    const id = await inReview();
+    const { second } = await backInReview(id);
+
+    await jobQueries(db).approveReview(id, 'user_bob', 'looks right', 'user', { attemptId: second });
+
+    expect(await state(id)).toEqual({ phase: 'done', review_status: 'approved', reviewer: 'user_bob', attempts: [1, 2] });
   });
 });

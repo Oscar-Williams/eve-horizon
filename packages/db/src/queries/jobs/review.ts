@@ -26,12 +26,38 @@ export class ReviewDecidedError extends Error {
 }
 
 /**
+ * A review decision that names the attempt it reviewed, on a job now in
+ * review on a later attempt: the round the decider saw was decided already
+ * (rejected, run again and sent back). The API answers 409.
+ */
+export class ReviewRoundChangedError extends ReviewDecidedError {
+  constructor(jobId: string, readonly reviewedAttemptId: string, readonly attemptInReview?: number) {
+    super(jobId);
+    this.message = `Job ${jobId}'s review of attempt ${reviewedAttemptId} was already decided; `
+      + `it is in review on attempt ${attemptInReview ?? 'another'} now`;
+    this.name = 'ReviewRoundChangedError';
+  }
+}
+
+/** What the decider saw: the attempt whose work they reviewed. Without it, the round in review is decided. */
+export interface ReviewDecisionOptions {
+  attemptId?: string;
+}
+
+/**
  * Lock a job for a review decision and check it is in review. A job that
  * left review after a decision gets ReviewDecidedError; any other phase the
- * plain refusal. In a transaction the lock holds until it ends, so a
- * decision racing this one waits and then finds the review decided.
+ * plain refusal. When the decider names the attempt they reviewed and the job
+ * is in review on a later one, ReviewRoundChangedError. In a transaction the
+ * lock holds until it ends, so a decision racing this one waits and then
+ * finds the review decided.
  */
-async function lockForDecision(db: Db, jobId: string, verb: 'approve' | 'reject'): Promise<Job> {
+async function lockForDecision(
+  db: Db,
+  jobId: string,
+  verb: 'approve' | 'reject',
+  options: ReviewDecisionOptions = {},
+): Promise<Job> {
   const [job] = await db<Job[]>`
     SELECT * FROM jobs WHERE id = ${jobId} FOR UPDATE
   `;
@@ -45,6 +71,19 @@ async function lockForDecision(db: Db, jobId: string, verb: 'approve' | 'reject'
     throw new Error(
       `Cannot ${verb}. Job must be in 'review' phase, currently: ${job.phase}`,
     );
+  }
+  if (options.attemptId !== undefined) {
+    // Attempts are only added while the job runs, never while it is in
+    // review, so the row lock holds the latest one still.
+    const [latest] = await db<Array<{ id: string; attempt_number: number }>>`
+      SELECT id, attempt_number FROM job_attempts
+      WHERE job_id = ${jobId}
+      ORDER BY attempt_number DESC
+      LIMIT 1
+    `;
+    if (!latest || String(latest.id) !== options.attemptId) {
+      throw new ReviewRoundChangedError(jobId, options.attemptId, latest?.attempt_number);
+    }
   }
   return job;
 }
@@ -163,6 +202,8 @@ export function jobReviewQueries(db: Db) {
      * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
      * @param comment - Optional approval comment
      * @param reviewerType - The decider's actor type for the audit log
+     * @param options.attemptId - The attempt the decider reviewed: refused
+     *   (ReviewRoundChangedError) once the job is in review on a later one
      * @returns Updated job
      */
     async approveReview(
@@ -170,9 +211,10 @@ export function jobReviewQueries(db: Db) {
       reviewerId: string,
       comment?: string,
       reviewerType = 'user',
+      options: ReviewDecisionOptions = {},
     ): Promise<Job> {
-      // 1. Lock the job and validate it is in 'review' phase
-      const currentJob = await lockForDecision(db, jobId, 'approve');
+      // 1. Lock the job and validate it is in 'review' phase, on the round the decider saw
+      const currentJob = await lockForDecision(db, jobId, 'approve', options);
 
       // 2. Update job to done with review metadata, only while still in review
       const [updatedJob] = await db<Job[]>`
@@ -235,6 +277,8 @@ export function jobReviewQueries(db: Db) {
      * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
      * @param reason - Rejection reason
      * @param reviewerType - The decider's actor type for the audit log
+     * @param options.attemptId - The attempt the decider reviewed: refused
+     *   (ReviewRoundChangedError) once the job is in review on a later one
      * @returns Updated job
      */
     async rejectReview(
@@ -242,9 +286,10 @@ export function jobReviewQueries(db: Db) {
       reviewerId: string,
       reason: string,
       reviewerType = 'user',
+      options: ReviewDecisionOptions = {},
     ): Promise<Job> {
-      // 1. Lock the job and validate it is in 'review' phase
-      const currentJob = await lockForDecision(db, jobId, 'reject');
+      // 1. Lock the job and validate it is in 'review' phase, on the round the decider saw
+      const currentJob = await lockForDecision(db, jobId, 'reject', options);
 
       // 2. Update job back to active with rejection metadata, only while still in review
       const [updatedJob] = await db<Job[]>`

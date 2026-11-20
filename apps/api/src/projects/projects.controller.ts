@@ -18,7 +18,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { parseBoolean, parseOptionalDate } from '../common/query-params.js';
-import { ApiBody, ApiCreatedResponse, ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiBody, ApiConflictResponse, ApiCreatedResponse, ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { ProjectsService } from './projects.service.js';
 import {
   CreateProjectRequestSchema,
@@ -470,6 +470,7 @@ export class ProjectsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a release by tag' })
   @ApiNoContentResponse({ description: 'Release deleted' })
+  @ApiConflictResponse({ description: 'An environment runs the release (its current or last applied release)' })
   async deleteRelease(
     @Param('project_id') projectId: string,
     @Param('tag') tag: string,
@@ -480,7 +481,7 @@ export class ProjectsController {
   @RequirePermission('releases:admin')
   @Post(':project_id/releases/prune')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Prune old releases, keeping the most recent N' })
+  @ApiOperation({ summary: 'Prune old releases, keeping the most recent N and every release an environment runs' })
   async pruneReleases(
     @Param('project_id') projectId: string,
     @Body() body: { keep?: number },

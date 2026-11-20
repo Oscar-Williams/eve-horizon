@@ -889,7 +889,7 @@ environments:
 |-------|-------------|
 | `pipeline` | Pipeline to run for this environment (when set, `eve env deploy` becomes a pipeline alias) |
 | `pipeline_inputs` | Default inputs to pass to the pipeline run (merged with CLI `--inputs`, CLI wins) |
-| `approval` | **Not enforced by Eve.** Deploys do not wait for a person, whatever it says. Sync refuses it under the project's `strict` profile (400) and warns otherwise (rule `manifest.approval_unenforced`, see [security profiles](security-profiles.md)); remove it. |
+| `approval` | **Not enforced by Eve.** Deploys do not wait for a person, whatever it says. Sync refuses a value that asks for a gate under the project's `strict` profile (400) and warns otherwise (rule `manifest.approval_unenforced`, see [security profiles](security-profiles.md)); remove it. `none` (any case) and a blank value ask for no gate and pass. |
 | `overrides.services` | Compose-style service overrides |
 | `workers` | Worker pool selection for this environment |
 

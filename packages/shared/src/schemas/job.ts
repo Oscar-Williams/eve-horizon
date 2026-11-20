@@ -545,10 +545,17 @@ export const SubmitRequestSchema = z.object({
 
 export type SubmitRequest = z.infer<typeof SubmitRequestSchema>;
 
+/** The review round a decision is for: the attempt whose work the decider reviewed. */
+const ReviewedAttemptSchema = z.string().min(1).optional().describe(
+  'The attempt whose work the decider reviewed (the latest attempt when they looked). '
+  + 'Once the job is in review on a later attempt the decision is refused with 409. Omitted: the round in review is decided.',
+);
+
 export const ApproveRequestSchema = z.object({
   /** Ignored: the decider recorded is the authenticated caller. */
   reviewer_id: z.string().optional().describe('Ignored: the decider recorded is the authenticated caller'),
   comment: z.string().optional(),
+  attempt_id: ReviewedAttemptSchema,
 });
 
 export type ApproveRequest = z.infer<typeof ApproveRequestSchema>;
@@ -557,6 +564,7 @@ export const RejectRequestSchema = z.object({
   /** Ignored: the decider recorded is the authenticated caller. */
   reviewer_id: z.string().optional().describe('Ignored: the decider recorded is the authenticated caller'),
   reason: z.string(),
+  attempt_id: ReviewedAttemptSchema,
 });
 
 export type RejectRequest = z.infer<typeof RejectRequestSchema>;

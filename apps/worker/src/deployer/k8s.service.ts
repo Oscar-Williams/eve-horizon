@@ -875,16 +875,17 @@ export class K8sService {
   }
 
   /**
-   * Set the given keys (and annotations) of a Secret, leaving the others,
-   * only while it is still at `resourceVersion` (a merge patch carrying it).
-   * False when it was written since it was read, or is gone.
+   * Set the given keys (and annotations; null removes one) of a Secret,
+   * leaving the others, only while it is still at `resourceVersion` (a merge
+   * patch carrying it). False when it was written since it was read, or is
+   * gone.
    */
   async patchSecretData(
     namespace: string,
     name: string,
     data: Record<string, string>,
     resourceVersion: string,
-    annotations?: Record<string, string>,
+    annotations?: Record<string, string | null>,
   ): Promise<boolean> {
     this.ensureAvailable();
     try {
@@ -907,12 +908,24 @@ export class K8sService {
     }
   }
 
-  /** A Deployment's pod-template annotations; null when it is absent. */
-  async getDeploymentTemplateAnnotations(namespace: string, name: string): Promise<Record<string, string> | null> {
+  /**
+   * A Deployment's strategy (`RollingUpdate` unless it says `Recreate`), its
+   * pod-template annotations and whether its rollout is done
+   * (isDeploymentRolledOut); null when it is absent.
+   */
+  async readDeploymentRollout(namespace: string, name: string): Promise<{
+    strategy: string;
+    templateAnnotations: Record<string, string>;
+    rolledOut: boolean;
+  } | null> {
     this.ensureAvailable();
     try {
       const deployment = (await this.appsApi!.readNamespacedDeployment(name, namespace)).body;
-      return deployment.spec?.template?.metadata?.annotations ?? {};
+      return {
+        strategy: deployment.spec?.strategy?.type ?? 'RollingUpdate',
+        templateAnnotations: deployment.spec?.template?.metadata?.annotations ?? {},
+        rolledOut: isDeploymentRolledOut(deployment),
+      };
     } catch (err) {
       if (isK8sNotFound(err)) return null;
       throw wrapK8sError(err, 'read', { kind: 'Deployment', name, namespace });

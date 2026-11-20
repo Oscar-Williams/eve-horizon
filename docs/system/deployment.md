@@ -382,7 +382,11 @@ same env var name, so apps see no change. Plain values stay inline.
 - **Rolling on change:** the pod template carries `eve.secrets-sha256`, a
   SHA-256 over the Secret's keys and values, so a changed secret value rolls
   the pods at the next deploy. (Every deploy mints a new service token, so
-  every deploy rolls the pods, as before.)
+  every deploy rolls the pods, as before.) Between deploys the worker's
+  service-token renewal also writes renewed tokens into the Secret and rolls
+  the pods, a few Deployments an hour; a `Recreate` Deployment is held back
+  until the token its pods hold is close to expiry or revoked (see
+  [auth](auth.md), service tokens).
 - **Pruning:** after a deploy, Secrets of this env's services that were not
   rendered are deleted, but only once the Deployment they were written for
   is gone: Eve does not delete the Deployment of a service dropped from the

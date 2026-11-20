@@ -34,6 +34,9 @@ import { EnvDiagnosticsService } from './env-diagnostics.service.js';
 import { ensureManifestEnvironment } from './manifest-environment.js';
 import type { WorkStartOptions } from '../auth/token-scope.js';
 
+/** A token the worker's renewal took on, as the rotation reports it. */
+type RotatedToken = { secret: string; key: string; reason: string };
+
 @Injectable()
 export class EnvironmentsService {
   private readonly logger = new Logger(EnvironmentsService.name);
@@ -1163,18 +1166,32 @@ export class EnvironmentsService {
     }
     this.logger.log(`Revoked service tokens of environment "${envName}" (${environment.id}) issued before ${notBefore.toISOString()}`);
 
-    const renewed = await this.renewServiceTokens(environment.id);
+    const report = await this.renewServiceTokens(environment.id);
+    const renewed = report?.renewed ?? [];
+    const conflicted = report?.conflicted ?? [];
+    const failed = report?.failed ?? [];
     return {
       id: environment.id,
       name: environment.name,
       service_tokens_not_before: new Date(updated.service_tokens_not_before).toISOString(),
-      renewal: renewed ? 'done' : 'scheduled',
-      renewed: (renewed ?? []).map(({ secret, key, reason }) => ({ secret, key, reason })),
+      renewal: !report ? 'scheduled' : conflicted.length + failed.length > 0 ? 'incomplete' : 'done',
+      counts: { renewed: renewed.length, conflicted: conflicted.length, failed: failed.length },
+      renewed,
+      conflicted,
+      failed,
     };
   }
 
-  /** Ask the worker to renew one environment's service tokens now; null when it cannot. */
-  private async renewServiceTokens(envId: string): Promise<Array<{ secret: string; key: string; reason: string }> | null> {
+  /**
+   * Ask the worker to renew one environment's service tokens now: what it
+   * renewed, what a write in between held back and what failed. Null when it
+   * could not be asked or did not answer with a report.
+   */
+  private async renewServiceTokens(envId: string): Promise<{
+    renewed: RotatedToken[];
+    conflicted: RotatedToken[];
+    failed: Array<RotatedToken & { error?: string }>;
+  } | null> {
     try {
       const response = await fetch(`${resolveWorkerUrl('renew service tokens')}/service-tokens/renew`, {
         method: 'POST',
@@ -1185,8 +1202,18 @@ export class EnvironmentsService {
         this.logger.warn(`Worker service-token renewal for ${envId} returned ${response.status}; the hourly renewal follows`);
         return null;
       }
-      const body = await response.json() as { renewed?: Array<{ secret: string; key: string; reason: string }> };
-      return Array.isArray(body.renewed) ? body.renewed : [];
+      const body = await response.json() as Record<string, unknown>;
+      const list = (value: unknown) => (Array.isArray(value) ? value as Array<Record<string, unknown>> : []);
+      const entry = (item: Record<string, unknown>): RotatedToken =>
+        ({ secret: String(item.secret ?? ''), key: String(item.key ?? ''), reason: String(item.reason ?? '') });
+      return {
+        renewed: list(body.renewed).map(entry),
+        conflicted: list(body.conflicted).map(entry),
+        failed: list(body.failed).map((item) => ({
+          ...entry(item),
+          ...(typeof item.error === 'string' ? { error: item.error } : {}),
+        })),
+      };
     } catch (error) {
       this.logger.warn(
         `Worker service-token renewal for ${envId} failed: ${error instanceof Error ? error.message : String(error)}; the hourly renewal follows`,

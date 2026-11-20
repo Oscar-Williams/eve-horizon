@@ -12,6 +12,7 @@ import {
   clampJobTokenPermissions,
   clampServiceTokenPermissions,
   hasUserActor,
+  serviceTokenFloor,
   type AccessBindingScope,
 } from '@eve/shared';
 import {
@@ -163,23 +164,25 @@ export class TokenVerifierService {
   }
 
   /**
-   * A token minted for an environment's service is refused once the
-   * environment is gone, or when it was issued before the environment's
+   * A token minted for an environment's service follows the environment row,
+   * not its name. It is refused once the environment or its project is gone
+   * (a soft-deleted project's environments count as gone), when it was issued
+   * before the environment was created (an earlier environment of the same
+   * name), and when it was issued before the environment's
    * `service_tokens_not_before` (`eve env rotate-service-tokens`). The
-   * environment is read at most once a minute, so a rotation takes up to a
-   * minute to reach every replica.
+   * environment is read at most once a minute, so a rotation or a deletion
+   * takes up to a minute to reach every replica.
    */
   private async assertServiceTokenCurrent(projectId: string, envName: string, issuedAt: number): Promise<void> {
     const key = `${projectId}\u0000${envName}`;
     const now = Date.now();
     let entry = this.serviceTokenFloors.get(key);
     if (!entry || now - entry.readAt >= SERVICE_TOKEN_FLOOR_TTL_MS) {
-      const environment = await this.environments.findByProjectAndName(projectId, envName);
-      const notBefore = environment?.service_tokens_not_before;
+      const environment = await this.environments.findForServiceTokens(projectId, envName);
       entry = {
         readAt: now,
         exists: Boolean(environment),
-        floor: notBefore ? Math.floor(new Date(notBefore).getTime() / 1000) : null,
+        floor: environment ? serviceTokenFloor(environment) : null,
       };
       this.serviceTokenFloors.set(key, entry);
     }

@@ -146,12 +146,16 @@ export interface ApproveRequest {
   /** Ignored: the decider is the authenticated caller. */
   reviewer_id?: string;
   comment?: string;
+  /** The attempt the decider reviewed: refused (409) once the job is in review on a later one. */
+  attempt_id?: string;
 }
 
 export interface RejectRequest {
   /** Ignored: the decider is the authenticated caller. */
   reviewer_id?: string;
   reason: string;
+  /** The attempt the decider reviewed: refused (409) once the job is in review on a later one. */
+  attempt_id?: string;
 }
 
 export interface AddDependencyRequest {
@@ -293,6 +297,19 @@ function changesProgress(job: Job, updates: UpdateJobRequest): boolean {
 }
 
 /** A failed review decision as an HTTP error: 409 when the review was already decided, 400 otherwise. */
+/**
+ * The round a review decision is for, when the decider names the attempt
+ * they reviewed: the decision is refused once the job is in review on a
+ * later attempt. Nothing when they name none (older callers).
+ */
+function reviewedRound(data: { attempt_id?: unknown }): [] | [{ attemptId: string }] {
+  if (data.attempt_id === undefined || data.attempt_id === null) return [];
+  if (typeof data.attempt_id !== 'string' || data.attempt_id.length === 0) {
+    throw new BadRequestException('attempt_id must be the id of the attempt you reviewed');
+  }
+  return [{ attemptId: data.attempt_id }];
+}
+
 function reviewDecisionError(error: unknown): Error {
   if (error instanceof ReviewDecidedError) {
     return new ConflictException(`${error.message}; read the job again`);
@@ -2183,7 +2200,7 @@ export class JobsService {
     try {
       const job = await this.db.begin(async (rawTx) => {
         const tx = rawTx as unknown as Db;
-        return jobQueries(tx).approveReview(jobId, decider.id, data.comment, decider.type);
+        return jobQueries(tx).approveReview(jobId, decider.id, data.comment, decider.type, ...reviewedRound(data));
       });
       return this.toJobResponse(job as Job);
     } catch (error) {
@@ -2227,7 +2244,7 @@ export class JobsService {
       const job = await this.db.begin(async (rawTx) => {
         const tx = rawTx as unknown as Db;
         await this.narrowToCallerAllowlist(tx, jobId, caller);
-        return jobQueries(tx).rejectReview(jobId, decider.id, data.reason, decider.type);
+        return jobQueries(tx).rejectReview(jobId, decider.id, data.reason, decider.type, ...reviewedRound(data));
       });
       return this.toJobResponse(job as Job);
     } catch (error) {

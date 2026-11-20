@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   jobs: { findById: vi.fn() },
   projects: { findById: vi.fn() },
   subscriptions: { findWithGrantsById: vi.fn(), recordTokenMint: vi.fn() },
+  environments: { findByProjectAndName: vi.fn() },
 }));
 
 vi.mock('@eve/db', async (importOriginal) => ({
@@ -11,6 +12,7 @@ vi.mock('@eve/db', async (importOriginal) => ({
   jobQueries: vi.fn(() => mocks.jobs),
   projectQueries: vi.fn(() => mocks.projects),
   appLinkSubscriptionQueries: vi.fn(() => mocks.subscriptions),
+  environmentQueries: vi.fn(() => mocks.environments),
 }));
 
 import { AuthInternalController } from './auth.internal.controller';
@@ -57,6 +59,7 @@ describe('internal mint-app-link-token binds the subscription to its consumer', 
     mocks.subscriptions.recordTokenMint.mockResolvedValue(undefined);
     mocks.jobs.findById.mockImplementation(async (id: string) => JOBS[id] ?? null);
     mocks.projects.findById.mockImplementation(async (id: string) => PROJECTS[id] ?? null);
+    mocks.environments.findByProjectAndName.mockResolvedValue(null);
     controller = new AuthInternalController({ mintAppLinkToken } as never, (() => []) as never, {} as never);
   });
 
@@ -104,5 +107,29 @@ describe('internal mint-app-link-token binds the subscription to its consumer', 
     ).rejects.toThrow();
 
     expect(mintAppLinkToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("mints a deployed service's token no earlier than its environment's floor", async () => {
+    const ahead = Math.floor(Date.now() / 1000) + 5;
+    mocks.environments.findByProjectAndName.mockImplementation(async (projectId: string, name: string) =>
+      (projectId === 'proj_a' && name === 'prod'
+        ? { id: 'env_prod', created_at: new Date(0), service_tokens_not_before: new Date(ahead * 1000) }
+        : null));
+
+    await controller.mintAppLinkToken({
+      subscription_id: 'als_own',
+      consumer_principal: 'service:web',
+      consumer_project_id: 'proj_a',
+      consumer_env: 'prod',
+    } as never);
+
+    expect(mocks.environments.findByProjectAndName).toHaveBeenCalledWith('proj_a', 'prod');
+    expect(mintAppLinkToken).toHaveBeenCalledWith(expect.objectContaining({ notBefore: ahead }));
+  });
+
+  it("leaves a job's token to the clock: its environment has no say", async () => {
+    await controller.mintAppLinkToken({ subscription_id: 'als_own', consumer_principal: 'job:alpha-1', consumer_env: 'prod' } as never);
+
+    expect(mintAppLinkToken).toHaveBeenCalledWith(expect.not.objectContaining({ notBefore: expect.anything() }));
   });
 });

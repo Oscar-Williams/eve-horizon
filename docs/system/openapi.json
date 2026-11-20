@@ -4088,6 +4088,9 @@
         "responses": {
           "204": {
             "description": "Release deleted"
+          },
+          "409": {
+            "description": "An environment runs the release (its current or last applied release)"
           }
         },
         "security": [
@@ -4124,7 +4127,7 @@
             "bearer": []
           }
         ],
-        "summary": "Prune old releases, keeping the most recent N",
+        "summary": "Prune old releases, keeping the most recent N and every release an environment runs",
         "tags": [
           "projects"
         ]
@@ -32935,6 +32938,11 @@
           },
           "comment": {
             "type": "string"
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The attempt whose work the decider reviewed (the latest attempt when they looked). Once the job is in review on a later attempt the decision is refused with 409. Omitted: the round in review is decided."
           }
         },
         "additionalProperties": false
@@ -32948,6 +32956,11 @@
           },
           "reason": {
             "type": "string"
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The attempt whose work the decider reviewed (the latest attempt when they looked). Once the job is in review on a later attempt the decision is refused with 409. Omitted: the round in review is decided."
           }
         },
         "required": [
@@ -35354,8 +35367,29 @@
             "type": "string",
             "enum": [
               "done",
+              "incomplete",
               "scheduled"
             ]
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "renewed": {
+                "type": "integer"
+              },
+              "conflicted": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "renewed",
+              "conflicted",
+              "failed"
+            ],
+            "additionalProperties": false
           },
           "renewed": {
             "type": "array",
@@ -35379,6 +35413,55 @@
               ],
               "additionalProperties": false
             }
+          },
+          "conflicted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "secret": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "secret",
+                "key",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "secret": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "secret",
+                "key",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
@@ -35386,7 +35469,10 @@
           "name",
           "service_tokens_not_before",
           "renewal",
-          "renewed"
+          "counts",
+          "renewed",
+          "conflicted",
+          "failed"
         ],
         "additionalProperties": false
       },

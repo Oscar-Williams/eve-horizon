@@ -221,7 +221,7 @@ A profile stamped 1, 2 or 3 runs these under `audit` until `strict` is set again
 
 | Rule | Governs | Under `strict` |
 |---|---|---|
-| `manifest.approval_unenforced` | Project | Manifest sync refuses (400) a manifest whose `environments.<env>.approval` is set, with "Environment approval gates are not enforced by Eve. Remove `approval` from environments.<env>." Eve has no deploy approval gate: deploys to the environment never waited for a person. Under `audit` the manifest syncs with that text in its warnings and the environments are recorded; under `legacy`, the warning only. |
+| `manifest.approval_unenforced` | Project | Manifest sync refuses (400) a manifest whose `environments.<env>.approval` asks for a gate (any value but `none`, in any case, or blank), with "Environment approval gates are not enforced by Eve. Remove `approval` from environments.<env>." Eve has no deploy approval gate: deploys to the environment never waited for a person. Under `audit` the manifest syncs with that text in its warnings and the environments are recorded; under `legacy`, the warning only. |
 
 ### Internal service keys
 

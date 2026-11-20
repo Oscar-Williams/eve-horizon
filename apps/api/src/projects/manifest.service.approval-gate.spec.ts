@@ -173,4 +173,21 @@ describe('ManifestService.syncManifest: environment approval gates (rule manifes
     expect(response.warnings ?? []).toEqual([]);
     expect(findings()).toEqual([]);
   });
+
+  it('treats approval: none, and an empty value, as no gate under strict', async () => {
+    db.state.projectProfile = 'strict';
+    db.state.projectRuleset = 4;
+    const manifest = (approval: string) => JSON.stringify({
+      schema: 'eve/compose/v2',
+      services: { web: { image: 'shop:latest' } },
+      environments: { staging: { approval: '' }, prod: { approval } },
+    });
+
+    for (const approval of ['none', 'None', '', '  ']) {
+      const response = await sync(manifest(approval));
+      expect(response.warnings ?? []).toEqual([]);
+    }
+    expect(findings()).toEqual([]);
+    expect(db.manifests.create).toHaveBeenCalledTimes(4);
+  });
 });

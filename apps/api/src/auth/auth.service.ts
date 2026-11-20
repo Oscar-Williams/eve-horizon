@@ -357,12 +357,14 @@ export class AuthService {
     serviceName: string;
     permissions: string[];
     ttlSeconds?: number;
+    /** The environment's floor (serviceTokenFloor): the token is issued no earlier. */
+    notBefore?: number | null;
   }): string {
     if (!this.signerKey?.privateKey) {
       throw new Error('Signing key not configured');
     }
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = issuedAt(params.notBefore);
     const maxTtl = 90 * 24 * 60 * 60; // 90 days for deployed services
     const ttl = Math.min(params.ttlSeconds ?? maxTtl, maxTtl);
     const exp = now + ttl;
@@ -399,12 +401,14 @@ export class AuthService {
     ttlSeconds?: number;
     /** For a `job:<id>` principal: the running attempt the token is bound to. */
     attemptId?: string;
+    /** For a service principal: its environment's floor (serviceTokenFloor); the token is issued no earlier. */
+    notBefore?: number | null;
   }): string {
     if (!this.signerKey?.privateKey) {
       throw new Error('Signing key not configured');
     }
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = issuedAt(params.notBefore);
     const maxTtl = 90 * 24 * 60 * 60;
     const ttl = Math.min(params.ttlSeconds ?? maxTtl, maxTtl);
     const exp = now + ttl;
@@ -793,4 +797,14 @@ export class AuthService {
     this.logger.log(`Provisioned user ${user.id} via invite ${invite.id} into org ${invite.org_id}`);
     return user;
   }
+}
+
+/**
+ * A token's `iat`: now, in whole seconds, or the environment's floor when that
+ * is ahead of this replica's clock (another replica or the database set it),
+ * so the API does not refuse the token it just minted as revoked.
+ */
+function issuedAt(notBefore: number | null | undefined): number {
+  const now = Math.floor(Date.now() / 1000);
+  return typeof notBefore === 'number' && notBefore > now ? notBefore : now;
 }

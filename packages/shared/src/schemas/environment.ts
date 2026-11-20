@@ -374,18 +374,35 @@ export type ResumeEnvironmentResponse = z.infer<typeof ResumeEnvironmentResponse
 // Service-token rotation (`eve env rotate-service-tokens`)
 // ---------------------------------------------------------------------------
 
+/** A token the rotation took on. A fresh schema per use keeps the OpenAPI export free of internal refs. */
+const rotatedToken = () => z.object({
+  secret: z.string(),
+  key: z.string(),
+  reason: z.string(),
+});
+
 export const RotateServiceTokensResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
   /** Service tokens issued before this are refused (whole seconds). */
   service_tokens_not_before: z.string(),
-  /** `done`: the worker renewed the environment's tokens now; `scheduled`: its hourly renewal will. */
-  renewal: z.enum(['done', 'scheduled']),
-  renewed: z.array(z.object({
-    secret: z.string(),
-    key: z.string(),
-    reason: z.string(),
-  })),
+  /**
+   * `done`: the worker renewed every token it found now; `incomplete`: it
+   * renewed some, and its hourly renewal retries the conflicted and failed
+   * ones; `scheduled`: it could not renew now, its hourly renewal will.
+   */
+  renewal: z.enum(['done', 'incomplete', 'scheduled']),
+  counts: z.object({
+    renewed: z.number().int(),
+    conflicted: z.number().int(),
+    failed: z.number().int(),
+  }),
+  /** Written to the service's Secret; the service rolls onto it. */
+  renewed: z.array(rotatedToken()),
+  /** The Secret was written in between (a deploy): left for the hourly renewal. */
+  conflicted: z.array(rotatedToken()),
+  /** Not renewed, or renewed but not rolled onto: left for the hourly renewal. */
+  failed: z.array(rotatedToken().extend({ error: z.string().optional() })),
 });
 
 export type RotateServiceTokensResponse = z.infer<typeof RotateServiceTokensResponseSchema>;

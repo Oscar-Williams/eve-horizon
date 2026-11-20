@@ -638,16 +638,18 @@ Jobs default to 'ready' phase, making them immediately schedulable.`,
       },
       approve: {
         description: 'Approve a job in review (recorded as you)',
-        usage: 'eve job approve <job-id> [--comment "..."]',
+        usage: 'eve job approve <job-id> [--comment "..."] [--attempt-id <id>]',
         options: [
           '--comment <text>     Approval comment',
+          '--attempt-id <id>    The attempt you reviewed; refused (409) once the job is in review on a later one',
         ],
       },
       reject: {
         description: 'Reject a job in review (creates new attempt; recorded as you)',
-        usage: 'eve job reject <job-id> --reason "..."',
+        usage: 'eve job reject <job-id> --reason "..." [--attempt-id <id>]',
         options: [
           '--reason <text>      Rejection reason (required)',
+          '--attempt-id <id>    The attempt you reviewed; refused (409) once the job is in review on a later one',
         ],
       },
       result: {
@@ -1279,7 +1281,7 @@ for cloud deployments. Credentials are stored globally per API URL.`,
         ],
       },
       'rotate-service-tokens': {
-        description: 'Revoke an environment\'s service tokens issued until now and renew them (the services roll)',
+        description: 'Revoke an environment\'s service tokens issued until now and renew them (the services roll); prints how many were renewed, changed by a deploy meanwhile, or failed (the hourly renewal retries those)',
         usage: 'eve env rotate-service-tokens <env> [--project <id>]',
         options: [
           '<env>                  Environment name',

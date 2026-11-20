@@ -20,6 +20,7 @@ import {
   agentSecretsAllowlist,
   getServicePermissions,
   narrowSecretsAllowlist,
+  serviceTokenFloor,
   type AccessBindingScope,
   type Service,
 } from '@eve/shared';
@@ -289,6 +290,7 @@ export class AuthInternalController {
       serviceName: body.service_name,
       permissions,
       ttlSeconds: body.ttl_seconds,
+      notBefore: serviceTokenFloor(environment),
     });
 
     const parts = accessToken.split('.');

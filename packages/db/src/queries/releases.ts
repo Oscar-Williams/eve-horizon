@@ -134,20 +134,48 @@ export function releaseQueries(db: Db) {
       `;
     },
 
+    /** The names of the environments that run a release: their current or last applied one. */
+    async listEnvironmentsUsing(id: string): Promise<string[]> {
+      const rows = await db<Array<{ name: string }>>`
+        SELECT name FROM environments
+        WHERE current_release_id = ${id} OR last_applied_release_id = ${id}
+        ORDER BY name
+      `;
+      return rows.map((row) => row.name);
+    },
+
+    /**
+     * Delete a release no environment runs. False when it is gone or an
+     * environment names it as current or last applied (listEnvironmentsUsing
+     * says which): the worker renews that environment's service tokens
+     * against it.
+     */
     async delete(id: string): Promise<boolean> {
-      const result = await db`DELETE FROM releases WHERE id = ${id}`;
+      const result = await db`
+        DELETE FROM releases r
+        WHERE r.id = ${id}
+          AND NOT EXISTS (
+            SELECT 1 FROM environments e
+            WHERE e.current_release_id = r.id OR e.last_applied_release_id = r.id
+          )
+      `;
       return result.count > 0;
     },
 
+    /** Delete a project's releases past the newest `keepCount`, except those an environment runs. */
     async deleteByProjectOlderThan(projectId: string, keepCount: number): Promise<number> {
       const result = await db`
-        DELETE FROM releases
-        WHERE id IN (
+        DELETE FROM releases r
+        WHERE r.id IN (
           SELECT id FROM releases
           WHERE project_id = ${projectId}
           ORDER BY created_at DESC
           OFFSET ${keepCount}
         )
+          AND NOT EXISTS (
+            SELECT 1 FROM environments e
+            WHERE e.current_release_id = r.id OR e.last_applied_release_id = r.id
+          )
       `;
       return result.count;
     },
