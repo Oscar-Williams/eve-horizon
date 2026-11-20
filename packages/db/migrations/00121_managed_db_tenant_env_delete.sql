@@ -1,4 +1,4 @@
--- 00122_managed_db_tenant_env_delete.sql
+-- 00121_managed_db_tenant_env_delete.sql
 -- Deleting an environment keeps its managed database tenants: each is queued
 -- for drop (status 'deleting'), and its env_id becomes NULL when the
 -- environment row goes, instead of the delete failing on the foreign key or
