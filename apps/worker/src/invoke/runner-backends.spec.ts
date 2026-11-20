@@ -17,6 +17,7 @@ const k = vi.hoisted(() => ({
   crds: true,
   pool: true,
   poolReplicas: 3,
+  runnerNamespace: true,
   claim: 'ready' as 'ready' | 'pending' | 'failed',
   podPhase: 'Running',
   applied: [] as Array<Record<string, any>>,
@@ -31,8 +32,16 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
   child.stdin.on('finish', () => {
     let code = 0;
     let out = '';
+    let err = '';
     const has = (...words: string[]) => words.every((w) => args.includes(w));
-    if (args.includes('api-resources')) {
+    const noRunnerNamespace = 'Error from server (NotFound): namespaces "eve-runners" not found';
+    if (has('get', 'namespace')) {
+      code = k.runnerNamespace ? 0 : 1;
+      if (k.runnerNamespace) out = 'namespace/eve-runners'; else err = noRunnerNamespace;
+    } else if (has('apply') && !k.runnerNamespace && input.includes('"namespace":"eve-runners"')) {
+      code = 1;
+      err = noRunnerNamespace;
+    } else if (args.includes('api-resources')) {
       out = k.crds ? 'sandboxclaims.extensions.agents.x-k8s.io\nsandboxtemplates.extensions.agents.x-k8s.io\nsandboxwarmpools.extensions.agents.x-k8s.io\n' : '';
     } else if (has('apply')) {
       const parsed = JSON.parse(input);
@@ -51,6 +60,7 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
     }
     queueMicrotask(() => {
       child.stdout.write(out);
+      child.stderr.write(err);
       child.stdout.end(); child.stderr.end(); child.emit('close', code);
     });
   });
@@ -66,7 +76,7 @@ const submit = { kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', 
 let submittedTo: string[] = [];
 
 beforeEach(() => {
-  k.crds = true; k.pool = true; k.poolReplicas = 3; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
+  k.crds = true; k.pool = true; k.poolReplicas = 3; k.runnerNamespace = true; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
   submittedTo = [];
   resetSandboxDiscovery();
   vi.stubEnv('EVE_RUNNER_IMAGE', 'worker:test');
@@ -140,6 +150,18 @@ describe('runner pod backends', () => {
     expect(outcome.success).toBe(true);
     expect(claimsApplied()).toEqual([]);
     expect(podsApplied()).toHaveLength(1);
+  });
+
+  it('fails with the missing runner namespace and the install step it needs', async () => {
+    for (const crds of [true, false]) {
+      k.runnerNamespace = false; k.crds = crds; k.pool = false; k.applied = [];
+      resetSandboxDiscovery();
+      const outcome = await run();
+      expect(outcome.success).toBe(false);
+      expect(outcome.error).toMatch(/runner namespace eve-runners does not exist/i);
+      expect(outcome.error).toMatch(/runner-namespace\.yaml/);
+      expect(podsApplied()).toEqual([]);
+    }
   });
 
   it('creates the pod directly without the CRDs', async () => {
