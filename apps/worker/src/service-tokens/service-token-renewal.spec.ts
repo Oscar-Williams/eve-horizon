@@ -472,11 +472,46 @@ describe('service token renewal', () => {
     const revoked = serviceToken({ days: 80, issuedAgo: 5 });
     cluster.addService('api', { EVE_SERVICE_TOKEN: revoked });
 
-    const renewed = await renewal.renewEnvironment('env_prod');
+    const report = await renewal.renewEnvironment('env_prod');
 
     expect(mocks.environments.listForServiceTokenRenewal).toHaveBeenCalledWith('env_prod');
-    expect(renewed).toEqual([expect.objectContaining({ env_id: 'env_prod', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' })]);
+    expect(report).toEqual({
+      renewed: [expect.objectContaining({ env_id: 'env_prod', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' })],
+      conflicted: [],
+      failed: [],
+    });
     expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(revoked);
+  });
+
+  it('reports on a rotation what it renewed, what a write in between held back, and what it could not renew', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
+      { ...ENV, service_tokens_not_before: new Date(NOW) },
+    ]);
+    for (const service of ['api', 'web', 'worker']) {
+      cluster.addService(service, { EVE_SERVICE_TOKEN: serviceToken({ days: 80, issuedAgo: 5, service }) });
+    }
+    cluster.afterRead = (name) => {
+      if (name === 'prod-web-eve-secrets') cluster.write(name, { DATABASE_URL: 'postgres://shop-v2' });
+    };
+    const mint = vi.mocked(issuer.mintServiceToken).getMockImplementation()!;
+    vi.mocked(issuer.mintServiceToken).mockImplementation(async (p) => (p.serviceName === 'worker' ? null : mint(p)));
+
+    const report = await renewal.renewEnvironment('env_prod');
+
+    const entry = (service: string) => expect.objectContaining({
+      secret: `prod-${service}-eve-secrets`, key: 'EVE_SERVICE_TOKEN', reason: 'revoked',
+    });
+    expect(report.renewed).toEqual([entry('api')]);
+    expect(report.conflicted).toEqual([entry('web')]);
+    expect(report.failed).toEqual([entry('worker')]);
+  });
+
+  it('fails a rotation whose environment cannot be read, so the API reports it to the hourly pass', async () => {
+    mocks.environments.listForServiceTokenRenewal.mockResolvedValue([{ ...ENV, service_tokens_not_before: new Date(NOW) }]);
+    cluster.coreApi.listNamespacedSecret.mockRejectedValueOnce(k8sError(500));
+
+    await expect(renewal.renewEnvironment('env_prod')).rejects.toThrow();
   });
 
   it('renews nothing with EVE_SERVICE_TOKEN_RENEW_DAYS=0', async () => {

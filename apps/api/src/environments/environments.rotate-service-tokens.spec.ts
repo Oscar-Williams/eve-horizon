@@ -65,8 +65,39 @@ describe('rotate service tokens', () => {
       name: 'prod',
       service_tokens_not_before: notBefore.toISOString(),
       renewal: 'done',
+      counts: { renewed: 1, conflicted: 0, failed: 0 },
       renewed: [{ secret: 'prod-api-eve-secrets', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' }],
+      conflicted: [],
+      failed: [],
     });
+  });
+
+  it('says what the worker could not renew: a Secret written in between, a token the API did not mint', async () => {
+    const entry = (secret: string) =>
+      ({ env_id: 'env_prod', namespace: 'eve-acme-shop-prod', secret, key: 'EVE_SERVICE_TOKEN', reason: 'revoked' });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      renewed: [entry('prod-api-eve-secrets')],
+      conflicted: [entry('prod-web-eve-secrets')],
+      failed: [entry('prod-worker-eve-secrets')],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const result = await service.rotateServiceTokens('proj_shop', 'prod');
+
+    expect(result).toMatchObject({
+      renewal: 'incomplete',
+      counts: { renewed: 1, conflicted: 1, failed: 1 },
+      renewed: [{ secret: 'prod-api-eve-secrets', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' }],
+      conflicted: [{ secret: 'prod-web-eve-secrets', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' }],
+      failed: [{ secret: 'prod-worker-eve-secrets', key: 'EVE_SERVICE_TOKEN', reason: 'revoked' }],
+    });
+  });
+
+  it('reports the hourly renewal when the worker answers with an error', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 500 }));
+
+    const result = await service.rotateServiceTokens('proj_shop', 'prod');
+
+    expect(result).toMatchObject({ renewal: 'scheduled', counts: { renewed: 0, conflicted: 0, failed: 0 } });
   });
 
   it('still revokes when the worker cannot be reached; the hourly renewal follows', async () => {
@@ -75,7 +106,7 @@ describe('rotate service tokens', () => {
     const result = await service.rotateServiceTokens('proj_shop', 'prod');
 
     expect(environments.revokeServiceTokens).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ renewal: 'scheduled', renewed: [] });
+    expect(result).toMatchObject({ renewal: 'scheduled', renewed: [], conflicted: [], failed: [] });
   });
 
   it('is not found for an unknown environment', async () => {
