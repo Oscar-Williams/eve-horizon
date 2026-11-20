@@ -18,6 +18,10 @@ vi.mock('@eve/db', async (importOriginal) => {
     userQueries: vi.fn(empty),
     membershipQueries: vi.fn(empty),
     projectQueries: vi.fn(empty),
+    // A service token is accepted only while its environment exists.
+    environmentQueries: vi.fn(() => ({
+      findByProjectAndName: vi.fn(async () => ({ id: 'env_a', service_tokens_not_before: null })),
+    })),
   };
 });
 
