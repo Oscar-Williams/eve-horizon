@@ -447,14 +447,19 @@ The admission policies live in their own kustomization, `k8s/admission`
 
 `eve-worker-workload-guard` holds every pod and pod template the worker
 writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
-SandboxTemplates), in every namespace: no DaemonSet, and nothing Pod
-Security baseline refuses, at pod level or in any container (init and
+SandboxTemplates), and the ephemeral containers it would add through
+`pods/ephemeralcontainers` (no role of its grants that, but one an operator
+adds would be judged too), in every namespace: no DaemonSet, and nothing
+Pod Security baseline refuses, at pod level or in any container (init and
 ephemeral ones included): no privileged container, no host namespace
 (`hostNetwork`, `hostPID`, `hostIPC`), no Windows host process, no
 `hostPath`, no `hostPort`, no capability beyond baseline's, no seccomp or
-AppArmor `Unconfined` (field or `container.apparmor.security.beta.kubernetes.io/*`
-annotation), no `procMount` but `Default`, no sysctl outside baseline's
-safe set, no SELinux type, user or role beyond baseline's. It also refuses
+AppArmor `Unconfined` (field, or the annotation:
+`seccomp.security.alpha.kubernetes.io/pod`,
+`container.seccomp.security.alpha.kubernetes.io/*`,
+`container.apparmor.security.beta.kubernetes.io/*`), no `procMount` but
+`Default`, no sysctl outside baseline's safe set, no SELinux type, user or
+role beyond baseline's. It also refuses
 ephemeral volumes (a claim template could clone another claim), and wants a
 service account of `default`, `eve-runner` or, outside `eve`, an app account
 (`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label
@@ -467,13 +472,25 @@ guard refuses: an instance that needs it drops that rule in its overlay.
 `eve-worker-platform-guard` holds every write of the worker's in `eve`
 (create, update and delete) to what it makes there, judged by name or label
 on the object before and after the write: Secrets named `kaniko-cfg-*`;
-claims named `eve-ws-*` or `eve-org-fs-*` that clone or bind no volume (no
-`dataSource`, `dataSourceRef`, `volumeName` or `selector`); pods labelled
+claims named `eve-ws-*` that clone or bind no volume (no `dataSource`,
+`dataSourceRef`, `volumeName` or `selector`), never the org filesystem's
+`eve-org-fs-*` (runner pods mount it; the worker neither resizes nor
+removes it); pods labelled
 `eve.type=runner` or `eve.horizon/component=kaniko-build`, and Jobs with the
-kaniko label; NetworkPolicies and FQDN policies labelled
-`eve.horizon/egress`; nothing else. So the worker can neither replace nor
-remove the platform's Secrets (`eve-app`), pods, claims, Jobs or policies,
-whatever its Role in `eve` allows by verb.
+kaniko label; runner egress policies (below); nothing else. So the worker
+can neither replace nor remove the platform's Secrets (`eve-app`), pods,
+claims, Jobs or policies, whatever its Role in `eve` allows by verb.
+
+`eve-worker-runner-policy-guard` holds every NetworkPolicy and FQDN policy
+the worker writes in the runner namespaces (`eve-runners`, and `eve` for
+plain runner pods) to the shape `runnerEgressPolicies` and
+`runnerFqdnPolicies` make: labelled `eve.horizon/egress` before and after
+the write (so the static `eve-runner-deny` and `eve-runner-ingress`, and
+the platform's own policies, stay out of reach), selecting only runner pods
+(`podSelector.matchLabels` `eve.horizon/runner: "true"`), and egress only
+(`policyTypes: [Egress]`, none on an FQDN policy, no `ingress` rules). A
+policy labelled as Eve's can therefore open no way in to a platform pod,
+nor to a runner pod.
 
 The orchestrator (`k8s/base/orchestrator-rbac.yaml`) reads pods, events,
 Deployments and ReplicaSets, and patches only `deployments/scale` (the env

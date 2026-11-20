@@ -164,6 +164,15 @@ theirs to allow for).
 The limits are applied at provisioning, when a change to the tenant
 finishes, and once to every ready tenant when the orchestrator starts.
 
+The tenant owner owns its database, so it can change the database's limit
+itself (`ALTER DATABASE ... CONNECTION LIMIT`), and Eve leaves a limit
+already set alone. That limit therefore guards against running out by
+accident only; a lower one the owner sets can shut Eve's own connections
+out of that database, and no other. A hostile tenant is bounded by the
+per-login limits, which the owner cannot change (its logins are
+`NOCREATEROLE`), and by the cap of 8 declared roles: at most nine logins,
+each at its class's limit.
+
 **Rollout (0.1.328).** The orchestrator's start-up pass applies these limits
 as soon as the new release starts, so the pre-check runs **before** the
 deploy, read-only, as the instance's admin login, at a busy time of day
@@ -181,8 +190,9 @@ FROM pg_roles r WHERE r.rolcanlogin ORDER BY r.rolname;
 
 Compare each tenant database's connections with its class maximum plus 5,
 and each login's with its class limit. Where a tenant is near either, scale
-it to a larger class (`eve db scale`) before the deploy. A database limit set
-by hand below the new one is raised by the start-up pass.
+it to a larger class (`eve db scale`) before the deploy. A database that
+already has a limit (set by hand, or by its owner) keeps it: the start-up
+pass sets one only where there is none, and never raises or lowers one.
 
 ### Roles
 

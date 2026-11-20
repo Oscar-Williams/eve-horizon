@@ -182,7 +182,8 @@ describe('k8s/admission: the worker workload guard', () => {
     expect(binding?.spec.validationActions).toEqual(['Deny']);
     const rules = policy()!.spec.matchConstraints.resourceRules as Array<{ apiGroups: string[]; resources: string[]; operations: string[] }>;
     const covered = rules.flatMap((r) => r.resources);
-    for (const resource of ['pods', 'deployments', 'replicasets', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'sandboxtemplates']) {
+    // pods/ephemeralcontainers: no role of the worker's grants it, but if one ever did, what it adds is judged too.
+    for (const resource of ['pods', 'pods/ephemeralcontainers', 'deployments', 'replicasets', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'sandboxtemplates']) {
       expect(covered, resource).toContain(resource);
     }
     for (const rule of rules) expect(rule.operations.sort()).toEqual(['CREATE', 'UPDATE']);
@@ -204,6 +205,7 @@ describe('k8s/admission: the worker workload guard', () => {
     const text = JSON.stringify(policy()!.spec);
     for (const needle of [
       'ephemeralContainers', 'seccompProfile', "'RuntimeDefault'", 'appArmorProfile',
+      "'seccomp.security.alpha.kubernetes.io/pod'", "'container.seccomp.security.alpha.kubernetes.io/'",
       "'container.apparmor.security.beta.kubernetes.io/'", 'procMount', "'Default'", 'sysctls',
       "'kernel.shm_rmid_forced'", 'seLinuxOptions', "'container_t'", 'hostProcess',
     ]) {
@@ -227,19 +229,48 @@ describe('k8s/admission: the worker platform guard', () => {
     expect(conditions).toContain("request.namespace == 'eve'");
   });
 
-  it('holds Secrets, claims, pods, Jobs and policies there to what the worker makes, before and after the change', () => {
+  it('holds Secrets, claims, pods and Jobs there to what the worker makes, before and after the change', () => {
     const text = JSON.stringify(policy()!.spec);
     for (const needle of [
-      "'kaniko-cfg-'", "'eve-ws-'", "'eve-org-fs-'", 'dataSource', 'dataSourceRef', 'volumeName',
-      "'eve.type'", "'runner'", "'eve.horizon/component'", "'kaniko-build'", "'eve.horizon/egress'", 'oldObject',
+      "'kaniko-cfg-'", "'eve-ws-'", 'dataSource', 'dataSourceRef', 'volumeName',
+      "'eve.type'", "'runner'", "'eve.horizon/component'", "'kaniko-build'", 'oldObject',
     ]) {
       expect(text, needle).toContain(needle);
     }
   });
 
+  it("never lets the worker write the platform's org filesystem claim (eve-org-fs-*), which runner pods only mount", () => {
+    expect(JSON.stringify(policy()!.spec)).not.toContain("'eve-org-fs-'");
+  });
+
   it('is joined by the workload guard refusing ephemeral volumes anywhere', () => {
     const workload = of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-workload-guard')!;
     expect(JSON.stringify(workload.spec)).toContain('ephemeral');
+  });
+});
+
+describe('k8s/admission: the worker runner policy guard', () => {
+  const policy = () => of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-runner-policy-guard');
+
+  it("fails closed, denies, and matches the worker's every write of network and FQDN policies in eve and eve-runners", () => {
+    expect(policy()?.spec.failurePolicy).toBe('Fail');
+    const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-worker-runner-policy-guard');
+    expect(binding?.spec.validationActions).toEqual(['Deny']);
+    const rules = policy()!.spec.matchConstraints.resourceRules as Array<{ apiGroups: string[]; resources: string[]; operations: string[] }>;
+    expect(rules.map((r) => `${r.apiGroups.join()}/${r.resources.join()}`).sort())
+      .toEqual(['networking.gke.io/fqdnnetworkpolicies', 'networking.k8s.io/networkpolicies']);
+    for (const rule of rules) expect([...rule.operations].sort()).toEqual(['CREATE', 'DELETE', 'UPDATE']);
+    const conditions = JSON.stringify(policy()!.spec.matchConditions);
+    expect(conditions).toContain("'system:serviceaccount:eve:eve-worker'");
+    expect(conditions).toContain("'eve'");
+    expect(conditions).toContain("'eve-runners'");
+  });
+
+  it('holds them to the shape the worker writes: labelled, egress only, selecting runner pods', () => {
+    const text = JSON.stringify(policy()!.spec);
+    for (const needle of ["'eve.horizon/egress'", 'oldObject', 'podSelector', "'eve.horizon/runner'", 'policyTypes', "['Egress']", 'ingress']) {
+      expect(text, needle).toContain(needle);
+    }
   });
 });
 

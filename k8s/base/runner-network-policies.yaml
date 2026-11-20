@@ -14,8 +14,9 @@
 # Both live in the runner namespace and, for plain-pod runners (org
 # filesystem jobs under legacy and audit), in eve. Pods from releases before
 # runner labels carry no eve.horizon/runner, so neither selects them. Eve's
-# controllers never write these (on managed installs, an admission policy
-# holds them to eve-runner-<project> policies). The generator in
+# controllers never write these (eve-worker-runner-policy-guard in
+# k8s/admission holds the worker to its labelled, egress-only runner
+# policies, so it can neither change nor remove them). The generator in
 # packages/shared/src/k8s/egress-policies.ts (runnerDenyPolicies,
 # runnerIngressPolicies) is the reference; a worker spec checks they match.
 apiVersion: networking.k8s.io/v1
