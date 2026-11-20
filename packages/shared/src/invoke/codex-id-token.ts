@@ -91,9 +91,10 @@ const EXPIRY_SKEW_SECONDS = 60;
 /**
  * An access token's payload when it is a JWT, null when it is not. Its
  * signature is verified when it names the issuer and one of the issuer's
- * keys (throwing when it does not verify); otherwise it is only decoded.
+ * keys (throwing when it does not verify); otherwise it is only decoded, and
+ * `verified` is false.
  */
-function accessTokenPayload(value: unknown, jwks: Jwks): Record<string, unknown> | null {
+function accessTokenPayload(value: unknown, jwks: Jwks): { payload: Record<string, unknown>; verified: boolean } | null {
   const token = jwtOf(value);
   if (!token) return null;
   let header: Record<string, unknown>;
@@ -108,7 +109,7 @@ function accessTokenPayload(value: unknown, jwks: Jwks): Record<string, unknown>
   if (!header || typeof header !== 'object' || !payload || typeof payload !== 'object') return null;
   const issuerKey = payload.iss === CODEX_ID_TOKEN_ISSUER
     && jwks.keys.some((key) => key.kid === header.kid && key.kty === 'RSA');
-  return issuerKey ? verifiedPayload(token, jwks, 'access_token') : payload;
+  return issuerKey ? { payload: verifiedPayload(token, jwks, 'access_token'), verified: true } : { payload, verified: false };
 }
 
 /**
@@ -117,7 +118,8 @@ function accessTokenPayload(value: unknown, jwks: Jwks): Record<string, unknown>
  * account and has not expired (when it carries `exp`), and that the plain
  * `tokens.account_id`, when present, names that account too. Throws
  * otherwise. `note` hears when the access token is not a JWT and was not
- * checked.
+ * checked, and when it was accepted on its decoded claims only (another
+ * issuer, or a key the issuer does not publish).
  */
 export async function verifiedCodexAccountId(
   authJson: string,
@@ -133,9 +135,12 @@ export async function verifiedCodexAccountId(
   const tokens = tokensOf(authJson) ?? {};
   const access = accessTokenPayload(tokens.access_token, jwks);
   if (access) {
-    if (accountClaim(access) !== account) throw new Error("access_token names another account than the id_token's");
-    if (typeof access.exp === 'number' && access.exp + EXPIRY_SKEW_SECONDS < now / 1000) {
+    if (accountClaim(access.payload) !== account) throw new Error("access_token names another account than the id_token's");
+    if (typeof access.payload.exp === 'number' && access.payload.exp + EXPIRY_SKEW_SECONDS < now / 1000) {
       throw new Error('access_token has expired');
+    }
+    if (!access.verified) {
+      note?.('access_token was accepted on its decoded claims only (another issuer or an unpublished key), so its signature was not checked; the id_token was');
     }
   } else {
     note?.('access_token is not a JWT, so its account was not checked; the id_token was');
