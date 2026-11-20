@@ -387,6 +387,14 @@ export class DeployerService {
       this.validateReleaseImageDigests(release.id, release.image_digests_json, manifest.manifest_yaml);
     }
 
+    // A deploy counts as an explicit choice of this manifest: runner egress
+    // allow lists (egress.allow_hosts) read the last synced or deployed one.
+    try {
+      await this.manifests.markSynced(manifest.id);
+    } catch (error) {
+      this.logger.warn(`Could not mark manifest ${manifest.id} as deployed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     const namespace = deriveNamespace(org.slug, project.slug, environment.name, environment.namespace);
     const namespaceLabels = {
       'eve.org_id': project.org_id,

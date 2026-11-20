@@ -119,8 +119,12 @@ runner pods and env pods reach. The hosts come from three places:
 - **The repository:** runners also reach the git host of the project's
   `repo_url` (HTTPS on 443, `ssh://` on its port, `git@host:` on 22).
 
-Env pods get the manifest lists only; runner pods get the project list, the
-harness hosts and the git host.
+Env pods get the manifest lists only (from the release the env runs);
+runner pods get the project list, the harness hosts and the git host. The
+runner list comes from the manifest of the project's last explicit
+`eve project sync` or deploy (`project_manifests.synced_at`), never from a
+manifest the pipeline's drift check stored from a built ref, whose contents
+job code controls.
 
 ### Providers
 

@@ -517,21 +517,27 @@ export class EgressPolicies {
     });
   }
 
-  /** The hosts a project's runners may reach (its list, every harness's hosts, its git host), and how many it declares. */
+  /**
+   * The hosts a project's runners may reach (its list, every harness's
+   * hosts, its git host), and how many it declares. The list comes from the
+   * manifest of its last explicit sync or deploy: the pipeline's drift check
+   * stores manifests from whatever ref a build checked out, which job code
+   * controls, so the latest row could widen the list.
+   */
   private async runnerHosts(projectId: string): Promise<{ hosts: EgressHost[]; declared: number }> {
     const project = await this.projects.findById(projectId);
-    const record = await this.manifests.findLatestByProject(projectId);
+    const record = await this.manifests.findLatestSyncedByProject(projectId);
     const declared = manifestEgressHosts(parseManifest(record?.manifest_yaml)).project;
     return { hosts: runnerAllowHosts({ projectHosts: declared, repoUrl: project?.repo_url }), declared: declared.length };
   }
 
-  /** The manifest an env runs: its applied (else current) release's, else the project's latest. */
+  /** The manifest an env runs: its applied (else current) release's, else the project's last synced or deployed one. */
   private async envManifest(env: EgressEnvRef): Promise<unknown> {
     const row = await this.envs.findById(env.id);
     const releaseId = row?.last_applied_release_id ?? row?.current_release_id;
     const release = releaseId ? await this.releases.findById(releaseId) : null;
     const record = (release ? await this.manifests.findByProjectAndHash(env.projectId, release.manifest_hash) : null)
-      ?? await this.manifests.findLatestByProject(env.projectId);
+      ?? await this.manifests.findLatestSyncedByProject(env.projectId);
     return parseManifest(record?.manifest_yaml);
   }
 
@@ -691,10 +697,10 @@ export class EgressPolicies {
     return [...peers.values()];
   }
 
-  /** The container port of a producer's service: its first declared port, from its latest manifest. */
+  /** The container port of a producer's service: its first declared port, from its last synced or deployed manifest. */
   private async servicePort(projectId: string, serviceName: string): Promise<number | null> {
     try {
-      const record = await this.manifests.findLatestByProject(projectId);
+      const record = await this.manifests.findLatestSyncedByProject(projectId);
       const ports = (yaml.parse(record?.manifest_yaml ?? '') as { services?: Record<string, { ports?: unknown[] }> } | null)
         ?.services?.[serviceName]?.ports;
       const first = Array.isArray(ports) ? ports[0] : undefined;

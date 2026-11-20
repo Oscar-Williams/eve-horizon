@@ -52,6 +52,8 @@ vi.mock('@eve/db', async (importOriginal) => ({
   projectManifestQueries: () => ({
     findLatestByProject: async (projectId: string) =>
       (db.manifests.has(projectId) ? { manifest_yaml: db.manifests.get(projectId) } : null),
+    findLatestSyncedByProject: async (projectId: string) =>
+      (db.manifests.has(projectId) ? { manifest_yaml: db.manifests.get(projectId) } : null),
   }),
   securityQueries: () => ({
     listProjectProfiles: async (scope: { orgId?: string; projectId?: string }) =>

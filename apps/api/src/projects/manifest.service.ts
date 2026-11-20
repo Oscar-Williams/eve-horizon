@@ -336,6 +336,8 @@ export class ManifestService {
     // Check if manifest with same hash already exists
     const existing = await this.manifests.findByProjectAndHash(projectId, manifestHash);
     if (existing) {
+      // An explicit sync: runner egress allow lists read this row from now on.
+      await this.manifests.markSynced(existing.id);
       const updated = await this.manifests.update(existing.id, {
         git_sha: data.git_sha ?? existing.git_sha ?? null,
         branch: data.branch ?? existing.branch ?? null,
@@ -377,6 +379,7 @@ export class ManifestService {
       parsed_defaults: parsedDefaults,
       parsed_agents: parsedAgents,
     });
+    await this.manifests.markSynced(manifest.id);
     if (appLinkReconciliation) {
       await this.applyAppLinkReconciliation(projectId, appLinkReconciliation);
     }
