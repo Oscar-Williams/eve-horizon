@@ -508,8 +508,10 @@ All platform services:
 - Internal service keys. `EVE_INTERNAL_CORE_KEY` on `eve-api`,
   `eve-orchestrator`, `eve-worker` and `eve-agent-runtime`;
   `EVE_INTERNAL_GATEWAY_KEY` on `eve-gateway` only; `EVE_INTERNAL_SSO_KEY` on
-  `eve-sso` only; `EVE_INTERNAL_CALLER_HASHES` (`core:<sha256>,gateway:<sha256>,sso:<sha256>`)
-  on `eve-api` and `eve-gateway`. The worker and agent runtime refuse every
+  `eve-sso` only; `EVE_INTERNAL_DELIVER_KEY` on `eve-api` only (sent to the
+  gateway with deliveries); `EVE_INTERNAL_CALLER_HASHES`
+  (`core:<sha256>,gateway:<sha256>,sso:<sha256>,deliver:<sha256>`) on
+  `eve-api` and `eve-gateway`. The worker and agent runtime refuse every
   request except `GET /health` without a key, and refuse to start without one
   when `NODE_ENV=production`. Runner pods get only the core key's hash.
 - `EVE_INTERNAL_API_KEY`: the legacy shared key, still sent and accepted
@@ -523,7 +525,9 @@ Each platform service takes only the `eve-app` keys it reads, by
 `secretKeyRef` (base `k8s/base/*-deployment.yaml`), never the whole Secret by
 `envFrom`; the gateway and the SSO get no database URL and no core key. The
 refs are optional, as `envFrom` was, so a key missing from the Secret leaves
-the variable unset rather than stopping the pod.
+the variable unset rather than stopping the pod; except
+`EVE_REGISTRY_CREDENTIAL_KEY`, which the API and the worker require (it may be
+empty), so they never start on different registry keys.
 
 Orchestrator:
 - `ORCH_LOOP_INTERVAL_MS`

@@ -19,6 +19,7 @@ import {
 const CORE = 'core-key-0123456789';
 const GATEWAY = 'gateway-key-0123456789';
 const SSO = 'sso-key-0123456789';
+const DELIVER = 'deliver-key-0123456789';
 const LEGACY = 'legacy-internal-key';
 const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -47,6 +48,18 @@ describe('internal service keys: what a caller sends', () => {
     const env = { EVE_INTERNAL_CORE_KEY: CORE, EVE_INTERNAL_GATEWAY_KEY: GATEWAY, EVE_INTERNAL_SSO_KEY: SSO };
     expect(internalAuthHeaders({ service: 'gateway', env })).toEqual({ [SERVICE_KEY_HEADER]: `gateway.${GATEWAY}` });
     expect(internalAuthHeaders({ service: 'sso', env })).toEqual({ [SERVICE_KEY_HEADER]: `sso.${SSO}` });
+  });
+
+  it('a delivery to the gateway sends the deliver key and the legacy key, never the core key', () => {
+    const env = { EVE_INTERNAL_CORE_KEY: CORE, EVE_INTERNAL_DELIVER_KEY: DELIVER, EVE_INTERNAL_API_KEY: LEGACY };
+    expect(internalAuthHeaders({ service: 'deliver', env })).toEqual({
+      [SERVICE_KEY_HEADER]: `deliver.${DELIVER}`,
+      [INTERNAL_TOKEN_HEADER]: LEGACY,
+    });
+    // Without its own key it falls back to the legacy key only.
+    expect(internalAuthHeaders({ service: 'deliver', env: { EVE_INTERNAL_CORE_KEY: CORE, EVE_INTERNAL_API_KEY: LEGACY } }))
+      .toEqual({ [INTERNAL_TOKEN_HEADER]: LEGACY });
+    expect(internalAuthHeaders({ service: 'deliver', env: { EVE_INTERNAL_CORE_KEY: CORE } })).toEqual({});
   });
 
   it('knows whether a service holds any internal credential', () => {
@@ -88,6 +101,13 @@ describe('internal service keys: what a callee accepts', () => {
 
   it('accepts the core key by its hash when the callee does not hold it', () => {
     expect(identifyInternalCaller(`core.${CORE}`, { EVE_INTERNAL_CALLER_HASHES: `core:${sha(CORE)}` })).toBe('core');
+  });
+
+  it('accepts the deliver key by its hash, and never under another service name', () => {
+    const gatewayEnv = { EVE_INTERNAL_CALLER_HASHES: `deliver:${sha(DELIVER)}` };
+    expect(identifyInternalCaller(`deliver.${DELIVER}`, gatewayEnv)).toBe('deliver');
+    expect(identifyInternalCaller(`core.${DELIVER}`, gatewayEnv)).toBeNull();
+    expect(identifyInternalCaller(`deliver.${CORE}`, gatewayEnv)).toBeNull();
   });
 
   it('refuses a wrong key, a key under another service name, an unknown service and malformed values', () => {

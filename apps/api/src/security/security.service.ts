@@ -18,6 +18,7 @@ import {
   SECURITY_PROFILE_SETTING,
   currentRegistryKeyVersion,
   generateSecurityFindingId,
+  registryCredentialKey,
   governingSecurityLevel,
   isSecurityProfile,
   parsePolicyEnforced,
@@ -256,13 +257,19 @@ export class SecurityService {
    * The worker writes every env namespace's and project's egress policies
    * (egress.default_deny) and removes those of deleted projects, then
    * re-signs each stale environment's registry pull secret with the current
-   * registry credential key and records the version, and renders the runner
+   * registry credential key and records the version (only when the worker
+   * signs with the key this API verifies with, whose version it sends), and
+   * renders the runner
    * SandboxTemplates and SandboxWarmPools from the instance settings (a no-op
    * without the agent-sandbox CRDs).
    */
   async reconcile(): Promise<{ network: unknown; registry: unknown; runner_templates: unknown }> {
     const network = await this.reconcileNetwork({});
-    const registry = await this.callWorker('/registry/pull-secrets/resign', {}, 're-sign registry pull secrets');
+    const registry = await this.callWorker(
+      '/registry/pull-secrets/resign',
+      { key_version: registryCredentialKey()?.version ?? null },
+      're-sign registry pull secrets',
+    );
     const runnerTemplates = await this.callWorker('/runner/templates/reconcile', {}, 'render the runner templates');
     return { network, registry, runner_templates: runnerTemplates };
   }

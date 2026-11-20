@@ -2279,7 +2279,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
         description: 'Move stored credentials to the v2 format, bound to where each value lives (system admins only). After it, releases below 0.1.327 cannot read them: run it once the release has soaked.',
         usage: 'eve system secrets reencrypt [--dry-run] [--json]',
         options: [
-          '--dry-run     Count stored secrets, integration tokens and OAuth client secrets by format; change nothing',
+          '--dry-run     Count stored secrets, integration tokens, OAuth client and Slack signing secrets by format; change nothing',
         ],
         examples: [
           'eve system secrets reencrypt --dry-run',

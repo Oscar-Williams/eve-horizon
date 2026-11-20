@@ -273,8 +273,8 @@ export async function decideSecurityRule(
 
 /**
  * `internal.service_key` for an internal-only service (worker, agent
- * runtime): decide a call that only the legacy internal key proves, and
- * record the finding. For `legacyInternalKeyJudge` in `@eve/shared`, which
+ * runtime, orchestrator): decide a call that only the legacy internal key
+ * proves, and record the finding. For `legacyInternalKeyJudge` in `@eve/shared`, which
  * caches the decision.
  */
 export function internalLegacyKeyDecider(

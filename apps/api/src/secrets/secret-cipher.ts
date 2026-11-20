@@ -11,8 +11,9 @@ import type { SecurityService } from '../security/security.service.js';
  * - `v1:iv:tag:data`: AES-256-GCM under the master key, no associated data.
  * - `v2:iv:tag:data`: the same, with associated data naming where the value
  *   lives, so a ciphertext opens only in its own row: `scope_type|scope_id|key`
- *   for a secret, `table|id|field` for an integration token or an OAuth
- *   client secret (stored plain before re-encryption).
+ *   for a secret, `table|id|field` for an integration token, an OAuth
+ *   client secret or a Slack signing secret (stored plain before
+ *   re-encryption).
  *
  * Every release from this one reads both. New writes stay `v1` (and plain
  * for the OAuth columns) until `eve system secrets reencrypt` sets the
@@ -37,7 +38,8 @@ export interface SecretLocation {
 export interface ColumnLocation {
   table: 'integrations' | 'oauth_app_configs';
   id: string;
-  field: 'tokens_json' | 'client_secret';
+  /** `signing_secret` is `config_json.signing_secret` of an OAuth app config. */
+  field: 'tokens_json' | 'client_secret' | 'signing_secret';
 }
 
 /** What a masked secret shows: a fixed mask, never a character of the value. */

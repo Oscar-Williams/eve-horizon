@@ -12,6 +12,9 @@ import { createHash, timingSafeEqual } from 'node:crypto';
  *   `EVE_INTERNAL_SSO_KEY`). A callee holds only SHA-256 hashes of them
  *   (`EVE_INTERNAL_CALLER_HASHES=gateway:<hex>,sso:<hex>`), so it cannot act
  *   as them. The API accepts them only on the routes that declare them.
+ * - `deliver`: held by the services that deliver to the gateway
+ *   (`EVE_INTERNAL_DELIVER_KEY`, the API). The gateway holds only its hash
+ *   and accepts nothing else, so it never sees the core key.
  *
  * A caller sends `x-eve-service-key: <service>.<key>`. While it still holds
  * the legacy `EVE_INTERNAL_API_KEY`, it also sends `x-eve-internal-token`,
@@ -25,7 +28,7 @@ export const SERVICE_KEY_HEADER = 'x-eve-service-key';
 /** Header carrying the legacy shared key (`EVE_INTERNAL_API_KEY`). */
 export const INTERNAL_TOKEN_HEADER = 'x-eve-internal-token';
 
-export const INTERNAL_KEY_SERVICES = ['core', 'gateway', 'sso'] as const;
+export const INTERNAL_KEY_SERVICES = ['core', 'gateway', 'sso', 'deliver'] as const;
 export type InternalKeyService = (typeof INTERNAL_KEY_SERVICES)[number];
 
 /** The env var holding each service's own key. */
@@ -33,6 +36,7 @@ export const INTERNAL_KEY_ENV: Readonly<Record<InternalKeyService, string>> = {
   core: 'EVE_INTERNAL_CORE_KEY',
   gateway: 'EVE_INTERNAL_GATEWAY_KEY',
   sso: 'EVE_INTERNAL_SSO_KEY',
+  deliver: 'EVE_INTERNAL_DELIVER_KEY',
 };
 
 /** The env var listing `<service>:<sha256 hex>` for keys a callee accepts without holding them. */

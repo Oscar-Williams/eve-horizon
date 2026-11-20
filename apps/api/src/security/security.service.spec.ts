@@ -82,6 +82,7 @@ const db = vi.hoisted(() => {
   };
   const oauthAppConfigs = {
     countClientSecretFormats: vi.fn(async () => ({ plain: state.storage.plainClientSecrets, sealed: 0 })),
+    countSigningSecretFormats: vi.fn(async () => ({ plain: 0, sealed: 0 })),
   };
 
   const environments = {
@@ -471,6 +472,7 @@ describe('SecurityService', () => {
     });
 
     it('reconcile writes the egress policies of every env and project, then re-signs pull secrets and renders runner templates', async () => {
+      vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
       const calls = stubWorker({
         '/network/reconcile': { environments: { reconciled: 3 } },
         '/registry/pull-secrets/resign': { resigned: 1 },
@@ -479,7 +481,8 @@ describe('SecurityService', () => {
       const result = await build().reconcile();
       expect(calls).toEqual([
         { path: '/network/reconcile', body: {} },
-        { path: '/registry/pull-secrets/resign', body: {} },
+        // The worker re-signs only with the key the API verifies with.
+        { path: '/registry/pull-secrets/resign', body: { key_version: registryKeyVersion('registry-credential-key') } },
         { path: '/runner/templates/reconcile', body: {} },
       ]);
       expect(result).toEqual({

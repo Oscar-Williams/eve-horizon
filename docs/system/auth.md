@@ -128,7 +128,10 @@ Platform services call each other with a key per service, sent as
   accepted by the API only on the routes that declare them
   (`@InternalCallers('gateway')`, `@InternalCallers('sso')`), checked against
   their SHA-256 in `EVE_INTERNAL_CALLER_HASHES`, so the API cannot act as
-  them.
+  them;
+- `deliver` (`EVE_INTERNAL_DELIVER_KEY`): held by the API, which sends it to
+  the gateway with each delivery. The gateway holds only its hash and accepts
+  no other key, so it never receives the core key.
 
 While a service still holds the legacy `EVE_INTERNAL_API_KEY`, it also sends
 `x-eve-internal-token`, and callees still accept it, so services can be
@@ -145,8 +148,8 @@ time and fails closed: an unset key matches nothing.
 | API (`/internal/*`) | Every internal route (`InternalTokenGuard`) | core everywhere; gateway and SSO on their routes; legacy under `internal.service_key` | Everything outside `/internal` uses user, job or service tokens |
 | Worker (`:4749`, and runner pods, which serve the worker app) | Every route: `/invoke`, `/deploy`, `/environments/delete`, `/scripts/execute`, `/actions/execute`, `/pipeline-runs/:id/execute`, `/registry/pull-secrets/resign`, and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
 | Agent runtime (`:4812`) | Every route, including `/invoke` and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
-| Orchestrator (`/system/orchestrator/*`) | Every route | core; legacy (`x-internal-api-key` or Bearer) | — |
-| Gateway (`/internal/deliver`, simulate) | Delivery and simulate | core (by its hash); legacy while the gateway holds it | Webhooks verify their provider's signature |
+| Orchestrator (`/system/orchestrator/*`) | Every route | core; legacy (`x-internal-api-key` or Bearer) under `internal.service_key` | — |
+| Gateway (`/internal/deliver`, simulate) | Delivery and simulate | deliver (by its hash); legacy under `internal.service_key`, which the gateway asks the API to decide (it holds no database). The core key is refused | Webhooks verify their provider's signature |
 
 The worker and agent runtime enforce this with a Fastify `onRequest` hook
 (`registerInternalAuthHook`), so new routes are protected by default and
@@ -157,7 +160,9 @@ hash, never the key, to accept the worker's submissions.
 
 Callers send their keys with `internalAuthHeaders()` (core by default;
 `internalApiFetch(path, { service: 'gateway' })` in the gateway, `'sso'` in
-the SSO).
+the SSO, `internalAuthHeaders({ service: 'deliver' })` for a delivery to the
+gateway). A service without its own key sends only the legacy key, never
+another service's.
 
 **When no key is set.** The worker and agent runtime refuse to start when
 `NODE_ENV=production` and neither `EVE_INTERNAL_CORE_KEY` nor

@@ -289,6 +289,8 @@ interface StorageCounts {
   secrets: { v1: number; v2: number; other: number };
   integration_tokens: { plain: number; sealed: number };
   oauth_client_secrets: { plain: number; sealed: number };
+  /** Absent from an API before Slack signing secrets were sealed. */
+  oauth_signing_secrets?: { plain: number; sealed: number };
 }
 
 interface ReencryptReport {
@@ -296,7 +298,7 @@ interface ReencryptReport {
   write_format: 'v1' | 'v2';
   before: StorageCounts;
   after: StorageCounts;
-  reencrypted: { secrets: number; integration_tokens: number; oauth_client_secrets: number };
+  reencrypted: { secrets: number; integration_tokens: number; oauth_client_secrets: number; oauth_signing_secrets?: number };
   skipped: { changed: number; unreadable: number };
   remaining: number;
 }
@@ -329,6 +331,9 @@ export async function handleSystemSecrets(
     console.log(`  secrets               v1 ${c.secrets.v1}  v2 ${c.secrets.v2}${c.secrets.other ? `  other ${c.secrets.other}` : ''}`);
     console.log(`  integration tokens    plain ${c.integration_tokens.plain}  sealed ${c.integration_tokens.sealed}`);
     console.log(`  OAuth client secrets  plain ${c.oauth_client_secrets.plain}  sealed ${c.oauth_client_secrets.sealed}`);
+    if (c.oauth_signing_secrets) {
+      console.log(`  Slack signing secrets plain ${c.oauth_signing_secrets.plain}  sealed ${c.oauth_signing_secrets.sealed}`);
+    }
   };
   counts(report.dry_run ? 'Stored now' : 'Before', report.before);
   if (report.dry_run) {
@@ -338,7 +343,11 @@ export async function handleSystemSecrets(
   }
   counts('After', report.after);
   const r = report.reencrypted;
-  console.log(`Re-encrypted: ${r.secrets} secret(s), ${r.integration_tokens} integration token set(s), ${r.oauth_client_secrets} OAuth client secret(s).`);
+  console.log(
+    `Re-encrypted: ${r.secrets} secret(s), ${r.integration_tokens} integration token set(s), ` +
+      `${r.oauth_client_secrets} OAuth client secret(s)` +
+      (r.oauth_signing_secrets !== undefined ? `, ${r.oauth_signing_secrets} Slack signing secret(s).` : '.'),
+  );
   if (report.skipped.changed) {
     console.log(`${report.skipped.changed} row(s) changed during the pass kept their new value; run again to take them.`);
   }

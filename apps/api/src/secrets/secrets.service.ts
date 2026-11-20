@@ -607,16 +607,16 @@ export class SecretsService {
   /**
    * Move stored credentials to `v2` (`eve system secrets reencrypt`). New
    * writes use `v2` from here on: this process at once, other replicas
-   * within half a minute. Then `v1` secrets, plain integration tokens and
-   * plain OAuth client secrets are sealed in batches, each row by
-   * compare-and-set on the value read, so a row written meanwhile keeps its
-   * new value and is left for the next pass. A dry run only counts.
+   * within half a minute. Then `v1` secrets, plain integration tokens, plain
+   * OAuth client secrets and plain Slack signing secrets are sealed in
+   * batches, each row by compare-and-set on the value read, so a row written
+   * meanwhile keeps its new value and is left for the next pass. A dry run only counts.
    * After this, a release that reads only `v1` cannot read these rows.
    */
   async reencrypt(options: { actor: string; dryRun?: boolean }): Promise<SecretsReencryptResponse> {
     this.ensureConfigured();
     const before = await this.storageCounts();
-    const reencrypted = { secrets: 0, integration_tokens: 0, oauth_client_secrets: 0 };
+    const reencrypted = { secrets: 0, integration_tokens: 0, oauth_client_secrets: 0, oauth_signing_secrets: 0 };
     const skipped = { changed: 0, unreadable: 0 };
     if (options.dryRun) {
       return {
@@ -679,6 +679,21 @@ export class SecretsService {
           'v2',
         );
         if (await configs.swapClientSecret(row.id, row.client_secret, sealed)) reencrypted.oauth_client_secrets += 1;
+        else skipped.changed += 1;
+      }
+    }
+
+    for (let after = ''; ;) {
+      const rows = await configs.listPlainSigningSecrets(after, REENCRYPT_BATCH);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        after = row.id;
+        const sealed = await this.cipher.sealColumn(
+          { table: 'oauth_app_configs', id: row.id, field: 'signing_secret' },
+          row.signing_secret,
+          'v2',
+        );
+        if (await configs.swapSigningSecret(row.id, row.signing_secret, sealed)) reencrypted.oauth_signing_secrets += 1;
         else skipped.changed += 1;
       }
     }

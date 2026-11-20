@@ -39,11 +39,23 @@ spec:
             allowPrivilegeEscalation: false
           image: eve-horizon/orchestrator:local
           imagePullPolicy: IfNotPresent
-          envFrom:
-            # Mount all secrets from eve-app
-            - secretRef:
-                name: eve-app
           env:
+            # Platform secrets: only the eve-app keys this service reads (no envFrom,
+            # so a key added to eve-app reaches no service that does not name it),
+            # as in k8s/base. Each is optional, as with envFrom, except the
+            # registry credential key, which the API and the worker must share.
+            - name: EVE_INTERNAL_CORE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CORE_KEY
+                  optional: true
+            - name: EVE_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_API_KEY
+                  optional: true
             - name: DATABASE_URL
               value: postgres://eve:eve@postgres.eve.svc.cluster.local:5432/eve
             - name: EVE_API_URL

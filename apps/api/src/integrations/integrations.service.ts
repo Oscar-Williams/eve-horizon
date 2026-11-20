@@ -254,16 +254,37 @@ export class IntegrationsService {
     for (const row of rows) {
       if (row.provider === 'slack') {
         const appConfig = await this.oauthAppConfigs.findByOrgAndProvider(row.org_id, 'slack');
-        if (appConfig?.config_json && (appConfig.config_json as Record<string, unknown>).signing_secret) {
+        const signingSecret = appConfig ? await this.openSigningSecretOrNull(appConfig) : null;
+        if (signingSecret) {
           row.settings_json = {
             ...row.settings_json,
-            signing_secret: (appConfig.config_json as Record<string, unknown>).signing_secret,
+            signing_secret: signingSecret,
           };
         }
       }
     }
 
     return rows;
+  }
+
+  /**
+   * A config's Slack signing secret, plain or sealed. For listings: one that
+   * cannot be opened leaves its integration without one rather than hiding
+   * the rest.
+   */
+  private async openSigningSecretOrNull(config: OAuthAppConfig): Promise<string | null> {
+    const stored = (config.config_json as Record<string, unknown> | null)?.signing_secret;
+    if (typeof stored !== 'string' || stored === '') return null;
+    try {
+      return await this.cipher.openColumn({ table: 'oauth_app_configs', id: config.id, field: 'signing_secret' }, stored);
+    } catch (error) {
+      logger.warn({
+        event: 'integrations.signing_secret_unreadable',
+        configId: config.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   async resolveIntegration(provider: string, accountId: string): Promise<{ integration_id: string; org_id: string }> {
@@ -705,14 +726,24 @@ export class IntegrationsService {
       { table: 'oauth_app_configs', id: rowId, field: 'client_secret' },
       payload.client_secret,
     );
+    // The Slack signing secret in the config is stored the same way.
+    const signingSecret = typeof payload.config?.signing_secret === 'string' && payload.config.signing_secret !== ''
+      ? payload.config.signing_secret
+      : null;
+    const sealSigning = (rowId: string, value: string) => this.cipher.sealColumn(
+      { table: 'oauth_app_configs', id: rowId, field: 'signing_secret' },
+      value,
+    );
     const sealed = await seal(id);
+    const configJson: Record<string, unknown> = { ...(payload.config ?? {}) };
+    if (signingSecret !== null) configJson.signing_secret = await sealSigning(id, signingSecret);
     const config = await this.oauthAppConfigs.upsert({
       id,
       org_id: orgId,
       provider,
       client_id: payload.client_id,
       client_secret: sealed,
-      config_json: payload.config ?? {},
+      config_json: configJson,
       label: payload.label ?? null,
       status: 'active',
       created_by: createdBy ?? null,
@@ -720,6 +751,9 @@ export class IntegrationsService {
     if (config.id !== id && sealed !== payload.client_secret) {
       // Another write created the row first: seal again for the row that stands.
       await this.oauthAppConfigs.updateClientSecret(config.id, await seal(config.id));
+      if (signingSecret !== null) {
+        await this.oauthAppConfigs.updateSigningSecret(config.id, await sealSigning(config.id, signingSecret));
+      }
     }
     return this.toOAuthAppConfigResponse(config);
   }

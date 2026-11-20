@@ -1,15 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { UnauthorizedException } from '@nestjs/common';
+import { internalLegacyKeyDecider } from '@eve/db';
 import { InternalApiKeyGuard } from './internal-api-key.guard';
 import type { ExecutionContext } from '@nestjs/common';
+
+const legacy = vi.hoisted(() => ({ decide: vi.fn() }));
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  internalLegacyKeyDecider: vi.fn(() => legacy.decide),
+}));
 
 /**
  * Mock ExecutionContext for testing the guard.
  */
-function mockContext(headers: Record<string, string | string[] | undefined>): ExecutionContext {
+function mockContext(headers: Record<string, string | string[] | undefined>, url = '/system/orchestrator/status'): ExecutionContext {
   return {
     switchToHttp: () => ({
-      getRequest: () => ({ headers }),
+      getRequest: () => ({ headers, url }),
     }),
   } as any;
 }
@@ -299,6 +306,40 @@ describe('InternalApiKeyGuard', () => {
 
       await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
       await expect(guard.canActivate(context)).rejects.toThrow('Missing internal API key');
+    });
+  });
+
+  describe('a call with only the legacy key (internal.service_key)', () => {
+    const db = { name: 'db' } as never;
+
+    beforeEach(() => {
+      vi.stubEnv('EVE_INTERNAL_API_KEY', 'test-secret-key');
+      vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key');
+      legacy.decide.mockReset();
+    });
+
+    it('is refused under strict, judged by the instance profile', async () => {
+      legacy.decide.mockResolvedValue('strict');
+      const judged = new InternalApiKeyGuard(db);
+      await expect(judged.canActivate(mockContext({ 'x-internal-api-key': 'test-secret-key' }, '/system/orchestrator/concurrency?x=1')))
+        .rejects.toThrow(UnauthorizedException);
+      expect(internalLegacyKeyDecider).toHaveBeenCalledWith(db, 'orchestrator');
+      expect(legacy.decide).toHaveBeenCalledWith('/system/orchestrator/concurrency');
+    });
+
+    it('passes and is recorded under audit', async () => {
+      legacy.decide.mockResolvedValue('audit');
+      const judged = new InternalApiKeyGuard(db);
+      await expect(judged.canActivate(mockContext({ authorization: 'Bearer test-secret-key' }))).resolves.toBe(true);
+      expect(legacy.decide).toHaveBeenCalledWith('/system/orchestrator/status');
+    });
+
+    it('is not asked about a core-key call', async () => {
+      legacy.decide.mockResolvedValue('strict');
+      const judged = new InternalApiKeyGuard(db);
+      await expect(judged.canActivate(mockContext({ 'x-eve-service-key': 'core.core-key', 'x-internal-api-key': 'test-secret-key' })))
+        .resolves.toBe(true);
+      expect(legacy.decide).not.toHaveBeenCalled();
     });
   });
 

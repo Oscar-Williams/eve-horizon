@@ -53,6 +53,9 @@ until someone moves that profile on.
 - A project created under `security.new_project_profile = strict` is stamped
   with the current rule set.
 - `legacy` and `audit` carry no stamp.
+- An org's or project's profile changed without its stamp (by a release
+  before 0.1.327, after a rollback) drops the stamp, so the newer rules start
+  in `audit` again on the way back up (a database trigger, migration 00120).
 - The API, and the worker and orchestrator (`decideSecurityRule`), resolve
   stamps the same way. New behaviour always gets a new rule id, never a wider
   meaning for an old one, so a stamp keeps what it covered.
@@ -132,9 +135,9 @@ A profile stamped 1 runs these under `audit` until `strict` is set again.
 | Rule | Governs | Under `strict` |
 |---|---|---|
 | `secrets.value_read` | Project | Secret values are write-only through the API: `POST /projects/:id/secrets/export` gets 403. `ensure` returns a value it generates once, in its own response, and `eve github setup` returns the webhook secret only when it creates it (`secret` is `null` otherwise; `--regenerate` makes a new one). Under `audit`, each export is recorded. |
-| `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token or OAuth client secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. `eve system security profile strict` on the instance gets 409, naming the count, while any `v1` or plain rows remain: run `eve system secrets reencrypt` first (`--dry-run` shows the count), or override with `--force` (recorded in the audit log). Org and project flips are not checked. See [secrets](secrets.md#storage-at-rest). |
+| `secrets.legacy_ciphertext` | Instance | A `v1` secret, or an integration token, OAuth client secret or Slack signing secret stored plain, is refused when read, and new writes use `v2`. Under `audit`, each such read is recorded. `eve system security profile strict` on the instance gets 409, naming the count, while any `v1` or plain rows remain: run `eve system secrets reencrypt` first (`--dry-run` shows the count), or override with `--force` (recorded in the audit log). Org and project flips are not checked. See [secrets](secrets.md#storage-at-rest). |
 | `webhooks.global_secret` | Project | A GitHub webhook for a project with no `GITHUB_WEBHOOK_SECRET` of its own gets 401 instead of being verified with the instance's `EVE_GITHUB_WEBHOOK_SECRET`. Under `audit`, each delivery the global secret verifies is recorded; nothing is recorded for a signature that does not verify. Set a project secret with `eve github setup`. |
-| `internal.service_key` | Instance | A call to an internal route with only the legacy `EVE_INTERNAL_API_KEY` (`x-eve-internal-token`) gets 401, at the API and at the worker and agent runtime. The gateway's and the SSO's keys work only on the routes that declare them (`@InternalCallers`); elsewhere 403. The core key works everywhere. Under `audit`, each legacy-only call and each gateway or SSO call off its routes is recorded (actor `service:legacy-key`, `service:gateway`, `service:sso`). See [internal service keys](#internal-service-keys). |
+| `internal.service_key` | Instance | A call to an internal route with only the legacy `EVE_INTERNAL_API_KEY` (`x-eve-internal-token`) gets 401, at the API, the worker, the agent runtime, the orchestrator and the gateway (which asks the API, `POST /internal/security/legacy-key-calls`, since it holds no database). The gateway's and the SSO's keys work only on the routes that declare them (`@InternalCallers`); elsewhere 403. The core key works everywhere. Under `audit`, each legacy-only call and each gateway or SSO call off its routes is recorded (actor `service:legacy-key`, `service:gateway`, `service:sso`). See [internal service keys](#internal-service-keys). |
 | `registry.internal_key` | Instance | The registry token endpoint refuses the internal key as a Basic password, and pull and push credentials signed with it (401). Credentials signed with `EVE_REGISTRY_CREDENTIAL_KEY` work. Under `audit`, each use of the internal key or a credential it signed is recorded. `eve system security profile strict` on the instance gets 409 while any environment's pull secret is not on the current registry key version: run `eve system security reconcile` first, or override with `--force`. See [container registry](container-registry.md#credential-key). |
 | `secrets.system_scope` | Project | A system secret reaches the project's workloads and jobs only when the instance setting `secrets.system_shared_keys` names it (`eve system settings set secrets.system_shared_keys "KEY_A,KEY_B"`). Others are left out of the project and org resolves (deploys, jobs, harness checks) and of secret validation; an org or project secret of the same name still applies. Under `audit`, each resolve that delivers an unshared system secret is recorded, with the names in the finding's `keys` (`eve doctor security --json`). |
 | `isolation.runner_mode` | Project | Job code runs only in credential-free runner pods ([runner pods](runner-pods.md)): agent jobs go to the worker (never the agent runtime's inline path), script steps and `action: run` run in runner pods, and a legacy pipeline-runner `run` step gets 400 ("use a `script:` step"). A runner pod mounts no org filesystem, and before it uses its job token it checks that the metadata server and the Kubernetes API are out of reach; if either answers, the job fails ("egress policy not enforced"). Outside Kubernetes such work fails ("strict needs runner pods"). Under `audit` nothing changes and each inline run is recorded (`kind` `agent`, `script`, `action_run` or `legacy_run`; an agent job asking for org files carries `strict_blocker: orgfs_mount`), and runner pods run the self-check without enforcing it. The instance switch `EVE_RUNNER_PODS_ONLY=true` gives every project the runner-pod routing (self-check under `audit`), whatever its profile. |
@@ -178,15 +181,16 @@ Platform services call each other with a key per service, sent as
 
 | Key | Held by | Accepted |
 |---|---|---|
-| `EVE_INTERNAL_CORE_KEY` (`core`) | API, worker, orchestrator, agent runtime | On every internal route, and by the worker, agent runtime, orchestrator and gateway. They all hold the database URL, so separate keys between them would add no wall. |
+| `EVE_INTERNAL_CORE_KEY` (`core`) | API, worker, orchestrator, agent runtime | On every internal route, and by the worker, agent runtime and orchestrator. They all hold the database URL, so separate keys between them would add no wall. Never sent to the gateway, which refuses it. |
 | `EVE_INTERNAL_GATEWAY_KEY` (`gateway`) | Gateway | By the API, on the routes the gateway calls. |
 | `EVE_INTERNAL_SSO_KEY` (`sso`) | SSO | By the API, on `magic-link-wrap/inspect` and `consume`. |
+| `EVE_INTERNAL_DELIVER_KEY` (`deliver`) | API | By the gateway only, on `/internal/deliver` and simulate. |
 
 A callee that accepts a key without holding it holds its SHA-256 instead:
-`EVE_INTERNAL_CALLER_HASHES=core:<hex>,gateway:<hex>,sso:<hex>` (the API
-needs the gateway and SSO hashes, the gateway the core hash). It cannot act
-as those callers. Runner pods get only the core key's hash, to accept the
-worker's submissions.
+`EVE_INTERNAL_CALLER_HASHES=core:<hex>,gateway:<hex>,sso:<hex>,deliver:<hex>`
+(the API needs the gateway and SSO hashes, the gateway the deliver hash). It
+cannot act as those callers. Runner pods get only the core key's hash, to
+accept the worker's submissions.
 
 **Upgrade order does not matter.** While a service still holds the legacy
 `EVE_INTERNAL_API_KEY`, it also sends `x-eve-internal-token`, so a callee not

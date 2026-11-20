@@ -99,6 +99,21 @@
         ]
       }
     },
+    "/internal/security/legacy-key-calls": {
+      "post": {
+        "operationId": "SecurityInternalController_legacyKeyCall",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Decide and record a legacy-key call the gateway received (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/auth/me": {
       "get": {
         "operationId": "AuthController_me",
@@ -15290,6 +15305,21 @@
         ]
       }
     },
+    "/internal/registry/key-version": {
+      "get": {
+        "operationId": "RegistryTokenController_keyVersion",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Registry key version the API verifies with (internal only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/jobs/{job_id}/attachments": {
       "post": {
         "operationId": "JobAttachmentsController_create",
@@ -25948,12 +25978,29 @@
                   "sealed"
                 ],
                 "additionalProperties": false
+              },
+              "oauth_signing_secrets": {
+                "type": "object",
+                "properties": {
+                  "plain": {
+                    "type": "number"
+                  },
+                  "sealed": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "plain",
+                  "sealed"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
               "secrets",
               "integration_tokens",
-              "oauth_client_secrets"
+              "oauth_client_secrets",
+              "oauth_signing_secrets"
             ],
             "additionalProperties": false
           },
@@ -25971,12 +26018,16 @@
               },
               "oauth_client_secrets": {
                 "type": "number"
+              },
+              "oauth_signing_secrets": {
+                "type": "number"
               }
             },
             "required": [
               "secrets",
               "integration_tokens",
-              "oauth_client_secrets"
+              "oauth_client_secrets",
+              "oauth_signing_secrets"
             ],
             "additionalProperties": false
           },

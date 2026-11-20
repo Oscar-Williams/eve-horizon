@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import * as k8s from '@kubernetes/client-node';
 import { environmentQueries, type Db } from '@eve/db';
 import {
@@ -10,6 +10,7 @@ import {
 import { K8sService } from '../deployer/k8s.service';
 import { isK8sNotFound } from '../deployer/k8s-error.js';
 import { EVE_REGISTRY_SECRET_NAME, evePullCredentialIn, evePullSecretManifest } from './eve-pull-secret.js';
+import { registryKeyMismatch } from './api-registry-key.js';
 
 export interface RegistryResignReport {
   /** The version of the key every re-signed secret now carries. */
@@ -35,6 +36,10 @@ export interface RegistryResignReport {
  * With no credential key set, it re-signs with the internal key instead (the
  * `internal` version): the way back before rolling back to a release that
  * verifies only credentials the internal key signed.
+ *
+ * It re-signs only with the key the API verifies with: the API sends its key
+ * version, and a worker on any other key refuses before touching an
+ * environment, since every secret it wrote would be refused at the next pull.
  */
 @Injectable()
 export class RegistryPullSecretsService {
@@ -49,10 +54,15 @@ export class RegistryPullSecretsService {
     this.environments = environmentQueries(db);
   }
 
-  async resign(): Promise<RegistryResignReport> {
+  async resign(apiKeyVersion: string | null | undefined): Promise<RegistryResignReport> {
     const signer = registryCredentialKey();
     if (!signer) {
       throw new Error('Neither EVE_REGISTRY_CREDENTIAL_KEY nor EVE_INTERNAL_API_KEY is set on the worker: there is no registry key to re-sign with');
+    }
+    const mismatch = registryKeyMismatch(signer.version, apiKeyVersion);
+    if (mismatch) {
+      this.logger.error(`Refusing to re-sign registry pull secrets: ${mismatch}`);
+      throw new ConflictException(mismatch);
     }
     const report: RegistryResignReport = {
       key_version: signer.version,

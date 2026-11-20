@@ -121,6 +121,45 @@ describe('security profile stamps', () => {
     });
   });
 
+  it('drops the stamp when a release that does not know it changes the profile', async () => {
+    const security = securityQueries(db);
+    await security.setProjectProfile(project, 'strict', 2);
+    await security.setOrgProfile(org, 'strict', 2);
+
+    // A release before stamps (0.1.326) sets the profile alone: audit, then strict again.
+    await db`UPDATE projects SET security_profile = 'audit', updated_at = NOW() WHERE id = ${project}`;
+    await db`UPDATE orgs SET security_profile = 'audit' WHERE id = ${org}`;
+    expect(await security.getProfiles({ projectId: project })).toMatchObject({ project_ruleset: null, org_ruleset: null });
+    await db`UPDATE projects SET security_profile = 'strict' WHERE id = ${project}`;
+    await db`UPDATE orgs SET security_profile = 'strict' WHERE id = ${org}`;
+
+    // Back on this release, the P2 rules start in audit again.
+    expect(await security.getProfiles({ projectId: project })).toMatchObject({
+      project_profile: 'strict',
+      project_ruleset: null,
+      org_profile: 'strict',
+      org_ruleset: null,
+    });
+    expect(await decide(P2_RULE)).toBe('audit');
+    expect(await decide(P1_RULE)).toBe('strict');
+  });
+
+  it('keeps the stamp this release writes with a profile, and through other updates', async () => {
+    const security = securityQueries(db);
+    await security.setProjectProfile(project, 'audit', null);
+    await security.setProjectProfile(project, 'strict', 2);
+    expect(await security.getProfiles({ projectId: project })).toMatchObject({ project_profile: 'strict', project_ruleset: 2 });
+    await security.setProjectProfile(project, 'strict', 2);
+    await db`UPDATE projects SET name = ${`${project}-renamed`} WHERE id = ${project}`;
+    expect(await security.getProfiles({ projectId: project })).toMatchObject({ project_profile: 'strict', project_ruleset: 2 });
+
+    await security.setOrgProfile(org, 'legacy', null);
+    await security.setOrgProfile(org, 'strict', 2);
+    expect(await security.getProfiles({ orgId: org })).toMatchObject({ org_profile: 'strict', org_ruleset: 2 });
+    await security.setOrgProfile(org, null, null);
+    expect(await security.getProfiles({ orgId: org })).toMatchObject({ org_profile: null, org_ruleset: null });
+  });
+
   it('honours the instance stamp for instance rules', async () => {
     await putSetting('security.profile', 'strict');
     await putSetting('security.profile_ruleset', '1');
