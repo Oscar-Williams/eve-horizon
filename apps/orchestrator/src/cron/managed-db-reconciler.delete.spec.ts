@@ -58,7 +58,7 @@ function deletingTenant(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createService(tenant: ReturnType<typeof deletingTenant>) {
+function createService(tenant: ReturnType<typeof deletingTenant>, overrides: Record<string, unknown> = {}) {
   const mockDb = Object.assign(() => Promise.resolve([]), { json: vi.fn(), end: vi.fn() }) as unknown as import('@eve/db').Db;
   const service = new ManagedDbReconcilerService(mockDb);
   const managedDb = {
@@ -72,6 +72,8 @@ function createService(tenant: ReturnType<typeof deletingTenant>) {
     markTenantDeleted: vi.fn().mockResolvedValue(true),
     listTenantRoles: vi.fn().mockResolvedValue([]),
     deleteTenantRoles: vi.fn().mockResolvedValue(0),
+    findTenantById: vi.fn().mockResolvedValue(tenant),
+    ...overrides,
   };
   const environments = { findById: vi.fn().mockResolvedValue(null) };
   const orgs = { findById: vi.fn().mockResolvedValue({ slug: 'acme' }) };
@@ -140,5 +142,56 @@ describe('ManagedDbReconcilerService tenant drop', () => {
     expect(adminSql.statements).toContain(`DROP DATABASE IF EXISTS "${DB}"`);
     expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
     expect(environments.findById).not.toHaveBeenCalledWith(null);
+  });
+
+  // An environment deleted while its tenant is being provisioned (or
+  // changed) must still end with the database dropped.
+  describe('a tenant deleted while an operation runs', () => {
+    beforeEach(() => {
+      vi.stubEnv('DATABASE_URL', 'postgres://eve:eve@localhost:5432/eve?sslmode=disable');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('releases its lock when the tenant can no longer become ready', async () => {
+      const adminSql = createFakeSql();
+      const tenant = deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
+      const { service, managedDb } = createService(tenant, { transitionStatus: vi.fn().mockResolvedValue(null) });
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      const token = managedDb.acquireOperationLock.mock.calls[0][1];
+      expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', token, 'ready', expect.anything());
+      expect(managedDb.releaseOperationLock).toHaveBeenCalledWith('mdbt_1', token);
+    });
+
+    it('drops a deleted tenant left in another status, even with no provider id yet', async () => {
+      const adminSql = createFakeSql();
+      const tenant = deletingTenant({ status: 'ready', provider_tenant_id: null });
+      const { service, managedDb } = createService(tenant);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      expect(adminSql.statements).toContain(`DROP DATABASE IF EXISTS "${DB}"`);
+      expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
+    });
+
+    it('queues the tenant for drop, not failed, when its operation fails after the delete', async () => {
+      const adminSql = createFakeSql(/^CREATE DATABASE/);
+      const tenant = deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
+      const { service, managedDb } = createService(tenant, { findTenantById: vi.fn().mockResolvedValue(null) });
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'deleting', expect.objectContaining({
+        error: expect.objectContaining({ code: 'reconcile_error' }),
+      }));
+      expect(managedDb.transitionStatus).not.toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', expect.anything());
+    });
   });
 });
