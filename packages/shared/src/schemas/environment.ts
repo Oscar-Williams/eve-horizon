@@ -369,3 +369,23 @@ export const ResumeEnvironmentResponseSchema = z.object({
 });
 
 export type ResumeEnvironmentResponse = z.infer<typeof ResumeEnvironmentResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Service-token rotation (`eve env rotate-service-tokens`)
+// ---------------------------------------------------------------------------
+
+export const RotateServiceTokensResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  /** Service tokens issued before this are refused (whole seconds). */
+  service_tokens_not_before: z.string(),
+  /** `done`: the worker renewed the environment's tokens now; `scheduled`: its hourly renewal will. */
+  renewal: z.enum(['done', 'scheduled']),
+  renewed: z.array(z.object({
+    secret: z.string(),
+    key: z.string(),
+    reason: z.string(),
+  })),
+});
+
+export type RotateServiceTokensResponse = z.infer<typeof RotateServiceTokensResponseSchema>;

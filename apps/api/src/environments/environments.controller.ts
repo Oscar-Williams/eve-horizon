@@ -47,6 +47,7 @@ import {
   SuspendEnvironmentRequestSchema,
   SuspendEnvironmentResponseSchema,
   ResumeEnvironmentResponseSchema,
+  RotateServiceTokensResponseSchema,
   DeleteEnvironmentRequestSchema,
   UndeployEnvironmentRequestSchema,
   type DeployRequest,
@@ -61,6 +62,7 @@ import {
   type SuspendEnvironmentRequest,
   type SuspendEnvironmentResponse,
   type ResumeEnvironmentResponse,
+  type RotateServiceTokensResponse,
   type DeleteEnvironmentRequest,
   type UndeployEnvironmentRequest,
 } from '@eve/shared';
@@ -251,6 +253,25 @@ export class EnvironmentsController {
       danger_reset_production: body?.danger_reset_production,
       skip_preflight: body?.skip_preflight,
     });
+  }
+
+  @RequirePermission('envs:write')
+  @Post(':name/rotate-service-tokens')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Revoke the environment\'s service tokens issued until now and renew them',
+    description: 'Service tokens (and app-link tokens injected into services) issued before now are refused; '
+      + 'the worker renews them at once, rolling the services, or within the hour.',
+  })
+  @ApiOkResponse({
+    description: 'Service tokens revoked',
+    schema: zodSchemaToOpenApi(RotateServiceTokensResponseSchema, 'RotateServiceTokensResponse'),
+  })
+  async rotateServiceTokens(
+    @Param('id') projectId: string,
+    @Param('name') envName: string,
+  ): Promise<RotateServiceTokensResponse> {
+    return this.environmentsService.rotateServiceTokens(projectId, envName);
   }
 
   @RequirePermission('envs:read')

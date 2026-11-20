@@ -5,9 +5,11 @@ import {
   SERVICE_TOKEN_ISSUER,
   ServiceTokenRenewalService,
 } from './service-token-renewal.service';
+import { ServiceTokensController } from './service-tokens.controller';
 
 @Module({
   imports: [DeployerModule],
+  controllers: [ServiceTokensController],
   providers: [
     ServiceTokenRenewalService,
     { provide: SERVICE_TOKEN_ISSUER, useClass: ApiServiceTokenIssuer },
