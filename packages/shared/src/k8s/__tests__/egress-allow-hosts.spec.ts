@@ -57,6 +57,12 @@ const refused: Array<[string, unknown]> = [
   ['port 0', { name: 'api.example.com', port: 0 }],
   ['a port above 65535', { name: 'api.example.com', port: 70000 }],
   ['an unknown field', { name: 'api.example.com', protocol: 'UDP' }],
+  // Wildcard DNS services answer any name under them with the address it spells.
+  ['a pattern under nip.io', '*.nip.io'],
+  ['a pattern deeper under sslip.io', '*.app.sslip.io'],
+  ['a pattern under xip.io', { pattern: '*.xip.io' }],
+  ['a pattern under localtest.me', '*.localtest.me'],
+  ['a name under nip.io', '10.0.0.1.nip.io'],
 ];
 
 describe('manifest x-eve.egress.hosts', () => {
@@ -85,6 +91,50 @@ describe('manifest x-eve.egress.hosts', () => {
     expect(api.parseEgressHost('*.Example.com')).toEqual({ pattern: '*.example.com', port: 443 });
     expect(api.parseEgressHost({ name: 'smtp.example.com', port: 587 })).toEqual({ name: 'smtp.example.com', port: 587 });
     expect(api.parseEgressHost('https://api.example.com')).toBeNull();
+  });
+});
+
+describe('the addresses a declared name resolves to', () => {
+  const resolver = (answers: Record<string, string[]>) => async (host: string) => {
+    if (!(host in answers)) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND' });
+    return answers[host];
+  };
+
+  it('refuses a name that resolves to a private, CGNAT, link-local, loopback or operator-private address, naming both', async () => {
+    const answers = {
+      'db.example.com': ['10.20.0.5'],
+      'nat.example.com': ['100.64.1.1'],
+      'meta.example.com': ['169.254.169.254'],
+      'loop.example.com': ['127.0.0.1'],
+      'v6.example.com': ['fd00::1'],
+      'svc.example.com': ['34.118.224.10'],
+      'api.example.com': ['93.184.216.34'],
+    };
+    const problems = await api.egressHostAddressProblems(
+      Object.keys(answers).map((name) => ({ name, port: 443 })),
+      { privateCidrs: ['34.118.224.0/20'], resolve: resolver(answers) },
+    );
+    expect(problems).toHaveLength(6);
+    expect(problems.join('\n')).toMatch(/db\.example\.com.*10\.20\.0\.5/);
+    for (const name of ['nat', 'meta', 'loop', 'v6', 'svc']) expect(problems.join('\n')).toContain(`${name}.example.com`);
+    expect(problems.join('\n')).not.toContain('api.example.com');
+  });
+
+  it('resolves each name once, skips patterns, and lets a name that does not resolve pass', async () => {
+    const seen: string[] = [];
+    const resolve = async (host: string) => {
+      seen.push(host);
+      if (host === 'later.example.com') throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
+      return ['93.184.216.34'];
+    };
+    const problems = await api.egressHostAddressProblems([
+      { name: 'api.example.com', port: 443 },
+      { name: 'api.example.com', port: 8443 },
+      { pattern: '*.cdn.example.com', port: 443 },
+      { name: 'later.example.com', port: 443 },
+    ], { resolve });
+    expect(problems).toEqual([]);
+    expect(seen.sort()).toEqual(['api.example.com', 'later.example.com']);
   });
 });
 
