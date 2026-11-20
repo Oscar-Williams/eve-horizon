@@ -559,11 +559,12 @@ export class EnvHealthWatchdogService implements OnModuleInit, OnModuleDestroy {
       // Scale each failing deployment to 0
       for (const deployName of deploymentsToScale) {
         try {
-          await this.appsApi!.patchNamespacedDeploymentScale({
-            name: deployName,
-            namespace: env.namespace,
-            body: { spec: { replicas: 0 } },
-          });
+          // A merge patch: client-node 1.x sends JSON Patch unless told
+          // otherwise, which the API server refuses for this body.
+          await this.appsApi!.patchNamespacedDeploymentScale(
+            { name: deployName, namespace: env.namespace, body: { spec: { replicas: 0 } } },
+            k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.MergePatch),
+          );
 
           actions.push({
             type: 'scale_to_zero',

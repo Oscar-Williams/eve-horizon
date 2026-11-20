@@ -16,7 +16,8 @@ const mockMakeApiClient = vi.fn().mockReturnValue({
   patchNamespacedDeploymentScale: mockPatchNamespacedDeploymentScale,
 });
 
-vi.mock('@kubernetes/client-node', () => ({
+vi.mock('@kubernetes/client-node', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@kubernetes/client-node')>()),
   KubeConfig: vi.fn().mockImplementation(() => ({
     loadFromDefault: vi.fn(),
     makeApiClient: mockMakeApiClient,
@@ -625,11 +626,12 @@ describe('EnvHealthWatchdogService', () => {
         type: 'scale_to_zero',
         deployment: 'web',
       });
+      // The request's content type is checked in env-health-watchdog.scale-request.spec.ts.
       expect(mockPatchNamespacedDeploymentScale).toHaveBeenCalledWith({
         name: 'web',
         namespace: env.namespace,
         body: { spec: { replicas: 0 } },
-      });
+      }, expect.objectContaining({ middleware: expect.any(Array) }));
       expect(mockEnvironmentsUpdate).toHaveBeenCalledWith(env.id, { deploy_status: 'failed' });
     });
 
