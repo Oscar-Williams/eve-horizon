@@ -179,12 +179,17 @@ export function appLinkSubscriptionQueries(db: Db) {
 
     async listWithGrants(options: {
       consumer_project_id?: string;
+      /** Subscriptions whose API grant this project produces. */
+      producer_project_id?: string;
       subscription_id?: string;
       local_alias?: string;
     } = {}): Promise<AppLinkSubscriptionWithGrant[]> {
       const conditions: ReturnType<typeof db>[] = [];
       if (options.consumer_project_id) {
         conditions.push(db`s.consumer_project_id = ${options.consumer_project_id}`);
+      }
+      if (options.producer_project_id) {
+        conditions.push(db`ag.producer_project_id = ${options.producer_project_id}`);
       }
       if (options.subscription_id) {
         conditions.push(db`s.id = ${options.subscription_id}`);

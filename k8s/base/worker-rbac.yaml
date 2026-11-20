@@ -1,3 +1,14 @@
+# The worker's rights (0.1.328). Cluster-wide it handles namespaces and the
+# RoleBindings that give it eve-worker-tenant; everything namespaced
+# (workloads, Secrets, ConfigMaps, ingresses and policies) comes from
+# eve-worker-tenant, bound per namespace: here in eve, in runner-rbac.yaml in
+# eve-runners, and by the worker in each namespace it creates or adopts (it
+# labels those eve.horizon/managed=true). worker-admission-policy.yaml refuses
+# the worker's writes anywhere else. Rollout order: these objects, the worker
+# (its start-up reconcile labels and binds existing env namespaces), the
+# admission policy, then delete the old all-namespace ClusterRole and
+# ClusterRoleBinding `eve-worker`. Rollback: re-apply the previous template
+# (it brings `eve-worker` back); the objects below are then unused.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -26,22 +37,12 @@ rules:
       - patch
       - update
 ---
+# Namespaced rights, never bound cluster-wide.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: eve-worker
+  name: eve-worker-tenant
 rules:
-  - apiGroups: [""]
-    resources:
-      - namespaces
-    verbs:
-      - get
-      - list
-      - watch
-      - create
-      - delete
-      - patch
-      - update
   - apiGroups: [""]
     resources:
       - pods
@@ -84,8 +85,9 @@ rules:
       - delete
       - patch
       - update
-  # networkpolicies: egress.default_deny (env namespaces' eve-egress* and the
-  # eve-runner-<project> policies in the runner namespaces).
+  # networkpolicies: egress.default_deny and network.ingress_isolation (env
+  # namespaces' eve-egress* and eve-ingress*, the eve-runner-<project>
+  # policies in the runner namespaces).
   - apiGroups: ["networking.k8s.io"]
     resources:
       - ingresses
@@ -98,6 +100,51 @@ rules:
       - delete
       - patch
       - update
+  # egress.allow_hosts with EVE_EGRESS_FQDN_PROVIDER=gke: one GKE
+  # FQDNNetworkPolicy per allowed host. Harmless where the CRD is absent.
+  - apiGroups: ["networking.gke.io"]
+    resources:
+      - fqdnnetworkpolicies
+    verbs:
+      - get
+      - list
+      - create
+      - delete
+      - update
+---
+# Cluster-wide: namespaces (patch, not update: labels merge), the
+# RoleBindings that hand the worker eve-worker-tenant, and bind on that role
+# alone, so a RoleBinding can grant nothing else. No Secrets, no workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eve-worker-namespaces
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - delete
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - rolebindings
+    verbs:
+      - create
+      - get
+      - list
+      - delete
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+    verbs:
+      - bind
+    resourceNames:
+      - eve-worker-tenant
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -113,14 +160,30 @@ subjects:
     name: eve-worker
     namespace: eve
 ---
+# The platform namespace: Secrets, ConfigMaps, kaniko Jobs, plain runner pods
+# for org filesystem jobs and their runner policies.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
-  name: eve-worker
+  name: eve-worker-tenant
+  namespace: eve
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: eve-worker
+  name: eve-worker-tenant
+subjects:
+  - kind: ServiceAccount
+    name: eve-worker
+    namespace: eve
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eve-worker-namespaces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eve-worker-namespaces
 subjects:
   - kind: ServiceAccount
     name: eve-worker

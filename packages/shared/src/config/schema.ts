@@ -210,6 +210,11 @@ export const configSchema = z.object({
   // NoSchedule | PreferNoSchedule | NoExecute; validated by the deployer, default NoSchedule.
   EVE_APP_TAINT_EFFECT: z.string().optional(),
   EVE_TCP_INGRESS_PROVIDER: z.enum(['none', 'aws-nlb', 'klipper']).default('none'),
+  // egress.allow_hosts enforcement (docs/system/egress-policies.md#host-allow-lists):
+  // `gke` makes the worker write GKE FQDNNetworkPolicy objects (the cluster needs
+  // --enable-fqdn-network-policy); `none` writes none, and a project whose
+  // egress.allow_hosts is strict cannot deploy or run jobs.
+  EVE_EGRESS_FQDN_PROVIDER: z.enum(['none', 'gke']).default('none'),
   EVE_TCP_INGRESS_HOSTED_ZONE: z.string().optional(),
 
   // Stable-egress node group convention. Defaults match the eks-egress-pool

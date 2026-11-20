@@ -396,6 +396,58 @@ same env var name, so apps see no change. Plain values stay inline.
   inline again and ignores these Secrets; they stay in the namespace until
   a newer deployer prunes them or the env is deleted.
 
+### Worker Rights
+
+The worker holds two ClusterRoles (`k8s/base/worker-rbac.yaml`):
+
+- `eve-worker-namespaces`, bound cluster-wide: namespaces (get, list,
+  watch, create, patch, delete; labels merge with a patch, so no `update`),
+  RoleBindings (create, get, list, delete) and `bind` on the ClusterRole
+  `eve-worker-tenant` alone. Nothing on Secrets or workloads.
+- `eve-worker-tenant`, never bound cluster-wide: pods, Services,
+  ConfigMaps, Secrets, PVCs, Deployments and the other workloads, Jobs,
+  Ingresses, NetworkPolicies and GKE FQDNNetworkPolicies. The worker binds
+  it (RoleBinding `eve-worker-tenant`) in each namespace it creates or
+  adopts; the template binds it in `eve` and `eve-runners`.
+
+Every namespace the worker creates carries `eve.horizon/managed=true`. At
+start-up the worker labels and binds the env namespaces earlier releases
+created (they carry `eve.env_id`) when that label names a live environment
+whose namespace it is; others are left alone and logged.
+
+The template's ValidatingAdmissionPolicy `eve-worker-namespace-guard`
+(`k8s/base/worker-admission-policy.yaml`, Kubernetes 1.30 or later) refuses
+the worker's service account:
+
+- writes of namespaced objects outside managed namespaces and `eve`,
+  `eve-runners` and `eve-builds`, and any cluster-scoped write but
+  namespaces;
+- creating a namespace without the managed label; changing a namespace that
+  has neither that label nor `eve.env_id`; deleting one without the label,
+  or a static one;
+- a RoleBinding (created or deleted) to any role but `eve-worker-tenant`, or
+  for any subject but the worker.
+
+`tests/k8s/worker-guard.kind.sh` runs each allowed and refused write on a
+kind cluster as the worker (`kubectl --as`).
+
+Other templates: an overlay that sets one `namespace:` for every object
+moves `eve-worker-tenant-runners` into the platform namespace; apply the
+runner namespace's objects from their own kustomization, as for the runner
+policies. The `aws-nlb` TCP ingress check reads
+`deployment/aws-load-balancer-controller` in `kube-system`; with no rights
+there it logs that it could not check and goes on.
+
+**Rollout (0.1.328):** apply the new ClusterRoles and bindings (the old
+`eve-worker` ClusterRole and ClusterRoleBinding stay for now), deploy the
+worker and wait for its log line "Managed namespaces reconciled", apply the
+admission policy, then delete `clusterrole/eve-worker` and
+`clusterrolebinding/eve-worker`. **Rollback:** re-apply the previous
+template, which brings back `eve-worker` with its all-namespace rights,
+and delete the admission policy (an earlier worker creates namespaces
+without the managed label, which the policy refuses). The labels,
+`eve-worker-tenant` and its RoleBindings stay, unused and harmless.
+
 ### Pod Security
 
 Under the project's `strict` profile (rule `isolation.pod_security`), tenant
@@ -405,8 +457,18 @@ numeric user from `x-eve.security.run_as_user` or the image's numeric `USER`
 whose service has neither is refused before anything is applied, naming the
 fields; see [manifest](manifest.md#x-evesecurity). The namespace gets the
 Pod Security `warn` and `audit` labels (`restricted`, or `baseline` after an
-opt-out), never `enforce`. Under `audit` and `legacy` pod specs are unchanged;
+opt-out); `enforce` comes from the rule `isolation.pod_security_admission`
+below. Under `audit` and `legacy` pod specs are unchanged;
 `audit` records each service's image user and what `strict` would add.
+
+Under the rule `isolation.pod_security_admission` (rule set 3) the deploy
+also sets, before any workload is applied, `pod-security.kubernetes.io/enforce`
+at the namespace's level (`restricted`, or `baseline` after an opt-out) with
+`enforce-version: latest`, beside `warn` and `audit`. Under `audit` the
+namespace carries `warn` and `audit` only, and under `audit` and `legacy` an
+`enforce` a strict profile left is removed at the next deploy. Labels are
+written only when they differ. Under `strict` a failure to set them stops the
+deploy. Each `audit` and `strict` deploy is recorded with the env and level.
 
 ### Load Balancer Recovery
 
@@ -547,6 +609,9 @@ Orchestrator:
 - `EVE_ORCH_ATTEMPT_STALE_MINUTES`
 
 Worker:
+- `EVE_EGRESS_FQDN_PROVIDER`: `gke` to enforce `x-eve.egress.hosts` with GKE
+  FQDNNetworkPolicies, `none` (default) for no enforcement; see
+  [egress policies](./egress-policies.md#host-allow-lists).
 - `EVE_RUNNER_REAPER_ENABLED`
 - `EVE_RUNNER_REAPER_INTERVAL_MS`
 - `EVE_RUNNER_REAPER_GRACE_SECONDS`

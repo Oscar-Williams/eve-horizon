@@ -259,7 +259,9 @@ export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchTo
   // egress.default_deny: the project's runner policies (or, under audit and
   // legacy, its allow-all companion) exist before a claim labels a pod with
   // the project or a plain pod starts with it; eve-runner-deny holds until then.
-  await ensureRunnerEgress(submit.project_id);
+  // egress.allow_hosts at strict with no FQDN provider refuses the job here.
+  const refused = await ensureRunnerEgress(submit.project_id);
+  if (refused) return failure(submit.attempt_id, refused);
   if (!opts.pod.orgFs) {
     const namespace = process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE;
     if (!(await runnerNamespaceExists(namespace))) {

@@ -2,6 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as k8s from '@kubernetes/client-node';
 import yaml from 'yaml';
 import { PassThrough } from 'node:stream';
+import {
+  DEFAULT_PLATFORM_NAMESPACE,
+  FQDN_POLICY_GROUP,
+  FQDN_POLICY_PLURAL,
+  FQDN_POLICY_VERSION,
+  MANAGED_NAMESPACE_LABEL,
+  workerTenantRoleBinding,
+  type FqdnNetworkPolicy,
+} from '@eve/shared';
 import { K8sOperationError, isK8sConflict, isK8sNotFound, wrapK8sError } from './k8s-error.js';
 
 type K8sObject = k8s.KubernetesObject & {
@@ -17,6 +26,8 @@ export class K8sService {
   private appsApi?: k8s.AppsV1Api;
   private batchApi?: k8s.BatchV1Api;
   private networkingApi?: k8s.NetworkingV1Api;
+  private customApi?: k8s.CustomObjectsApi;
+  private rbacApi?: k8s.RbacAuthorizationV1Api;
   private objectApi?: k8s.KubernetesObjectApi;
   private available = false;
 
@@ -28,6 +39,8 @@ export class K8sService {
       this.appsApi = this.kc.makeApiClient(k8s.AppsV1Api);
       this.batchApi = this.kc.makeApiClient(k8s.BatchV1Api);
       this.networkingApi = this.kc.makeApiClient(k8s.NetworkingV1Api);
+      this.customApi = this.kc.makeApiClient(k8s.CustomObjectsApi);
+      this.rbacApi = this.kc.makeApiClient(k8s.RbacAuthorizationV1Api);
       this.objectApi = k8s.KubernetesObjectApi.makeApiClient(this.kc);
       this.available = true;
     } catch (error) {
@@ -38,7 +51,11 @@ export class K8sService {
   }
 
   /**
-   * Create a namespace, or merge labels into an existing one.
+   * Create a namespace, or merge labels into an existing one, and bind the
+   * worker's tenant rights in it. The namespace carries
+   * `eve.horizon/managed=true` (the template's admission policy refuses the
+   * worker's writes in namespaces without it); labels merge by patch, so
+   * the worker needs no `update` on namespaces.
    *
    * With `ownerLabel`, an existing namespace is adopted only if it already
    * carries that label with the value in `labels`: a namespace another Eve
@@ -51,6 +68,7 @@ export class K8sService {
     options?: { ownerLabel?: string },
   ): Promise<void> {
     this.ensureAvailable();
+    const managed = { ...(labels ?? {}), [MANAGED_NAMESPACE_LABEL]: 'true' };
     let existing: k8s.V1Namespace | null = null;
     try {
       existing = (await this.coreApi!.readNamespace(name)).body;
@@ -62,8 +80,9 @@ export class K8sService {
       this.logger.log(`Creating namespace ${name}`);
       try {
         await this.coreApi!.createNamespace({
-          metadata: { name, labels },
+          metadata: { name, labels: managed },
         });
+        await this.bindTenantRights(name);
         return;
       } catch (err) {
         if (!isK8sConflict(err)) {
@@ -79,15 +98,79 @@ export class K8sService {
     }
 
     assertNamespaceOwner(name, existing, labels, options?.ownerLabel);
-    if (labels && Object.keys(labels).length > 0) {
-      const current = existing.metadata?.labels ?? {};
-      existing.metadata = existing.metadata ?? {};
-      existing.metadata.labels = { ...current, ...labels };
-      try {
-        await this.coreApi!.replaceNamespace(name, existing);
-      } catch (err) {
-        throw wrapK8sError(err, 'replace', { kind: 'Namespace', name });
-      }
+    const current = existing.metadata?.labels ?? {};
+    if (Object.entries(managed).some(([key, value]) => current[key] !== value)) {
+      await this.setNamespaceLabels(name, managed);
+    }
+    await this.bindTenantRights(name);
+  }
+
+  /** Merge labels into a namespace (a JSON merge patch); a null value removes the label. */
+  async setNamespaceLabels(name: string, labels: Record<string, string | null>): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.coreApi!.patchNamespace(
+        name,
+        { metadata: { labels } },
+        undefined, undefined, undefined, undefined, undefined,
+        { headers: { 'Content-Type': 'application/merge-patch+json' } },
+      );
+    } catch (err) {
+      throw wrapK8sError(err, 'patch', { kind: 'Namespace', name });
+    }
+  }
+
+  /** Namespaces matching a label selector, with their labels. */
+  async listNamespaces(labelSelector: string): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: { items?: k8s.V1Namespace[] } };
+    try {
+      response = await this.coreApi!.listNamespace(undefined, undefined, undefined, undefined, labelSelector);
+    } catch (err) {
+      throw wrapK8sError(err, 'list', { kind: 'Namespace' });
+    }
+    return (response.body.items ?? [])
+      .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
+      .filter((item) => item.name.length > 0);
+  }
+
+  /**
+   * The RoleBinding that gives the worker `eve-worker-tenant` in a
+   * namespace: read first, created when absent. The only RoleBinding the
+   * worker may create (its ClusterRole grants `bind` on that role alone).
+   */
+  async ensureTenantBinding(namespace: string): Promise<'present' | 'created'> {
+    this.ensureAvailable();
+    const binding = workerTenantRoleBinding(namespace, process.env.EVE_K8S_NAMESPACE || DEFAULT_PLATFORM_NAMESPACE);
+    const ref = { kind: 'RoleBinding', name: binding.metadata.name, namespace };
+    try {
+      await this.rbacApi!.readNamespacedRoleBinding(binding.metadata.name, namespace);
+      return 'present';
+    } catch (err) {
+      if (!isK8sNotFound(err)) throw wrapK8sError(err, 'read', ref);
+    }
+    try {
+      await this.rbacApi!.createNamespacedRoleBinding(namespace, binding);
+      this.logger.log(`Bound ${binding.roleRef.name} for the worker in namespace ${namespace}`);
+      return 'created';
+    } catch (err) {
+      if (isK8sConflict(err)) return 'present';
+      throw wrapK8sError(err, 'create', ref);
+    }
+  }
+
+  /**
+   * ensureTenantBinding at namespace creation and adoption. A failure is
+   * logged, not thrown: under a template from before 0.1.328 the worker's
+   * ClusterRole still covers every namespace and grants no RoleBindings, and
+   * under the current one the worker's next write in the namespace fails
+   * with its own 403.
+   */
+  private async bindTenantRights(namespace: string): Promise<void> {
+    try {
+      await this.ensureTenantBinding(namespace);
+    } catch (err) {
+      this.logger.warn(`Could not bind the worker's tenant rights in namespace ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -472,6 +555,90 @@ export class K8sService {
       throw wrapK8sError(err, 'list', { kind: 'NetworkPolicy', namespace });
     }
     return (response.body.items ?? [])
+      .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
+      .filter((item) => item.name.length > 0);
+  }
+
+  /**
+   * Create or replace a GKE FQDNNetworkPolicy (egress.allow_hosts). Returns
+   * false, writing nothing, when the cluster already holds it with these
+   * labels, annotations and spec. Where the CRD is not installed the API
+   * answers 404, which fails as a K8sOperationError.
+   */
+  async applyFqdnNetworkPolicy(policy: FqdnNetworkPolicy): Promise<boolean> {
+    this.ensureAvailable();
+    const { name, namespace } = policy.metadata;
+    const ref = { kind: 'FQDNNetworkPolicy', name, namespace };
+    const args = [FQDN_POLICY_GROUP, FQDN_POLICY_VERSION, namespace, FQDN_POLICY_PLURAL] as const;
+    type Stored = FqdnNetworkPolicy & { metadata: { resourceVersion?: string } };
+    let existing: Stored | null = null;
+    try {
+      existing = (await this.customApi!.getNamespacedCustomObject(...args, name)).body as Stored;
+    } catch (err) {
+      if (!isK8sNotFound(err)) throw wrapK8sError(err, 'read', ref);
+    }
+    if (!existing) {
+      try {
+        await this.customApi!.createNamespacedCustomObject(...args, policy);
+        return true;
+      } catch (err) {
+        throw wrapK8sError(err, 'create', ref);
+      }
+    }
+    if (
+      canonicalJson(existing.spec) === canonicalJson(policy.spec)
+      && canonicalJson(existing.metadata?.labels ?? {}) === canonicalJson(policy.metadata.labels)
+      && canonicalJson(existing.metadata?.annotations ?? {}) === canonicalJson(policy.metadata.annotations)
+    ) {
+      return false;
+    }
+    try {
+      await this.customApi!.replaceNamespacedCustomObject(...args, name, {
+        ...policy,
+        metadata: { ...policy.metadata, resourceVersion: existing.metadata?.resourceVersion },
+      });
+      return true;
+    } catch (err) {
+      throw wrapK8sError(err, 'replace', ref);
+    }
+  }
+
+  async deleteFqdnNetworkPolicy(namespace: string, name: string): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.customApi!.deleteNamespacedCustomObject(FQDN_POLICY_GROUP, FQDN_POLICY_VERSION, namespace, FQDN_POLICY_PLURAL, name);
+      this.logger.log(`Deleted FQDNNetworkPolicy ${name} from namespace ${namespace}`);
+    } catch (err) {
+      if (isK8sNotFound(err)) return;
+      throw wrapK8sError(err, 'delete', { kind: 'FQDNNetworkPolicy', name, namespace });
+    }
+  }
+
+  /** FQDNNetworkPolicies in a namespace matching a label selector (none where the namespace or the CRD is absent). */
+  async listFqdnNetworkPolicies(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: unknown };
+    try {
+      response = await this.customApi!.listNamespacedCustomObject(
+        FQDN_POLICY_GROUP,
+        FQDN_POLICY_VERSION,
+        namespace,
+        FQDN_POLICY_PLURAL,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector,
+      );
+    } catch (err) {
+      if (isK8sNotFound(err)) return [];
+      throw wrapK8sError(err, 'list', { kind: 'FQDNNetworkPolicy', namespace });
+    }
+    const items = (response.body as { items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> }).items ?? [];
+    return items
       .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
       .filter((item) => item.name.length > 0);
   }
@@ -1028,6 +1195,11 @@ export class K8sService {
         buffer = '';
       },
     };
+  }
+
+  /** Whether a cluster is configured (in-cluster or a kubeconfig). */
+  isAvailable(): boolean {
+    return this.available;
   }
 
   private ensureAvailable(): void {

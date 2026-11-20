@@ -53,12 +53,20 @@ describe('k8s/base runner policies', () => {
 });
 
 describe('k8s/base worker rights and API URLs', () => {
-  it('lets the worker manage NetworkPolicies', () => {
-    const role = find('ClusterRole', 'eve-worker');
+  it('lets the worker manage NetworkPolicies (in each namespace it is bound in)', () => {
+    const role = find('ClusterRole', 'eve-worker-tenant');
     const verbs = (role.rules ?? [])
       .filter((r) => r.apiGroups.includes('networking.k8s.io') && r.resources.includes('networkpolicies'))
       .flatMap((r) => r.verbs);
     expect(verbs).toEqual(expect.arrayContaining(['get', 'list', 'create', 'patch', 'update', 'delete']));
+  });
+
+  it('lets the worker manage GKE FQDN policies (harmless where the CRD is absent)', () => {
+    const role = find('ClusterRole', 'eve-worker-tenant');
+    const verbs = (role.rules ?? [])
+      .filter((r) => r.apiGroups.includes('networking.gke.io') && r.resources.includes('fqdnnetworkpolicies'))
+      .flatMap((r) => r.verbs);
+    expect(verbs).toEqual(expect.arrayContaining(['get', 'list', 'create', 'update', 'delete']));
   });
 
   it('gives apps and runners the public API port, and platform services the internal one', () => {

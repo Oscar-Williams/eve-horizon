@@ -109,8 +109,9 @@ describe('deploy: egress policies', () => {
     expect(egress.applyEnv).toHaveBeenCalledWith(
       { id: 'env_prod', projectId: 'proj_shop', name: 'prod', namespace: 'eve-acme-shop-prod' },
       'audit',
+      { allowHosts: 'legacy', manifest: { services: {} } },
     );
-    expect(egress.applyRunners).toHaveBeenCalledWith('proj_shop', 'audit');
+    expect(egress.applyRunners).toHaveBeenCalledWith('proj_shop', 'audit', 'legacy');
     expect(order).toEqual(['render', 'env:audit', 'runners:audit', 'workloads']);
   });
 

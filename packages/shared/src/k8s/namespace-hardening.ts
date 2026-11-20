@@ -148,3 +148,39 @@ export function mergeHardeningConfig(
     limit_range: overrides?.limit_range ?? DEFAULT_HARDENING_CONFIG.limit_range,
   };
 }
+
+// ---------------------------------------------------------------------------
+// isolation.pod_security_admission (rule set 3)
+// ---------------------------------------------------------------------------
+
+/** The project rule: Pod Security admission labels on env namespaces. */
+export const POD_SECURITY_ADMISSION_RULE = 'isolation.pod_security_admission';
+
+const PSA = 'pod-security.kubernetes.io';
+
+/**
+ * The Pod Security labels an env namespace should carry, as a merge patch
+ * (null removes a label). `level` is the namespace's level from the render:
+ * `restricted`, or `baseline` once a service opts out (isolation.pod_security).
+ * - `strict`: `enforce` at that level (version `latest`), with `warn` and `audit`.
+ * - `audit`: `warn` and `audit` only.
+ * - `legacy`: nothing set.
+ * Eve owns `enforce` on env namespaces: under `audit` and `legacy` an
+ * `enforce` a strict profile left is removed, so dropping the profile never
+ * keeps refusing pods.
+ */
+export function podSecurityAdmissionLabels(
+  profile: 'legacy' | 'audit' | 'strict',
+  level: 'restricted' | 'baseline' = 'restricted',
+): Record<string, string | null> {
+  if (profile === 'strict') {
+    return {
+      [`${PSA}/enforce`]: level,
+      [`${PSA}/enforce-version`]: 'latest',
+      [`${PSA}/warn`]: level,
+      [`${PSA}/audit`]: level,
+    };
+  }
+  const drop = { [`${PSA}/enforce`]: null, [`${PSA}/enforce-version`]: null };
+  return profile === 'audit' ? { ...drop, [`${PSA}/warn`]: level, [`${PSA}/audit`]: level } : drop;
+}

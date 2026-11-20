@@ -50,5 +50,13 @@ export type HarnessAdapter = {
   description: string;
   capabilities: HarnessCapability;
   reasoningMode: ReasoningMode;
+  /**
+   * The internet hosts the harness's CLI needs (its model API and the sign-in
+   * it refreshes), as `x-eve.egress.hosts` entries. Under a strict
+   * `egress.allow_hosts` profile a job's runner pod reaches these, the
+   * project's declared hosts and its git host, nothing else on the internet.
+   * Keep it minimal: telemetry, updates and docs are left out.
+   */
+  egressHosts: readonly string[];
   buildOptions: (ctx: HarnessContext) => Promise<EveAgentCliOptions>;
 };
