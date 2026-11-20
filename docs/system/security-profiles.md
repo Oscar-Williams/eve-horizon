@@ -171,6 +171,31 @@ the manifest of the release being deployed (or the env's current release),
 for an env that exists in the project of a project in the org (404
 otherwise).
 
+### Rule set 3 (0.1.328)
+
+A profile stamped 1 or 2 runs these under `audit` until `strict` is set again.
+
+| Rule | Governs | Under `strict` |
+|---|---|---|
+| `managed_db.owner_url` | Project | A long-running service that reads the managed database owner's credential (`${managed.<db>.url}` or `${managed.<db>.password}` in its environment, command or entrypoint) is refused at deploy, naming the declared-role form `${managed.<db>.roles.<role>.url}`. Job services (migrations) still receive it, and the non-secret parts (host, port, database, username) are unaffected. Under `audit`, each such service is recorded at each deploy. |
+
+Always on in 0.1.328, whatever the profile: each managed database accepts
+only its own logins (`CONNECT` is revoked from `PUBLIC`; the owner keeps it
+by ownership and declared roles by grant), and every login without a
+connection limit gets its class's limit (25, 100 or 200), applied at
+provisioning and once to existing tenants when the orchestrator starts. A
+limit an operator set is never changed. `eve db reset` and `wipe` reinstall
+the extensions that lived in `public` and the declared roles' grants, in the
+same transaction as the drop. `eve db sql` reports an error in the tenant's
+own SQL as 400 with the Postgres code and message. Deleting an environment
+queues its managed databases for drop instead of failing on them or
+removing their rows (a forced delete no longer leaves the database behind),
+new managed databases carry the environment id in their name, a destroyed
+database is provisioned afresh on the next deploy, a failed drop is retried
+for a day, and a pre-delete snapshot that was asked for and fails keeps the
+database. Only the local provider provisions; any other fails with
+`provider_unsupported`.
+
 ### Internal service keys
 
 Platform services call each other with a key per service, sent as
