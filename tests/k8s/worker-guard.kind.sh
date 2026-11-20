@@ -136,6 +136,22 @@ guard() { # policy description command...
   fi
   return 0
 }
+# A refusal from one admission policy whose reported message (the error, not
+# a Pod Security warning) names a field.
+guard_says() { # policy needle description command...
+  local policy="$1" needle="$2" what="$3"; shift 3
+  local out
+  if out="$("$@" 2>&1)"; then
+    printf 'FAIL  deny  %s\n        allowed\n' "$what"
+    failures=$((failures + 1))
+  elif grep -q "$policy" <<<"$out" && tail -1 <<<"$out" | grep -q "$needle"; then
+    printf 'PASS  deny  %s\n        %s\n' "$what" "$(echo "$out" | tail -1 | cut -c1-200)"
+  else
+    printf 'FAIL  deny  %s (not by %s naming %s)\n        %s\n' "$what" "$policy" "$needle" "$(echo "$out" | tail -1 | cut -c1-200)"
+    failures=$((failures + 1))
+  fi
+  return 0
+}
 run() { # expect(allow|deny) description command...
   local expect="$1" what="$2"; shift 2
   local out status
@@ -205,6 +221,7 @@ run allow "create a runner workspace claim in the platform namespace (dry run)" 
 run allow "delete a runner pod in the platform namespace (dry run)" "${W[@]}" -n eve delete pod eve-runner-fixture --dry-run=server
 run allow "create a Deployment with an env app account in a managed namespace (dry run)" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod web2 "$(spec '"serviceAccountName":"eve-app-env-prod"')")"
 run allow "create a migration Job in a managed namespace (dry run)" "${W[@]}" "${DRY[@]}" <<<"$(workload Job eve-acme-shop-prod migrate "$(spec)")"
+run allow "a pod at Pod Security baseline with each setting spelt out, in a managed namespace (dry run)" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"securityContext":{"seccompProfile":{"type":"RuntimeDefault"},"appArmorProfile":{"type":"RuntimeDefault"},"seLinuxOptions":{"type":"container_t"},"sysctls":[{"name":"net.ipv4.ip_unprivileged_port_start","value":"0"}]}' '{"name":"main","image":"registry.example/app:1","securityContext":{"seccompProfile":{"type":"Localhost","localhostProfile":"p.json"},"procMount":"Default","windowsOptions":{"hostProcess":false}}}')")"
 run allow "delete a managed namespace" "${W[@]}" delete namespace eve-acme-shop-new --wait=false
 run allow "the orchestrator scales a Deployment in a managed namespace to zero (dry run)" "${O[@]}" -n eve-acme-shop-prod patch deployment web --subresource=scale --type=merge -p '{"spec":{"replicas":0}}' --dry-run=server
 
@@ -276,6 +293,22 @@ guard $WG "a CronJob mounting a host path" "${W[@]}" "${DRY[@]}" <<<"$(workload 
 guard $WG "a container adding SYS_ADMIN" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod probe "$(spec '' '{"name":"main","image":"registry.example/app:1","securityContext":{"capabilities":{"add":["SYS_ADMIN"]}}}')")"
 guard $WG "a Deployment as eve-api's account in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod probe "$(spec '"serviceAccountName":"eve-api"')")"
 guard $WG "a Deployment as eve-worker in the runner namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-runners probe "$(spec '"serviceAccountName":"eve-worker"')")"
+echo "== refused: pods and pod templates weaker than Pod Security baseline"
+UNCONFINED='{"name":"main","image":"registry.example/app:1","securityContext":{"seccompProfile":{"type":"Unconfined"}}}'
+UNCONFINED_INIT='{"name":"init","image":"registry.example/app:1","securityContext":{"seccompProfile":{"type":"Unconfined"}}}'
+guard $WG "seccomp Unconfined for the pod" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"securityContext":{"seccompProfile":{"type":"Unconfined"}}')")"
+guard $WG "seccomp Unconfined for a container" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '' "$UNCONFINED")")"
+guard $WG "seccomp Unconfined for an init container of a Deployment" "${W[@]}" "${DRY[@]}" <<<"$(workload Deployment eve-acme-shop-prod probe "$(spec "\"initContainers\":[$UNCONFINED_INIT]")")"
+guard $WG "AppArmor Unconfined for the pod" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"securityContext":{"appArmorProfile":{"type":"Unconfined"}}')")"
+guard $WG "AppArmor Unconfined for a container" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '' '{"name":"main","image":"registry.example/app:1","securityContext":{"appArmorProfile":{"type":"Unconfined"}}}')")"
+guard $WG "AppArmor unconfined by annotation on a Deployment's pods" "${W[@]}" "${DRY[@]}" <<<'{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"probe","namespace":"eve-acme-shop-prod"},"spec":{"selector":{"matchLabels":{"app":"probe"}},"template":{"metadata":{"labels":{"app":"probe"},"annotations":{"container.apparmor.security.beta.kubernetes.io/main":"unconfined"}},"spec":{"containers":[{"name":"main","image":"registry.example/app:1"}]}}}}'
+guard $WG "an unmasked /proc" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"hostUsers":false' '{"name":"main","image":"registry.example/app:1","securityContext":{"procMount":"Unmasked"}}')")"
+guard $WG "a sysctl outside the safe set" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"securityContext":{"sysctls":[{"name":"kernel.msgmax","value":"65536"}]}')")"
+guard $WG "SELinux type spc_t for the pod" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"securityContext":{"seLinuxOptions":{"type":"spc_t"}}')")"
+guard $WG "SELinux type spc_t for a container" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '' '{"name":"main","image":"registry.example/app:1","securityContext":{"seLinuxOptions":{"type":"spc_t"}}}')")"
+# The API refuses hostProcess without hostNetwork, which the guard refuses
+# anyway: this checks the hostProcess refusal itself is the one reported.
+guard_says $WG hostProcess "a Windows host-process pod" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '"os":{"name":"windows"},"hostNetwork":true,"securityContext":{"windowsOptions":{"hostProcess":true}}')")"
 run deny "a DaemonSet in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(workload DaemonSet eve-acme-shop-prod probe "$(spec '' )")"
 guard $NG "a service account token Secret in a managed namespace" "${W[@]}" "${DRY[@]}" <<<'{"apiVersion":"v1","kind":"Secret","metadata":{"name":"probe","namespace":"eve-acme-shop-prod","annotations":{"kubernetes.io/service-account.name":"default"}},"type":"kubernetes.io/service-account-token"}'
 guard $NG "Pod Security enforce=privileged on a managed namespace" "${W[@]}" patch namespace eve-acme-shop-prod --type=merge -p '{"metadata":{"labels":{"pod-security.kubernetes.io/enforce":"privileged"}}}' --dry-run=server
