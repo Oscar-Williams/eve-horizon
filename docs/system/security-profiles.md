@@ -53,6 +53,9 @@ until someone moves that profile on.
 - A project created under `security.new_project_profile = strict` is stamped
   with the current rule set.
 - `legacy` and `audit` carry no stamp.
+- An org's or project's profile changed without its stamp (by a release
+  before 0.1.327, after a rollback) drops the stamp, so the newer rules start
+  in `audit` again on the way back up (a database trigger, migration 00120).
 - The API, and the worker and orchestrator (`decideSecurityRule`), resolve
   stamps the same way. New behaviour always gets a new rule id, never a wider
   meaning for an old one, so a stamp keeps what it covered.
