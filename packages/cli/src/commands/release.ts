@@ -1,7 +1,7 @@
 import type { FlagValue } from '../lib/args';
 import { getStringFlag } from '../lib/args';
 import type { ResolvedContext } from '../lib/context';
-import { requestJson, requestRaw } from '../lib/client';
+import { requestJson } from '../lib/client';
 import { outputJson } from '../lib/output';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -103,7 +103,8 @@ export async function handleRelease(
       if (!projectId) {
         throw new Error('Missing project id. Provide --project or set a profile default.');
       }
-      await requestRaw(
+      // A refusal (409: an environment runs the release) fails here with the API's message.
+      await requestJson<null>(
         context,
         `/projects/${projectId}/releases/by-tag/${encodeURIComponent(tag)}`,
         { method: 'DELETE' },
