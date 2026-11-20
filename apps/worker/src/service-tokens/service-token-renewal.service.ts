@@ -52,6 +52,20 @@ export interface RenewedToken {
   reason: RenewalReason;
 }
 
+/**
+ * What a pass did with the tokens it took on: renewed (written, and rolled or
+ * held back); conflicted (their Secret was written in between, by a deploy:
+ * the next pass looks again); failed (not renewed, or renewed but not rolled
+ * onto: the next pass tries again).
+ */
+export interface RenewalReport {
+  renewed: RenewedToken[];
+  conflicted: RenewedToken[];
+  failed: Array<RenewedToken & { error: string }>;
+}
+
+const emptyReport = (): RenewalReport => ({ renewed: [], conflicted: [], failed: [] });
+
 interface SigningKey {
   kid: string;
   publicKey: KeyObject;
@@ -290,22 +304,22 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
    * EVE_SERVICE_TOKEN_RENEW_BATCH Deployments, the soonest to expire first.
    * Renews nothing with EVE_SERVICE_TOKEN_RENEW_DAYS=0.
    */
-  async renewAll(): Promise<RenewedToken[]> {
+  async renewAll(): Promise<RenewalReport> {
     const days = this.renewDays();
-    if (days === 0) return [];
-    const renewed = await this.renew(await this.environments.listForServiceTokenRenewal(), days, this.renewBatch());
+    if (days === 0) return emptyReport();
+    const report = await this.renew(await this.environments.listForServiceTokenRenewal(), days, 'hourly');
     this.reported = true;
-    return renewed;
+    return report;
   }
 
   /**
    * One environment, now (after `eve env rotate-service-tokens`): its revoked
    * tokens and those signed by a retired key, and those expiring as the
    * hourly pass would, all at once. Nothing when the environment is not
-   * deployed.
+   * deployed. Throws when the environment's Secrets cannot be read.
    */
-  async renewEnvironment(envId: string): Promise<RenewedToken[]> {
-    return this.renew(await this.environments.listForServiceTokenRenewal(envId), this.renewDays(), Infinity);
+  async renewEnvironment(envId: string): Promise<RenewalReport> {
+    return this.renew(await this.environments.listForServiceTokenRenewal(envId), this.renewDays(), 'rotation');
   }
 
   private async renewSafe(): Promise<void> {
@@ -333,9 +347,14 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     return Number.isInteger(batch) && batch >= 1 ? batch : DEFAULT_RENEW_BATCH;
   }
 
-  private async renew(envs: ServiceTokenRenewalTarget[], days: number, batch: number): Promise<RenewedToken[]> {
+  /**
+   * `hourly`: every deployed environment, at most EVE_SERVICE_TOKEN_RENEW_BATCH
+   * Secrets, and an environment that cannot be read waits for the next pass.
+   * `rotation`: one environment a person asked for, all of it, or an error.
+   */
+  private async renew(envs: ServiceTokenRenewalTarget[], days: number, mode: 'hourly' | 'rotation'): Promise<RenewalReport> {
     await this.checkRolls();
-    if (envs.length === 0) return [];
+    if (envs.length === 0) return emptyReport();
     const signingKey = await this.issuer.signingKey();
     if (!signingKey) {
       this.logger.warn('The API did not name its signing key: tokens signed by a retired key wait for the next run');
@@ -354,28 +373,35 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
       try {
         work.push(...await this.survey(env, policy));
       } catch (err) {
-        this.logger.warn(`Service-token renewal failed in ${env.namespace}: ${err instanceof Error ? err.message : err}`);
+        if (mode === 'rotation') throw err;
+        this.logger.warn(`Service-token renewal failed in ${env.namespace}: ${errorText(err)}`);
       }
     }
 
     work.sort(byUrgency);
+    const batch = mode === 'hourly' ? this.renewBatch() : work.length;
     const chosen = work.slice(0, batch);
     if (work.length > chosen.length) {
       this.logger.log(
         `${work.length - chosen.length} more service Secret(s) wait for the next pass (at most ${batch} a pass, EVE_SERVICE_TOKEN_RENEW_BATCH)`,
       );
     }
-    const renewed: RenewedToken[] = [];
+    const report = emptyReport();
     for (const item of chosen) {
       try {
-        renewed.push(...await this.act(item));
+        const done = await this.act(item);
+        report.renewed.push(...done.renewed);
+        report.conflicted.push(...done.conflicted);
+        report.failed.push(...done.failed);
       } catch (err) {
-        this.logger.warn(
-          `Service-token renewal failed for ${item.env.namespace}/${item.secretName}: ${err instanceof Error ? err.message : err}`,
-        );
+        this.logger.warn(`Service-token renewal failed for ${item.env.namespace}/${item.secretName}: ${errorText(err)}`);
+        report.failed.push(...item.due.map(({ key, reason }) => ({
+          ...tokenAt(item, key, reason),
+          error: errorText(err),
+        })));
       }
     }
-    return renewed;
+    return report;
   }
 
   /** The Secrets of one environment that need work now, read but not yet touched. */
@@ -441,20 +467,22 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
   }
 
   /** Renew a Secret's due tokens, then roll its Deployment onto them, or hold a Recreate one back. */
-  private async act(work: SecretWork): Promise<RenewedToken[]> {
+  private async act(work: SecretWork): Promise<RenewalReport> {
     const { env, secretName, secret, deployment, rollout, policy } = work;
     const fresh: Record<string, string> = {};
     const renewed: RenewedToken[] = [];
+    const failed: RenewalReport['failed'] = [];
     let pressing = false;
     let replacedExpiry = Infinity;
     for (const { key, held, reason } of work.due) {
       const token = await this.mint(env, held, `${env.namespace}/${secretName} ${key}`);
       if (!token) {
         this.logger.warn(`Could not renew ${key} of ${env.namespace}/${secretName} (${reason}); the next run tries again`);
+        failed.push({ ...tokenAt(work, key, reason), error: 'the API minted no token' });
         continue;
       }
       fresh[key] = token;
-      renewed.push({ env_id: env.id, namespace: env.namespace, secret: secretName, key, reason });
+      renewed.push(tokenAt(work, key, reason));
       pressing ||= reason === 'revoked' || held.token.exp - policy.now <= RECREATE_ROLL_WITHIN_SECONDS;
       replacedExpiry = Math.min(replacedExpiry, held.token.exp);
     }
@@ -477,14 +505,14 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
       const written = await this.k8s.patchSecretData(env.namespace, secretName, fresh, secret.resourceVersion, annotations);
       if (!written) {
         this.logger.log(`Secret ${env.namespace}/${secretName} changed since it was read; its tokens are renewed next run`);
-        return [];
+        return { renewed: [], conflicted: renewed, failed };
       }
       for (const item of renewed) {
         this.logger.log(`Renewed ${item.key} of ${env.namespace}/${secretName} (${item.reason})`);
       }
     }
 
-    if (!deployment || !rollout || !rolledHash) return renewed;
+    if (!deployment || !rollout || !rolledHash) return { renewed, conflicted: [], failed };
     if (holdBack) {
       if (renewed.length > 0) {
         this.logger.log(
@@ -493,10 +521,17 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
           + 'or at once if that token is revoked',
         );
       }
-      return renewed;
+      return { renewed, conflicted: [], failed };
     }
-    await this.rollOnto(env, deployment, rollout, rolledHash);
-    return renewed;
+    try {
+      await this.rollOnto(env, deployment, rollout, rolledHash);
+    } catch (err) {
+      // The Secret holds the new tokens, the pods the old ones: the next pass rolls it.
+      this.logger.warn(`${env.namespace}/${deployment} did not roll onto its renewed tokens: ${errorText(err)}; the next run tries again`);
+      const error = `renewed in the Secret, but ${deployment} did not roll onto it: ${errorText(err)}`;
+      return { renewed: [], conflicted: [], failed: [...failed, ...renewed.map((item) => ({ ...item, error }))] };
+    }
+    return { renewed, conflicted: [], failed };
   }
 
   private async mint(env: ServiceTokenRenewalTarget, held: HeldToken, what: string): Promise<string | null> {
@@ -608,6 +643,12 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
       this.logger.warn(`Could not record ${ROLLOUT_STUCK_EVENT} for ${roll.env.namespace}/${roll.deployment}: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+function tokenAt(work: Pick<SecretWork, 'env' | 'secretName'>, key: string, reason: RenewalReason): RenewedToken {
+  return { env_id: work.env.id, namespace: work.env.namespace, secret: work.secretName, key, reason };
 }
 
 /**

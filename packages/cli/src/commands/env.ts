@@ -1244,12 +1244,16 @@ async function handleRotateServiceTokens(
     throw new Error('Usage: eve env rotate-service-tokens <env> [--project=<id>]');
   }
 
+  type Token = { secret: string; key: string; reason: string; error?: string };
   const response = await requestJson<{
     id: string;
     name: string;
     service_tokens_not_before: string;
-    renewal: 'done' | 'scheduled';
-    renewed: Array<{ secret: string; key: string; reason: string }>;
+    renewal: 'done' | 'incomplete' | 'scheduled';
+    counts?: { renewed: number; conflicted: number; failed: number };
+    renewed: Token[];
+    conflicted?: Token[];
+    failed?: Token[];
   }>(
     context,
     `/projects/${projectId}/envs/${envName}/rotate-service-tokens`,
@@ -1265,14 +1269,23 @@ async function handleRotateServiceTokens(
     console.log('  The worker could not renew them now; its hourly renewal will.');
     return;
   }
-  if (response.renewed.length === 0) {
+  const conflicted = response.conflicted ?? [];
+  const failed = response.failed ?? [];
+  if (response.renewed.length + conflicted.length + failed.length === 0) {
     console.log('  No service token to renew.');
     return;
   }
-  console.log('  Renewed (the services roll onto the new tokens):');
-  for (const item of response.renewed) {
-    console.log(`    ${item.secret}  ${item.key}  (${item.reason})`);
-  }
+  console.log(`  ${response.renewed.length} renewed, ${conflicted.length} changed by a deploy, ${failed.length} failed.`);
+  const list = (title: string, items: Token[]) => {
+    if (items.length === 0) return;
+    console.log(`  ${title}`);
+    for (const item of items) {
+      console.log(`    ${item.secret}  ${item.key}  (${item.reason})${item.error ? `: ${item.error}` : ''}`);
+    }
+  };
+  list('Renewed (the services roll onto the new tokens):', response.renewed);
+  list('Changed by a deploy while being renewed (the hourly renewal looks again):', conflicted);
+  list('Not renewed (the hourly renewal tries again; until then these services hold revoked tokens):', failed);
 }
 
 // ============================================================================
