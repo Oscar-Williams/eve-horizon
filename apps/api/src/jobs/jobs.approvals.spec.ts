@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ReviewDecidedError } from '@eve/db';
 import { JobsService } from './jobs.service';
 import { JobsController } from './jobs.controller';
 import { AccessService } from '../auth/access.service';
@@ -68,6 +69,8 @@ const m = vi.hoisted(() => {
     jobs: seed(),
     projectProfile: null as string | null,
     findings: [] as Array<Record<string, unknown>>,
+    /** True while a transaction body runs. */
+    inTransaction: false,
   };
   const setPhase = (id: string, phase: string) => {
     const row = state.jobs.get(id);
@@ -119,7 +122,16 @@ const db = Object.assign(
   },
   { json: (v: unknown) => v },
 );
-Object.assign(db, { begin: async <T>(work: (tx: unknown) => Promise<T>) => work(db) });
+Object.assign(db, {
+  begin: async <T>(work: (tx: unknown) => Promise<T>) => {
+    m.state.inTransaction = true;
+    try {
+      return await work(db);
+    } finally {
+      m.state.inTransaction = false;
+    }
+  },
+});
 
 const rbac = {
   resolveEffectivePermissions: vi.fn(async (user: AuthUser) => {
@@ -379,3 +391,55 @@ describe('a PATCH that sends a job in review back to active', () => {
   });
 });
 
+
+describe('a review decision', () => {
+  /** The decisions as the database makes them: once, then ReviewDecidedError. */
+  function decideOnce() {
+    const decide = (status: 'approved' | 'rejected', phase: string) => async (id: string, reviewer?: string) => {
+      const row = m.state.jobs.get(id)!;
+      if (row.phase !== 'review') throw new ReviewDecidedError(id, String(row.review_status));
+      Object.assign(row, { phase, review_status: status, reviewer });
+      return { ...row };
+    };
+    m.jobQ.approveReview.mockImplementation(decide('approved', 'done'));
+    m.jobQ.rejectReview.mockImplementation(decide('rejected', 'active'));
+  }
+
+  beforeEach(decideOnce);
+
+  it('is made once: a reject after an approve gets 409 and the job stays done', async () => {
+    const c = controller();
+    await route(c, 'approve', 'solo-r', {}, OWNER);
+
+    await expect(route(c, 'reject', 'solo-r', { reason: 'again' }, TEAMMATE)).rejects.toBeInstanceOf(ConflictException);
+    expect(m.state.jobs.get('solo-r')).toMatchObject({ phase: 'done', review_status: 'approved', reviewer: 'user_owner' });
+  });
+
+  it('is made once: an approve after a reject gets 409', async () => {
+    const c = controller();
+    await route(c, 'reject', 'solo-r', { reason: 'again' }, OWNER);
+
+    await expect(route(c, 'approve', 'solo-r', {}, TEAMMATE)).rejects.toBeInstanceOf(ConflictException);
+    expect(m.state.jobs.get('solo-r')).toMatchObject({ phase: 'active', review_status: 'rejected', reviewer: 'user_owner' });
+  });
+
+  it('is made once: a second approve gets 409 and keeps the first reviewer', async () => {
+    const c = controller();
+    await route(c, 'approve', 'solo-r', {}, OWNER);
+
+    await expect(route(c, 'approve', 'solo-r', {}, TEAMMATE)).rejects.toBeInstanceOf(ConflictException);
+    expect(m.state.jobs.get('solo-r')).toMatchObject({ reviewer: 'user_owner' });
+  });
+
+  it('is made in a transaction, on the approve route as on reject', async () => {
+    const seen: boolean[] = [];
+    m.jobQ.approveReview.mockImplementation(async (id: string) => {
+      seen.push(m.state.inTransaction);
+      return { ...m.state.jobs.get(id)!, phase: 'done' };
+    });
+
+    await route(controller(), 'approve', 'solo-r', {}, OWNER);
+
+    expect(seen).toEqual([true]);
+  });
+});
