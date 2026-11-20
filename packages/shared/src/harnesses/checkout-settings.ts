@@ -261,8 +261,9 @@ export function strictCodexArgs(workspace: string, codexHome: string | undefined
  * Gemini under `strict`: the settings to put in Eve's system settings file
  * (which outranks workspace settings) so the project `.env` cannot set a
  * routing name. Routing names in `.gemini/.env`, which Gemini loads whatever
- * the exclusions, are refused, as is a workspace MCP server that names a
- * credential or routing variable.
+ * the exclusions, are refused, as is workspace settings that reference a
+ * credential or routing variable anywhere (an MCP server, a telemetry
+ * endpoint) or cannot be parsed.
  */
 export function strictGeminiSystemSettings(workspace: string): { advanced: { excludedEnvVars: string[] } } {
   refuseFindings(checkoutMcpFindings(workspace, 'gemini'));
@@ -455,45 +456,60 @@ function namesHarnessSecret(name: string, harness: string): boolean {
 const ENV_REFERENCE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g;
 
 /**
- * The MCP server definitions a checkout supplies to Claude Code or Gemini,
- * file by file: Claude Code's project `.mcp.json` and the config directory's
- * `.claude.json` (user and per-project servers), and Gemini's workspace
- * `.gemini/settings.json`. Each string a server holds (command, args, env,
- * url, headers, headersHelper) that references a credential or routing
- * name, as `$NAME` or `${NAME}`, is named. Both harnesses expand those
- * references, and a header helper runs in a shell that can.
+ * The credential handoffs in JSON settings a checkout supplies to Claude Code
+ * or Gemini, file by file: the MCP servers in Claude Code's project
+ * `.mcp.json` and the config directory's `.claude.json` (user and
+ * per-project servers), and every string in Gemini's workspace
+ * `.gemini/settings.json`. Each string (a server's command, args, env, url,
+ * headers, headersHelper; for Gemini also a telemetry endpoint or tool
+ * command) that references a credential or routing name, as `$NAME` or
+ * `${NAME}`, is named. Both harnesses expand those references, and a header
+ * helper runs in a shell that can.
  */
 function checkoutMcpFindings(workspace: string, harness: string, configDir?: string): CheckoutRoutingFinding[] {
-  const files: Array<[string, unknown]> = checkoutSettingsMechanism(harness) === 'gemini'
-    ? [['.gemini/settings.json', readJson(path.join(workspace, '.gemini', 'settings.json'), parseJsonWithComments)]]
+  const files: Array<[string, string[]]> = checkoutSettingsMechanism(harness) === 'gemini'
+    // Gemini expands references in every settings string (telemetry endpoints, tool commands), so all count.
+    ? [['.gemini/settings.json', jsonHandoffs(readJson(path.join(workspace, '.gemini', 'settings.json'), parseJsonWithComments), harness, 'all')]]
     : [
-      ['.mcp.json', readJson(path.join(workspace, '.mcp.json'))],
-      ...(configDir ? [[configLabel(workspace, harness, configDir, '.claude.json'), readJson(path.join(configDir, '.claude.json'))] as [string, unknown]] : []),
+      ['.mcp.json', jsonHandoffs(readJson(path.join(workspace, '.mcp.json')), harness, 'servers')],
+      ...(configDir
+        ? [[configLabel(workspace, harness, configDir, '.claude.json'), jsonHandoffs(readJson(path.join(configDir, '.claude.json')), harness, 'servers')] as [string, string[]]]
+        : []),
     ];
   return files
-    .map(([file, value]) => ({ file, settings: jsonMcpHandoffs(value, harness) }))
+    .map(([file, settings]) => ({ file, settings }))
     .filter((finding) => finding.settings.length > 0);
 }
 
-function jsonMcpHandoffs(value: unknown, harness: string): string[] {
+/**
+ * The `$NAME` and `${NAME}` references to a credential or routing name in a
+ * JSON settings file: in its MCP servers (`mcpServers` and each
+ * `projects.<path>.mcpServers`), or in every string it holds.
+ */
+function jsonHandoffs(value: unknown, harness: string, scope: 'servers' | 'all'): string[] {
   if (value === UNPARSED) return [UNREADABLE];
   if (!isRecord(value)) return [];
   const found: string[] = [];
   const scan = (item: unknown, at: string) => {
+    const under = (key: string | number) => (at ? `${at}.${key}` : String(key));
     if (typeof item === 'string') {
       for (const [, name] of item.matchAll(ENV_REFERENCE)) {
         if (namesHarnessSecret(name, harness)) found.push(`${at}=$${name}`);
       }
     } else if (Array.isArray(item)) {
-      item.forEach((entry, i) => scan(entry, `${at}.${i}`));
+      item.forEach((entry, i) => scan(entry, under(i)));
     } else if (isRecord(item)) {
-      for (const [key, entry] of Object.entries(item)) scan(entry, `${at}.${key}`);
+      for (const [key, entry] of Object.entries(item)) scan(entry, under(key));
     }
   };
-  scan(value.mcpServers, 'mcpServers');
-  if (isRecord(value.projects)) {
-    for (const [project, entry] of Object.entries(value.projects)) {
-      if (isRecord(entry)) scan(entry.mcpServers, `projects.${project}.mcpServers`);
+  if (scope === 'all') {
+    scan(value, '');
+  } else {
+    scan(value.mcpServers, 'mcpServers');
+    if (isRecord(value.projects)) {
+      for (const [project, entry] of Object.entries(value.projects)) {
+        if (isRecord(entry)) scan(entry.mcpServers, `projects.${project}.mcpServers`);
+      }
     }
   }
   return [...new Set(found)];
