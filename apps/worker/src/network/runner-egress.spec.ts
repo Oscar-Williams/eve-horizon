@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EgressProviderMissingError } from '@eve/shared';
 import { ensureRunnerEgress, registerRunnerEgress } from './runner-egress.js';
 
@@ -40,6 +40,61 @@ describe('ensureRunnerEgress', () => {
     });
     registerRunnerEgress({ ensureRunnersForDispatch: vi.fn(async () => { throw failure; }) });
     await expect(ensureRunnerEgress('proj_shop')).resolves.toBe(failure.message);
+  });
+
+  // A strict project's runner policies could not be written: a passing API
+  // error (a timeout, a conflict, a restarting API server) should not fail
+  // the attempt, so the sync is tried once more after a short wait.
+  describe('a failed strict sync', () => {
+    const syncError = () => Object.assign(new Error('the runner egress policies of project proj_shop could not be written: timeout'), {
+      name: 'RunnerEgressSyncError',
+    });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('is tried once more after a short wait, and the job runs when that succeeds', async () => {
+      const ensureRunnersForDispatch = vi.fn()
+        .mockRejectedValueOnce(syncError())
+        .mockResolvedValueOnce('written');
+      registerRunnerEgress({ ensureRunnersForDispatch });
+
+      const result = ensureRunnerEgress('proj_shop');
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toBeUndefined();
+      expect(ensureRunnersForDispatch).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses the job when the second try fails too', async () => {
+      const failure = syncError();
+      const ensureRunnersForDispatch = vi.fn().mockRejectedValue(failure);
+      registerRunnerEgress({ ensureRunnersForDispatch });
+
+      const result = ensureRunnerEgress('proj_shop');
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toBe(failure.message);
+      expect(ensureRunnersForDispatch).toHaveBeenCalledTimes(2);
+    });
+
+    it('is not retried for a missing provider, which a second try cannot fix', async () => {
+      const ensureRunnersForDispatch = vi.fn().mockRejectedValue(new EgressProviderMissingError());
+      registerRunnerEgress({ ensureRunnersForDispatch });
+
+      const result = ensureRunnerEgress('proj_shop');
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toMatch(/need a provider/);
+      expect(ensureRunnersForDispatch).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('refuses the job when egress.allow_hosts is strict with no provider', async () => {
