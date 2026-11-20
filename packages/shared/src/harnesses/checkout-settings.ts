@@ -17,8 +17,9 @@
  * `bearer_token_env_var` and `env_http_headers`, and the `$NAME` or
  * `${NAME}` references Claude Code (`.mcp.json`, the config directory's
  * `.claude.json`) and Gemini (`.gemini/settings.json`) expand. A server that
- * names a credential (`isCheckoutCredentialEnvKey`) or a routing name is a
- * finding, as is a Codex server whose `auth` is not `oauth`.
+ * names a credential of the running harness or of Eve
+ * (`isCheckoutCredentialEnvKey`) or a routing name is a finding, as is a
+ * Codex server whose `auth` is not `oauth`.
  *
  * Under `audit` the run records what it finds (names, never values). Under
  * `strict` the harness proxy keeps those settings away from the harness,
@@ -93,17 +94,40 @@ export function isCheckoutRoutingEnvKey(key: string): boolean {
 }
 
 /**
- * Env names that hold a credential a checkout MCP server may not be handed:
- * every harness's provider keys and auth names (`isHarnessCredentialKey`),
- * Claude Code's auth names, Codex's own `CODEX_` names and Eve's `EVE_`
- * names (the job token among them).
+ * Env names that hold a credential a checkout MCP server may not be handed
+ * when this harness runs: the harness's own provider keys and auth names
+ * (`isHarnessCredentialKey`; Claude Code's auth names for the Claude family,
+ * Codex's `CODEX_` names for Codex) and Eve's secret-bearing names
+ * (`isEveSecretEnvKey`). Any other name, another harness's key or Eve's
+ * plain settings such as `EVE_API_URL` among them, is the project's own.
  */
-export function isCheckoutCredentialEnvKey(key: string): boolean {
+export function isCheckoutCredentialEnvKey(key: string, harness: string): boolean {
   const name = key.toUpperCase();
-  return name.startsWith('EVE_')
-    || name.startsWith('CODEX_')
-    || (CLAUDE_AUTH_ENV_KEYS as readonly string[]).includes(name)
-    || isHarnessCredentialKey(undefined, name);
+  if (isEveSecretEnvKey(name) || isHarnessCredentialKey(harness, name)) return true;
+  switch (checkoutSettingsMechanism(harness) ?? harness) {
+    case 'claude':
+      return (CLAUDE_AUTH_ENV_KEYS as readonly string[]).includes(name);
+    case 'codex':
+    case 'code':
+      return name.startsWith('CODEX_');
+    default:
+      return false;
+  }
+}
+
+/** Words that mark an `EVE_` name as carrying a secret. */
+const EVE_SECRET_WORDS = new Set(['TOKEN', 'KEY', 'SECRET', 'SECRETS', 'PASSWORD', 'CREDENTIAL', 'CREDENTIALS', 'AUTHKEY']);
+
+/**
+ * Eve's names that carry a secret: an `EVE_` name with a token, key, secret,
+ * password or credential word, such as `EVE_JOB_TOKEN`, the
+ * `EVE_APP_LINK_<APP>_TOKEN` link tokens and the internal keys
+ * (`EVE_INTERNAL_API_KEY`, `EVE_INTERNAL_CORE_KEY` and the rest). Plain
+ * settings (`EVE_API_URL`, `EVE_PROJECT_ID`, `EVE_JOB_ID`) are not.
+ */
+export function isEveSecretEnvKey(key: string): boolean {
+  const name = key.toUpperCase();
+  return name.startsWith('EVE_') && name.split('_').some((word) => EVE_SECRET_WORDS.has(word));
 }
 
 /** One checkout file and the routing settings it sets (names only). */
@@ -142,10 +166,10 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
     }
     case 'codex':
     case 'code': {
-      add('.codex/config.toml', codexRoutingSettings(readText(path.join(workspace, '.codex', 'config.toml'))));
+      add('.codex/config.toml', codexRoutingSettings(readText(path.join(workspace, '.codex', 'config.toml')), harness));
       // A config home inside the checkout is the checkout's; Eve's own is not.
       if (configDir && isInside(workspace, configDir)) {
-        add(configLabel(workspace, harness, configDir, 'config.toml'), codexRoutingSettings(readText(path.join(configDir, 'config.toml'))));
+        add(configLabel(workspace, harness, configDir, 'config.toml'), codexRoutingSettings(readText(path.join(configDir, 'config.toml')), harness));
         // Codex loads CODEX_HOME/.env over its own environment; it keeps out only CODEX_ names.
         add(configLabel(workspace, harness, configDir, '.env'), envFileRoutingNames(readText(path.join(configDir, '.env'))));
       }
@@ -307,7 +331,7 @@ function claudeRoutingSettings(value: unknown): string[] {
  * that sets a routing name; then the MCP servers it hands a credential
  * (`codexMcpHandoffs`). A file it cannot read is `(unreadable)`.
  */
-function codexRoutingSettings(text: string | null): string[] {
+function codexRoutingSettings(text: string | null, harness: string): string[] {
   if (!text) return [];
   let doc: TomlTable;
   try {
@@ -336,7 +360,7 @@ function codexRoutingSettings(text: string | null): string[] {
     }
   };
   walk(doc, []);
-  return [...settings, ...codexMcpHandoffs(doc)];
+  return [...settings, ...codexMcpHandoffs(doc, harness)];
 }
 
 /**
@@ -348,12 +372,12 @@ function codexRoutingSettings(text: string | null): string[] {
  * ChatGPT session, which Codex itself keeps to ChatGPT's origin, or an IdP
  * token exchange). `http_headers_helper` runs with only the basic names.
  */
-function codexMcpHandoffs(doc: TomlTable): string[] {
+function codexMcpHandoffs(doc: TomlTable, harness: string): string[] {
   const servers = doc.mcp_servers;
   if (!isTable(servers)) return [];
   const found: string[] = [];
   const named = (envName: TomlValue | undefined, at: string) => {
-    if (typeof envName === 'string' && namesHarnessSecret(envName)) found.push(`${at}=$${envName}`);
+    if (typeof envName === 'string' && namesHarnessSecret(envName, harness)) found.push(`${at}=$${envName}`);
   };
   for (const [name, server] of Object.entries(servers)) {
     if (!isTable(server)) continue;
@@ -374,8 +398,8 @@ function codexMcpHandoffs(doc: TomlTable): string[] {
 }
 
 /** Whether a checkout MCP server may not be handed this env name: a credential or a routing name. */
-function namesHarnessSecret(name: string): boolean {
-  return isCheckoutCredentialEnvKey(name) || isCheckoutRoutingEnvKey(name);
+function namesHarnessSecret(name: string, harness: string): boolean {
+  return isCheckoutCredentialEnvKey(name, harness) || isCheckoutRoutingEnvKey(name);
 }
 
 /** `$NAME` and `${NAME}` (with or without `:-default`) references in a string. */
@@ -398,17 +422,17 @@ function checkoutMcpFindings(workspace: string, harness: string, configDir?: str
       ...(configDir ? [[configLabel(workspace, harness, configDir, '.claude.json'), path.join(configDir, '.claude.json')] as [string, string]] : []),
     ];
   return files
-    .map(([file, full]) => ({ file, settings: jsonMcpHandoffs(readJson(full)) }))
+    .map(([file, full]) => ({ file, settings: jsonMcpHandoffs(readJson(full), harness) }))
     .filter((finding) => finding.settings.length > 0);
 }
 
-function jsonMcpHandoffs(value: unknown): string[] {
+function jsonMcpHandoffs(value: unknown, harness: string): string[] {
   if (!isRecord(value)) return [];
   const found: string[] = [];
   const scan = (item: unknown, at: string) => {
     if (typeof item === 'string') {
       for (const [, name] of item.matchAll(ENV_REFERENCE)) {
-        if (namesHarnessSecret(name)) found.push(`${at}=$${name}`);
+        if (namesHarnessSecret(name, harness)) found.push(`${at}=$${name}`);
       }
     } else if (Array.isArray(item)) {
       item.forEach((entry, i) => scan(entry, `${at}.${i}`));
