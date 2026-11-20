@@ -33,6 +33,22 @@ export interface AppLinkTokenResult {
 /** 1 hour for job-surface app-link tokens. Service deploys override to 90d. */
 const DEFAULT_APP_LINK_TTL_SECONDS = 60 * 60;
 
+export interface ServiceTokenParams {
+  projectId: string;
+  orgId: string;
+  envName: string;
+  serviceName: string;
+  permissions?: string[];
+  ttlSeconds?: number;
+  /** The release being deployed: the API grants what its manifest declares for the service. */
+  releaseId?: string;
+}
+
+/** Why no token was minted: the API's HTTP status, or null when the API could not be asked or answered nothing usable. */
+export interface MintFailure {
+  status: number | null;
+}
+
 /**
  * Mint a service token via the internal API.
  *
@@ -40,29 +56,24 @@ const DEFAULT_APP_LINK_TTL_SECONDS = 60 * 60;
  * scoped to the service's org/project/environment with only the
  * permissions specified (or sensible defaults).
  */
-export async function mintServiceToken(
-  params: {
-    projectId: string;
-    orgId: string;
-    envName: string;
-    serviceName: string;
-    permissions?: string[];
-    ttlSeconds?: number;
-    /** The release being deployed: the API grants what its manifest declares for the service. */
-    releaseId?: string;
-  },
-): Promise<ServiceTokenResult | null> {
+export async function mintServiceToken(params: ServiceTokenParams): Promise<ServiceTokenResult | null> {
+  const result = await requestServiceToken(params);
+  return 'access_token' in result ? result : null;
+}
+
+/** mintServiceToken, saying why it minted nothing (a 404 names a project, env or release the API did not find). */
+export async function requestServiceToken(params: ServiceTokenParams): Promise<ServiceTokenResult | MintFailure> {
   let config: ReturnType<typeof loadConfig>;
   try {
     config = loadConfig();
   } catch {
     // Config not available (e.g. unit tests) — silently skip
-    return null;
+    return { status: null };
   }
 
   if (!hasInternalCredential() || !config.EVE_API_URL) {
     console.warn('[auth-client] Missing an internal key or EVE_API_URL — cannot mint service token');
-    return null;
+    return { status: null };
   }
 
   try {
@@ -87,13 +98,14 @@ export async function mintServiceToken(
 
     if (!response.ok) {
       console.warn(`[auth-client] mint-service-token returned ${response.status}: ${response.statusText}`);
-      return null;
+      return { status: response.status };
     }
 
-    return await response.json() as ServiceTokenResult;
+    const result = await response.json() as ServiceTokenResult;
+    return typeof result?.access_token === 'string' ? result : { status: null };
   } catch (err) {
     console.warn(`[auth-client] Failed to mint service token: ${err instanceof Error ? err.message : err}`);
-    return null;
+    return { status: null };
   }
 }
 

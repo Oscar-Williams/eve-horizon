@@ -39,6 +39,8 @@ export interface ServiceTokenRenewalTarget {
   namespace: string;
   /** The release applied last: the one whose service Secrets the cluster holds. */
   release_id: string;
+  /** The environment's current release; renewal mints against it when release_id is gone. */
+  current_release_id: string | null;
   service_tokens_not_before: Date | null;
 }
 
@@ -461,6 +463,7 @@ export function environmentQueries(db: Db) {
       return db<ServiceTokenRenewalTarget[]>`
         SELECT e.id, e.project_id, p.org_id, e.name, e.namespace,
                COALESCE(e.last_applied_release_id, e.current_release_id) AS release_id,
+               e.current_release_id,
                e.service_tokens_not_before
         FROM environments e
         JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL

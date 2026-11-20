@@ -1,7 +1,7 @@
 import { createPublicKey, verify as verifySignature, type JsonWebKey, type KeyObject } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { environmentQueries, eventQueries, type Db, type ServiceTokenRenewalTarget } from '@eve/db';
-import { fetchSigningKey, generateEventId, mintAppLinkToken, mintServiceToken, toK8sLabelValue } from '@eve/shared';
+import { fetchSigningKey, generateEventId, mintAppLinkToken, requestServiceToken, toK8sLabelValue } from '@eve/shared';
 import { K8sService } from '../deployer/k8s.service';
 import {
   SECRETS_HASH_ANNOTATION,
@@ -57,9 +57,15 @@ interface SigningKey {
   publicKey: KeyObject;
 }
 
+/** The API refused to mint: its HTTP status. */
+export interface MintRefusal {
+  status: number;
+}
+
 /** What renewal asks the API for: the key it signs with now, and fresh tokens. */
 export interface ServiceTokenIssuer {
   signingKey(): Promise<SigningKey | null>;
+  /** A token; the API's refusal (a 404 names a project, environment or release it did not find); or null. */
   mintServiceToken(params: {
     projectId: string;
     orgId: string;
@@ -67,7 +73,7 @@ export interface ServiceTokenIssuer {
     serviceName: string;
     permissions: string[];
     releaseId: string;
-  }): Promise<string | null>;
+  }): Promise<string | MintRefusal | null>;
   mintAppLinkToken(params: {
     subscriptionId: string;
     consumerPrincipal: string;
@@ -91,8 +97,10 @@ export class ApiServiceTokenIssuer implements ServiceTokenIssuer {
     }
   }
 
-  async mintServiceToken(params: Parameters<ServiceTokenIssuer['mintServiceToken']>[0]): Promise<string | null> {
-    return (await mintServiceToken({ ...params, ttlSeconds: TOKEN_TTL_SECONDS }))?.access_token ?? null;
+  async mintServiceToken(params: Parameters<ServiceTokenIssuer['mintServiceToken']>[0]): Promise<string | MintRefusal | null> {
+    const result = await requestServiceToken({ ...params, ttlSeconds: TOKEN_TTL_SECONDS });
+    if ('access_token' in result) return result.access_token;
+    return result.status !== null ? { status: result.status } : null;
   }
 
   async mintAppLinkToken(params: Parameters<ServiceTokenIssuer['mintAppLinkToken']>[0]): Promise<string | null> {
@@ -190,6 +198,9 @@ interface StartedRoll {
   hash: string;
   startedAt: number;
 }
+
+const isRefusal = (value: string | MintRefusal | null): value is MintRefusal =>
+  typeof value === 'object' && value !== null;
 
 const byUrgency = (a: SecretWork, b: SecretWork) => (a.urgency === b.urgency ? 0 : a.urgency < b.urgency ? -1 : 1);
 
@@ -437,7 +448,7 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     let pressing = false;
     let replacedExpiry = Infinity;
     for (const { key, held, reason } of work.due) {
-      const token = await this.mint(env, held);
+      const token = await this.mint(env, held, `${env.namespace}/${secretName} ${key}`);
       if (!token) {
         this.logger.warn(`Could not renew ${key} of ${env.namespace}/${secretName} (${reason}); the next run tries again`);
         continue;
@@ -488,24 +499,39 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     return renewed;
   }
 
-  private mint(env: ServiceTokenRenewalTarget, held: HeldToken): Promise<string | null> {
-    return held.kind === 'service'
-      ? this.issuer.mintServiceToken({
-          projectId: env.project_id,
-          orgId: env.org_id,
-          envName: env.name,
-          serviceName: held.serviceName,
-          permissions: held.permissions,
-          releaseId: env.release_id,
-        })
-      : this.issuer.mintAppLinkToken({
-          subscriptionId: held.subscriptionId,
-          consumerPrincipal: held.principal,
-          consumerProjectId: env.project_id,
-          consumerEnv: env.name,
-          producerEnv: held.producerEnv,
-          ttlSeconds: TOKEN_TTL_SECONDS,
-        });
+  private async mint(env: ServiceTokenRenewalTarget, held: HeldToken, what: string): Promise<string | null> {
+    if (held.kind === 'app_link') {
+      return this.issuer.mintAppLinkToken({
+        subscriptionId: held.subscriptionId,
+        consumerPrincipal: held.principal,
+        consumerProjectId: env.project_id,
+        consumerEnv: env.name,
+        producerEnv: held.producerEnv,
+        ttlSeconds: TOKEN_TTL_SECONDS,
+      });
+    }
+    const params = {
+      projectId: env.project_id,
+      orgId: env.org_id,
+      envName: env.name,
+      serviceName: held.serviceName,
+      permissions: held.permissions,
+      releaseId: env.release_id,
+    };
+    const minted = await this.issuer.mintServiceToken(params);
+    if (!isRefusal(minted) || minted.status !== 404) return isRefusal(minted) ? null : minted;
+
+    // The applied release's row is gone (it is read for the service's
+    // permissions): without a way out this would fail every hour.
+    const fallback = env.current_release_id && env.current_release_id !== env.release_id ? env.current_release_id : null;
+    this.logger.error(
+      `Could not renew ${what} of environment ${env.name} (${env.id}, project ${env.project_id}): `
+      + `the API did not find release ${env.release_id}, the one applied there; `
+      + (fallback ? `minting against its current release ${fallback}` : 'deploy the environment again to renew it'),
+    );
+    if (!fallback) return null;
+    const retried = await this.issuer.mintServiceToken({ ...params, releaseId: fallback });
+    return isRefusal(retried) ? null : retried;
   }
 
   /** Point the pod template's hash at the renewed values: the Deployment rolls once. */

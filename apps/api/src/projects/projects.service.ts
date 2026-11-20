@@ -672,9 +672,19 @@ export class ProjectsService {
     if (!release) {
       throw new NotFoundException(`Release with tag "${tag}" not found for project ${projectId}`);
     }
-    await this.releases.delete(release.id);
+    // A release an environment runs stays: renewal mints its service tokens against it.
+    if (!await this.releases.delete(release.id)) {
+      const environments = await this.releases.listEnvironmentsUsing(release.id);
+      if (environments.length > 0) {
+        throw new ConflictException(
+          `Release with tag "${tag}" is the current or last applied release of environment(s) ${environments.join(', ')}; deploy another release there first`,
+        );
+      }
+      throw new NotFoundException(`Release with tag "${tag}" not found for project ${projectId}`);
+    }
   }
 
+  /** Delete the project's releases past the newest `keep`; a release an environment runs is kept. */
   async pruneReleases(projectId: string, keep: number): Promise<{ deleted: number }> {
     const project = await this.projects.findById(projectId);
     if (!project) {

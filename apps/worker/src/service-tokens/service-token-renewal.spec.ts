@@ -662,20 +662,21 @@ describe('service token renewal', () => {
       mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
         { ...ENV, release_id: 'rel_3', current_release_id: 'rel_2' },
       ]);
-      const mint = issuer.mintServiceToken.getMockImplementation()!;
-      issuer.mintServiceToken.mockImplementation(async (p: any) => (p.releaseId === 'rel_3' ? { status: 404 } : mint(p)));
+      const mintService = vi.mocked(issuer.mintServiceToken);
+      const mint = mintService.getMockImplementation()!;
+      mintService.mockImplementation(async (p) => (p.releaseId === 'rel_3' ? { status: 404 } : mint(p)));
       const old = serviceToken({ days: 20 });
       cluster.addService('api', { EVE_SERVICE_TOKEN: old }, 'rel_3');
 
       await renewal.renewAll();
 
-      expect(issuer.mintServiceToken.mock.calls.map(([p]: any[]) => p.releaseId)).toEqual(['rel_3', 'rel_2']);
+      expect(mintService.mock.calls.map(([p]) => p.releaseId)).toEqual(['rel_3', 'rel_2']);
       expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(old);
       expect(errors()).toMatch(/prod.*env_prod.*rel_3.*rel_2/);
     });
 
     it('renews nothing, and says so, when the release not found is also the current one', async () => {
-      issuer.mintServiceToken.mockResolvedValue({ status: 404 });
+      vi.mocked(issuer.mintServiceToken).mockResolvedValue({ status: 404 });
       const old = serviceToken({ days: 20 });
       cluster.addService('api', { EVE_SERVICE_TOKEN: old });
 
