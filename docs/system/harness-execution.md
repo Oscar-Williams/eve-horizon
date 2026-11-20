@@ -407,7 +407,7 @@ see [security profiles](security-profiles.md#rule-set-2-01327)) covers them.
 | Harness | Checkout settings read | Under `strict` |
 |---|---|---|
 | `claude`, `mclaude`, `zai` | `.claude/settings.json`, `.claude/settings.local.json`; Eve's copy of `.agent/harnesses/<harness>/settings.json` | Claude Code reads a cleaned merge of the project and local settings through `--settings`, with `--setting-sources user`, so the originals are not read. Eve's copy of the config directory is cleaned in place (its tool gate and hooks stay); a config directory inside the checkout that sets routing is refused. |
-| `codex` | a trusted project's `.codex/config.toml`; `CODEX_HOME/config.toml` when `CODEX_HOME` is in the checkout (`.agent/harnesses/codex/`) | `-c model_provider="openai"` (and `-c profiles.<variant>.model_provider="openai"`), the top config layer, so the built-in provider and the job's own `OPENAI_BASE_URL` apply. A checkout config that sets `openai_base_url`, `chatgpt_base_url` or another `*base_url` outside a provider entry is refused. |
+| `codex` | a trusted project's `.codex/config.toml`; `CODEX_HOME/config.toml` when `CODEX_HOME` is in the checkout (`.agent/harnesses/codex/`) | A checkout config that sets any Codex routing setting is refused: the top-level `profile` (it selects a profile's provider, which `-c` cannot undo), `model_provider` (top level or in a profile), any `model_providers` entry, any `*base_url` (`openai_base_url`, `chatgpt_base_url`, a profile's), or an env override that sets a routing name (`shell_environment_policy.set`, an MCP server's `env`). The file is read with a TOML parser, so tables, dotted keys, inline tables and quoted keys all count, and a file it cannot read is refused too. Otherwise `-c model_provider="openai"` (and `-c profiles.<variant>.model_provider="openai"`), the top config layer, pins the built-in provider, which uses the job's own `OPENAI_BASE_URL`. |
 | `gemini` | `.gemini/.env`, then `.env`, loaded into Gemini's environment | An Eve-owned system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, which outranks workspace settings) lists the project `.env`'s routing names in `advanced.excludedEnvVars`. Routing names in `.gemini/.env`, which Gemini loads whatever the exclusions, are refused. |
 | `code`, `pi` | not confirmed | refused |
 
@@ -415,7 +415,7 @@ Routing settings are the env names P1-9 holds (`*_BASE_URL`, `HTTP_PROXY`,
 `HTTPS_PROXY`, `ALL_PROXY`, TLS trust such as `NODE_EXTRA_CA_CERTS`,
 `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`), `NODE_OPTIONS`, the
 code-loading names (`LD_PRELOAD`, `BASH_ENV` and the rest), Claude Code's
-`apiKeyHelper`, and Codex's provider keys. No checkout file is ever edited:
+`apiKeyHelper`, and Codex's provider and profile keys. No checkout file is ever edited:
 an agent may commit it.
 
 The run (worker, or the agent runtime for inline jobs) reads the project's
