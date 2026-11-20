@@ -69,6 +69,24 @@ export function environmentQueries(db: Db) {
       return row ?? null;
     },
 
+    /**
+     * The environment a service token names, while it and its project exist
+     * (a soft-deleted project's environments count as gone): its creation and
+     * its service_tokens_not_before, the two floors a token's `iat` is held to.
+     */
+    async findForServiceTokens(
+      projectId: string,
+      name: string,
+    ): Promise<Pick<Environment, 'id' | 'created_at' | 'service_tokens_not_before'> | null> {
+      const [row] = await db<Array<Pick<Environment, 'id' | 'created_at' | 'service_tokens_not_before'>>>`
+        SELECT e.id, e.created_at, e.service_tokens_not_before
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        WHERE e.project_id = ${projectId} AND e.name = ${name}
+      `;
+      return row ?? null;
+    },
+
     async create(
       environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch' | 'service_tokens_not_before'> & { deploy_status?: string },
     ): Promise<Environment> {
