@@ -29,7 +29,6 @@ ARG NODE_BASE_IMAGE=node:22-slim
 
 FROM gcr.io/kaniko-project/executor:v1.20.1 AS kaniko
 FROM moby/buildkit:v0.12.5 AS buildkit
-FROM gcr.io/go-containerregistry/crane:v0.20.3 AS crane
 
 # =============================================================================
 # Stage: node-image
@@ -68,24 +67,37 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install kubectl for K8s operations
+# Install kubectl for K8s operations, and crane for worker-local toolchain
+# image extraction, at exact versions, each checked against its sha256 (as
+# published at dl.k8s.io/release/<version>/bin/linux/<arch>/kubectl.sha256 and
+# in the go-containerregistry release's checksums.txt). Same values as the
+# agent-runtime image.
+ARG KUBECTL_VERSION=v1.37.2
+ARG KUBECTL_SHA256_AMD64=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+ARG KUBECTL_SHA256_ARM64=fcc16f63186659d9722014b7e02d5fdd2d4e669cb8c0ab66365d7d3b8ba03509
+ARG CRANE_VERSION=v0.20.3
+ARG CRANE_SHA256_AMD64=36c67a932f489b3f2724b64af90b599a8ef2aa7b004872597373c0ad694dc059
+ARG CRANE_SHA256_ARM64=d2235f7779cd39c6e40f43701d2512c997409f629fb53e621ede0d57d3f995e2
 RUN set -eu; \
-    arch="$(uname -m)"; \
+    arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      x86_64) k8s_arch="amd64" ;; \
-      aarch64|arm64) k8s_arch="arm64" ;; \
-      *) echo "Unsupported arch: $arch"; exit 1 ;; \
+      amd64) kubectl_sha256="$KUBECTL_SHA256_AMD64"; crane_arch=x86_64; crane_sha256="$CRANE_SHA256_AMD64" ;; \
+      arm64) kubectl_sha256="$KUBECTL_SHA256_ARM64"; crane_arch=arm64; crane_sha256="$CRANE_SHA256_ARM64" ;; \
+      *) echo "Unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
-    k8s_version="$(curl -L -s https://dl.k8s.io/release/stable.txt)"; \
-    curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${k8s_version}/bin/linux/${k8s_arch}/kubectl"; \
-    chmod +x /usr/local/bin/kubectl
+    curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl"; \
+    echo "${kubectl_sha256}  /tmp/kubectl" | sha256sum -c -; \
+    install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl; \
+    curl -fsSLo /tmp/crane.tar.gz "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${crane_arch}.tar.gz"; \
+    echo "${crane_sha256}  /tmp/crane.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/crane.tar.gz --no-same-owner -C /usr/local/bin crane; \
+    chmod 0755 /usr/local/bin/crane; \
+    rm -f /tmp/kubectl /tmp/crane.tar.gz
 
 # Add kaniko executor for in-cluster image builds
 COPY --from=kaniko /kaniko/executor /usr/local/bin/kaniko
 # Add buildctl for in-cluster BuildKit builds
 COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
-# Add crane for worker-local toolchain image extraction
-COPY --from=crane /ko-app/crane /usr/local/bin/crane
 
 RUN corepack enable
 

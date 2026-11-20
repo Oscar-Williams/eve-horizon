@@ -22,21 +22,37 @@ RUN pnpm --filter @eve/shared build \
     && pnpm --filter @eve-horizon/cli build \
     && pnpm --filter @eve/agent-runtime build
 
-FROM gcr.io/go-containerregistry/crane:v0.20.3 AS crane
-
 FROM base AS production
 
-ARG KUBECTL_VERSION=stable
+# kubectl and crane at exact versions, each checked against its sha256 (as
+# published at dl.k8s.io/release/<version>/bin/linux/<arch>/kubectl.sha256 and
+# in the go-containerregistry release's checksums.txt). Same values as the
+# worker image.
+ARG KUBECTL_VERSION=v1.37.2
+ARG KUBECTL_SHA256_AMD64=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+ARG KUBECTL_SHA256_ARM64=fcc16f63186659d9722014b7e02d5fdd2d4e669cb8c0ab66365d7d3b8ba03509
+ARG CRANE_VERSION=v0.20.3
+ARG CRANE_SHA256_AMD64=36c67a932f489b3f2724b64af90b599a8ef2aa7b004872597373c0ad694dc059
+ARG CRANE_SHA256_ARM64=d2235f7779cd39c6e40f43701d2512c997409f629fb53e621ede0d57d3f995e2
 RUN set -eu; \
     apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git bash jq poppler-utils \
     && mkdir -p /home/node/.local/bin /home/node/.cc-mirror /opt/eve/workspaces /opt/eve/cache /opt/eve/state /opt/eve/toolchains \
     && chown -R node:node /home/node /opt/eve \
-    && if [ "$KUBECTL_VERSION" = "stable" ]; then \
-         KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"; \
-       fi \
-    && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl \
-    && chmod +x /usr/local/bin/kubectl \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) kubectl_sha256="$KUBECTL_SHA256_AMD64"; crane_arch=x86_64; crane_sha256="$CRANE_SHA256_AMD64" ;; \
+         arm64) kubectl_sha256="$KUBECTL_SHA256_ARM64"; crane_arch=arm64; crane_sha256="$CRANE_SHA256_ARM64" ;; \
+         *) echo "Unsupported arch: $arch" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" \
+    && echo "${kubectl_sha256}  /tmp/kubectl" | sha256sum -c - \
+    && install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl \
+    && curl -fsSLo /tmp/crane.tar.gz "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${crane_arch}.tar.gz" \
+    && echo "${crane_sha256}  /tmp/crane.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/crane.tar.gz --no-same-owner -C /usr/local/bin crane \
+    && chmod 0755 /usr/local/bin/crane \
+    && rm -f /tmp/kubectl /tmp/crane.tar.gz \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Media processing tools (ffmpeg + whisper.cpp) ---
@@ -82,7 +98,6 @@ ENV EVE_BUILD_TIME=${EVE_BUILD_TIME}
 ENV DISABLE_TELEMETRY=1
 ENV HOME=/home/node
 
-COPY --from=crane /ko-app/crane /usr/local/bin/crane
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/agent-runtime/node_modules ./apps/agent-runtime/node_modules
 COPY --from=build /app/apps/agent-runtime/dist ./apps/agent-runtime/dist
