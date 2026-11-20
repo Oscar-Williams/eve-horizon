@@ -10,14 +10,34 @@ import type { MagicLinkService } from './magic-link.service';
 /**
  * A service token can be revoked: the API refuses one issued before its
  * environment's `service_tokens_not_before`, or one whose environment no
- * longer exists. App-link tokens injected into a service (principal
+ * longer exists. The token follows the environment row, not its name: one
+ * issued before the environment was created (an environment deleted and
+ * created again under the same name) is refused, and so is one whose project
+ * is deleted. App-link tokens injected into a service (principal
  * `service:<name>`) follow the same rule for the consumer environment. The
  * environment is looked up at most once a minute.
  */
 
-const mocks = vi.hoisted(() => ({
-  environments: { findByProjectAndName: vi.fn() },
-}));
+/**
+ * The environments table behind both lookups: `lookup` answers by project and
+ * name, whatever the project's state; the service-token lookup also needs the
+ * project to be live.
+ */
+const mocks = vi.hoisted(() => {
+  const state = { projectDeleted: false };
+  const lookup = vi.fn();
+  return {
+    state,
+    lookup,
+    environments: {
+      findByProjectAndName: (projectId: string, name: string) => lookup(projectId, name),
+      findForServiceTokens: async (projectId: string, name: string) => {
+        const environment = await lookup(projectId, name);
+        return environment && !state.projectDeleted ? environment : null;
+      },
+    },
+  };
+});
 
 vi.mock('@eve/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@eve/db')>();
@@ -58,8 +78,14 @@ function serviceToken(issuedAt: number): string {
   });
 }
 
-function environment(notBefore: Date | null) {
-  return { id: 'env_prod', project_id: 'proj_shop', name: 'prod', service_tokens_not_before: notBefore };
+function environment(notBefore: Date | null, createdAt = new Date(NOW - 30 * 24 * 3600_000)) {
+  return {
+    id: 'env_prod',
+    project_id: 'proj_shop',
+    name: 'prod',
+    created_at: createdAt,
+    service_tokens_not_before: notBefore,
+  };
 }
 
 const appLinkPayload = (issuedAt: number, principal = 'service:web') => ({
@@ -85,6 +111,7 @@ describe('service token revocation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.state.projectDeleted = false;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     process.env.DATABASE_URL = 'postgres://eve:eve@localhost:5432/eve';
@@ -103,15 +130,15 @@ describe('service token revocation', () => {
   });
 
   it('refuses a service token issued before its environment\'s service_tokens_not_before', async () => {
-    mocks.environments.findByProjectAndName.mockResolvedValue(environment(new Date(NOW - 60_000)));
+    mocks.lookup.mockResolvedValue(environment(new Date(NOW - 60_000)));
 
     await expect(verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 120)}`))
       .rejects.toThrow(UnauthorizedException);
-    expect(mocks.environments.findByProjectAndName).toHaveBeenCalledWith('proj_shop', 'prod');
+    expect(mocks.lookup).toHaveBeenCalledWith('proj_shop', 'prod');
   });
 
   it('accepts one issued at or after it', async () => {
-    mocks.environments.findByProjectAndName.mockResolvedValue(environment(new Date(NOW - 60_000)));
+    mocks.lookup.mockResolvedValue(environment(new Date(NOW - 60_000)));
 
     const user = await verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 60)}`);
 
@@ -119,19 +146,19 @@ describe('service token revocation', () => {
   });
 
   it('refuses a service token whose environment no longer exists', async () => {
-    mocks.environments.findByProjectAndName.mockResolvedValue(null);
+    mocks.lookup.mockResolvedValue(null);
 
     await expect(verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 60)}`))
       .rejects.toThrow(UnauthorizedException);
   });
 
   it('refuses an app-link token injected into a service before the consumer environment\'s floor', async () => {
-    mocks.environments.findByProjectAndName.mockResolvedValue(environment(new Date(NOW - 60_000)));
+    mocks.lookup.mockResolvedValue(environment(new Date(NOW - 60_000)));
     appAuth.verifyAppLinkToken.mockResolvedValue(appLinkPayload(seconds(NOW) - 120));
 
     await expect(verifier.verifyAuthorizationHeader(`Bearer ${sign(appLinkPayload(seconds(NOW) - 120))}`))
       .rejects.toThrow(UnauthorizedException);
-    expect(mocks.environments.findByProjectAndName).toHaveBeenCalledWith('proj_shop', 'prod');
+    expect(mocks.lookup).toHaveBeenCalledWith('proj_shop', 'prod');
   });
 
   it('leaves a job\'s app-link token to the job\'s own liveness', async () => {
@@ -141,20 +168,51 @@ describe('service token revocation', () => {
     const user = await verifier.verifyAuthorizationHeader(`Bearer ${sign(payload)}`);
 
     expect(user).toMatchObject({ is_app_link_token: true });
-    expect(mocks.environments.findByProjectAndName).not.toHaveBeenCalled();
+    expect(mocks.lookup).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token issued before its environment was created (deleted and created again under the same name)', async () => {
+    mocks.lookup.mockResolvedValue(environment(null, new Date(NOW - 60_000)));
+
+    await expect(verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 120)}`))
+      .rejects.toThrow(UnauthorizedException);
+  });
+
+  it('accepts a token issued in the second its environment was created', async () => {
+    mocks.lookup.mockResolvedValue(environment(null, new Date(NOW - 60_000 + 700)));
+
+    const user = await verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 60)}`);
+
+    expect(user).toMatchObject({ is_service_token: true });
+  });
+
+  it('refuses a service token once its project is deleted', async () => {
+    mocks.lookup.mockResolvedValue(environment(null));
+    mocks.state.projectDeleted = true;
+
+    await expect(verifier.verifyAuthorizationHeader(`Bearer ${serviceToken(seconds(NOW) - 60)}`))
+      .rejects.toThrow(UnauthorizedException);
+  });
+
+  it('refuses an app-link token injected into a service before the consumer environment was created', async () => {
+    mocks.lookup.mockResolvedValue(environment(null, new Date(NOW - 60_000)));
+    appAuth.verifyAppLinkToken.mockResolvedValue(appLinkPayload(seconds(NOW) - 120));
+
+    await expect(verifier.verifyAuthorizationHeader(`Bearer ${sign(appLinkPayload(seconds(NOW) - 120))}`))
+      .rejects.toThrow(UnauthorizedException);
   });
 
   it('looks the environment up at most once a minute', async () => {
-    mocks.environments.findByProjectAndName.mockResolvedValue(environment(null));
+    mocks.lookup.mockResolvedValue(environment(null));
     const token = serviceToken(seconds(NOW) - 60);
 
     await verifier.verifyAuthorizationHeader(`Bearer ${token}`);
     vi.setSystemTime(NOW + 59_000);
     await verifier.verifyAuthorizationHeader(`Bearer ${token}`);
-    expect(mocks.environments.findByProjectAndName).toHaveBeenCalledTimes(1);
+    expect(mocks.lookup).toHaveBeenCalledTimes(1);
 
     vi.setSystemTime(NOW + 61_000);
     await verifier.verifyAuthorizationHeader(`Bearer ${token}`);
-    expect(mocks.environments.findByProjectAndName).toHaveBeenCalledTimes(2);
+    expect(mocks.lookup).toHaveBeenCalledTimes(2);
   });
 });
