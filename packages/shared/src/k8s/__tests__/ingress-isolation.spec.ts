@@ -38,8 +38,8 @@ describe('envIngressPolicies', () => {
         namespaceSelector: { matchExpressions: [{ key: 'kubernetes.io/metadata.name', operator: 'In', values: ['traefik', 'kube-system'] }] },
         podSelector: { matchLabels: { 'app.kubernetes.io/name': 'traefik' } },
       },
-      // The platform's services (API spec fetches, proxies), never a runner pod there.
-      { namespaceSelector: name('eve'), podSelector: { matchExpressions: [{ key: 'eve.horizon/runner', operator: 'DoesNotExist' }] } },
+      // The API alone of the platform's workloads (spec fetches, webhooks, env database queries).
+      { namespaceSelector: name('eve'), podSelector: { matchExpressions: [{ key: 'app.kubernetes.io/name', operator: 'In', values: ['eve-api'] }] } },
       { namespaceSelector: name('eve-acme-shop-prod') },
       { namespaceSelector: name('eve-acme-shop-staging') },
       { namespaceSelector: name('eve-acme-portal-prod') },
@@ -50,6 +50,31 @@ describe('envIngressPolicies', () => {
     expect(from).toHaveLength(9);
     // Nothing that admits a whole other namespace beyond those named.
     expect(from.some((peer: any) => peer.ipBlock || (peer.namespaceSelector && Object.keys(peer.namespaceSelector).length === 0))).toBe(false);
+  });
+
+  it('admits from the platform namespace only named platform workloads and the project runners, never any other pod there', () => {
+    // Tenant code runs in the platform namespace too: agent runtime inline
+    // jobs, the shared buildkitd, kaniko Jobs and legacy pipeline steps in
+    // the worker. None of them may reach an app pod.
+    expect(api.PLATFORM_INGRESS_WORKLOADS).toEqual(['eve-api']);
+    const [policy] = api.envIngressPolicies(NS, 'strict', PEERS, SETTINGS);
+    const fromPlatform = policy.spec.ingress[0].from.filter((peer: any) =>
+      JSON.stringify(peer.namespaceSelector) === JSON.stringify(name('eve')));
+    expect(fromPlatform.length).toBeGreaterThan(0);
+    for (const peer of fromPlatform) {
+      expect(peer.podSelector, JSON.stringify(peer)).toBeDefined();
+      const expressions = peer.podSelector.matchExpressions ?? [];
+      expect(expressions.every((e: any) => e.operator === 'In'), JSON.stringify(peer)).toBe(true);
+      const namesWorkload = expressions.some((e: any) => e.key === 'app.kubernetes.io/name');
+      const namesRunner = peer.podSelector.matchLabels?.['eve.horizon/runner'] === 'true'
+        && typeof peer.podSelector.matchLabels?.['eve.horizon/project-id'] === 'string';
+      expect(namesWorkload || namesRunner, JSON.stringify(peer)).toBe(true);
+    }
+    // Neither the worker, the agent runtime, buildkitd nor a kaniko pod.
+    const workloads = fromPlatform.flatMap((peer: any) => (peer.podSelector.matchExpressions ?? []).flatMap((e: any) => e.values ?? []));
+    for (const other of ['eve-worker', 'eve-agent-runtime', 'buildkitd', 'eve-orchestrator', 'eve-gateway']) {
+      expect(workloads).not.toContain(other);
+    }
   });
 
   it('under audit writes an allow-all companion first, so nothing is refused', () => {
