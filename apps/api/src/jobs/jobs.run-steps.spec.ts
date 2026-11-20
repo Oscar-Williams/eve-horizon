@@ -547,3 +547,28 @@ describe('dependency edges of a job outside any run', () => {
   });
 });
 
+
+describe("the refusal of a change to what someone else's run step runs", () => {
+  it('tells the caller to retry the workflow for a workflow step', async () => {
+    const refused = route(controller(), 'update', 'a-run.1', { description: 'research something else' }, TEAMMATE);
+
+    await expect(refused).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(refused).rejects.toThrow(/eve workflow retry/);
+  });
+
+  it('tells the caller to start a new pipeline run for a pipeline step, not to retry a workflow', async () => {
+    m.state.jobs.set('p-run.1', {
+      ...m.state.jobs.get('solo-1')!,
+      id: 'p-run.1',
+      run_id: 'prun_shop1',
+      step_name: 'deploy',
+      hints: { step_name: 'deploy' },
+    });
+
+    const refused = route(controller(), 'update', 'p-run.1', { description: 'deploy something else' }, TEAMMATE);
+
+    await expect(refused).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(refused).rejects.toThrow(/new pipeline run \(eve pipeline run\)/);
+    await expect(refused).rejects.not.toThrow(/workflow retry/);
+  });
+});
