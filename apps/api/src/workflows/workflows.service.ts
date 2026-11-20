@@ -1,7 +1,7 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException, Optional } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, agentSecretsAllowlist, boundSecretKeys, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, agentSecretsAllowlist, boundSecretKeys, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, storedActor, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
 import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
@@ -1044,7 +1044,7 @@ export class WorkflowsService {
       target: null,
       resource_refs: resourceRefs,
       content_hash: null,
-      actor_user_id: userId ?? null,
+      actor_user_id: storedActor(userId),
       user_secrets_excluded: userSecretsExcluded,
       secrets_allowlist: callerSecretsAllowlist,
       failure_disposition: null,
@@ -1225,7 +1225,7 @@ export class WorkflowsService {
           target: null,
           resource_refs: stepResourceRefs,
           content_hash: null,
-          actor_user_id: userId ?? null,
+          actor_user_id: storedActor(userId),
           user_secrets_excluded: userSecretsExcluded,
           secrets_allowlist: narrowSecretsAllowlist(callerSecretsAllowlist, stepSecretsAllowlist),
           failure_disposition: null,
@@ -1500,7 +1500,7 @@ export class WorkflowsService {
           target: source.target,
           resource_refs: source.resource_refs,
           content_hash: source.content_hash,
-          actor_user_id: userId ?? null,
+          actor_user_id: storedActor(userId),
           user_secrets_excluded: options.userSecretsExcluded ?? false,
           secrets_allowlist: narrowSecretsAllowlist(source.secrets_allowlist, options.secretsAllowlist),
           failure_disposition: null,

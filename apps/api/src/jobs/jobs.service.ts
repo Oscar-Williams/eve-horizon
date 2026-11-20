@@ -3,7 +3,7 @@ import { Observable } from 'rxjs';
 import type { Db } from '@eve/db';
 import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
 import type { AccessBindingScope, JobGit, JobWorkspace, JobHarnessOptions, JobCompareResponse, JobTarget, ResourceRef, CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, InlineProfileBundle } from '@eve/shared';
-import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
+import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, storedActor, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
 import * as yaml from 'yaml';
 import { buildApiError } from '../system/api-errors.js';
 import { JobLogsService } from './job-logs.service.js';
@@ -896,7 +896,7 @@ export class JobsService {
       target: data.target ?? null,
       resource_refs: data.resource_refs ?? [],
       content_hash: null,
-      actor_user_id: userId ?? null,
+      actor_user_id: storedActor(userId),
       user_secrets_excluded: options.userSecretsExcluded ?? false,
       secrets_allowlist: options.secretsAllowlist ?? null,
       failure_disposition: null,
