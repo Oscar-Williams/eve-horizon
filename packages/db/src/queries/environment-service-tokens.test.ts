@@ -1,8 +1,9 @@
 /**
  * An environment's service tokens can be revoked: `service_tokens_not_before`
  * is null until a rotation sets it, and a later rotation never moves it back.
- * The API checks a service token against the environment row while it and its
- * project exist. The worker renews the tokens of deployed environments only.
+ * The API checks a service token against the environment row while it, its
+ * project and its org exist. The worker renews the tokens of deployed
+ * environments only, in projects and orgs not deleted.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -93,11 +94,19 @@ describe('environment service tokens', () => {
     await db`UPDATE projects SET deleted_at = NOW() WHERE id = ${project}`;
     expect(await environments.listForServiceTokenRenewal(env)).toEqual([]);
     await db`UPDATE projects SET deleted_at = NULL WHERE id = ${project}`;
+
+    await db`UPDATE orgs SET deleted_at = NOW() WHERE id = ${org}`;
+    try {
+      expect(await environments.listForServiceTokenRenewal(env)).toEqual([]);
+      expect((await environments.listForServiceTokenRenewal()).filter((row) => row.project_id === project)).toEqual([]);
+    } finally {
+      await db`UPDATE orgs SET deleted_at = NULL WHERE id = ${org}`;
+    }
     await db`UPDATE environments SET current_release_id = NULL, last_applied_release_id = NULL WHERE id = ${env}`;
     await db`DELETE FROM releases WHERE project_id = ${project}`;
   });
 
-  it('finds the environment a service token names only while it and its project exist', async () => {
+  it('finds the environment a service token names only while it, its project and its org exist', async () => {
     const environments = environmentQueries(db);
 
     const found = await environments.findForServiceTokens(project, 'prod');
@@ -112,6 +121,13 @@ describe('environment service tokens', () => {
       expect(await environments.findForServiceTokens(project, 'prod')).toBeNull();
     } finally {
       await db`UPDATE projects SET deleted_at = NULL WHERE id = ${project}`;
+    }
+
+    await db`UPDATE orgs SET deleted_at = NOW() WHERE id = ${org}`;
+    try {
+      expect(await environments.findForServiceTokens(project, 'prod')).toBeNull();
+    } finally {
+      await db`UPDATE orgs SET deleted_at = NULL WHERE id = ${org}`;
     }
   });
 

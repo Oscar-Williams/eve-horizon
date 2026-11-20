@@ -165,10 +165,10 @@ export class TokenVerifierService {
 
   /**
    * A token minted for an environment's service follows the environment row,
-   * not its name. It is refused once the environment or its project is gone
-   * (a soft-deleted project's environments count as gone), when it was issued
-   * before the environment was created (an earlier environment of the same
-   * name), and when it was issued before the environment's
+   * not its name. It is refused once the environment, its project or its org
+   * is gone (a soft-deleted project's or org's environments count as gone),
+   * when it was issued before the environment was created (an earlier
+   * environment of the same name), and when it was issued before the environment's
    * `service_tokens_not_before` (`eve env rotate-service-tokens`). The
    * environment is read at most once a minute, so a rotation or a deletion
    * takes up to a minute to reach every replica.

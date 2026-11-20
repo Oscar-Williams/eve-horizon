@@ -74,9 +74,10 @@ export function environmentQueries(db: Db) {
     },
 
     /**
-     * The environment a service token names, while it and its project exist
-     * (a soft-deleted project's environments count as gone): its creation and
-     * its service_tokens_not_before, the two floors a token's `iat` is held to.
+     * The environment a service token names, while it, its project and its
+     * org exist (a soft-deleted project's or org's environments count as
+     * gone): its creation and its service_tokens_not_before, the two floors a
+     * token's `iat` is held to.
      */
     async findForServiceTokens(
       projectId: string,
@@ -86,6 +87,7 @@ export function environmentQueries(db: Db) {
         SELECT e.id, e.created_at, e.service_tokens_not_before
         FROM environments e
         JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        JOIN orgs o ON o.id = p.org_id AND o.deleted_at IS NULL
         WHERE e.project_id = ${projectId} AND e.name = ${name}
       `;
       return row ?? null;
@@ -458,8 +460,8 @@ export function environmentQueries(db: Db) {
 
     /**
      * Deployed environments, for service-token renewal: those with a current
-     * release and a namespace, in a project not deleted. With `envId`, that
-     * environment only.
+     * release and a namespace, in a project and an org not deleted. With
+     * `envId`, that environment only.
      */
     async listForServiceTokenRenewal(envId?: string): Promise<ServiceTokenRenewalTarget[]> {
       return db<ServiceTokenRenewalTarget[]>`
@@ -470,6 +472,7 @@ export function environmentQueries(db: Db) {
                e.service_tokens_not_before
         FROM environments e
         JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        JOIN orgs o ON o.id = p.org_id AND o.deleted_at IS NULL
         WHERE e.current_release_id IS NOT NULL
           AND e.namespace IS NOT NULL
           ${envId ? db`AND e.id = ${envId}` : db``}
