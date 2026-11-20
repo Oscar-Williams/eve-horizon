@@ -15,7 +15,7 @@ import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
 import { holdReservedEnvOverrides } from '../security/reserved-env.js';
-import { APPROVE_TOKEN_RULE, DEPENDENCY_CHANGE_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
+import { APPROVE_TOKEN_RULE, DEPENDENCY_CHANGE_RULE, RUN_STEP_CHANGE_RULE, deciderOf, howToChangeRun, isUserToken, runKind, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
 // Request/Response Types (inline - the new model)
@@ -1117,10 +1117,11 @@ export class JobsService {
    * nothing changes when any part fails.
    */
   async changeWhatJobRuns<T>(job: Job, caller: AuthUser, change: (tx: Db) => Promise<T>): Promise<T> {
-    if (!isSameActor(job.actor_user_id, caller.user_id) && await this.isRunJob(job)) {
+    const run = isSameActor(job.actor_user_id, caller.user_id) ? null : await this.runOf(job);
+    if (run) {
       throw new ForbiddenException(
-        `Job ${job.id} belongs to a workflow or pipeline run, and only its actor can change what it runs or its attachments; ` +
-        'retry the workflow (eve workflow retry) or start a new run instead',
+        `Job ${job.id} belongs to a ${runKind(run)} run, and only its actor can change what it runs or its attachments; ` +
+        `${howToChangeRun(run)} instead`,
       );
     }
     await this.guardRunJob(job, caller, 'change what runs in');
@@ -1149,16 +1150,12 @@ export class JobsService {
   }
 
   /**
-   * True for the jobs of a workflow or pipeline run: a step the run compiled
-   * (its step_name column, which only the expanders set) or the root of a run
-   * (a job with such a step under it). The steps of a run feed each other as
-   * their own actors or the run's, so these actors never move to someone else.
+   * The run a job belongs to, judged from its record (see runOfRecord): a
+   * step the run compiled (its step_name column, which only the expanders
+   * set) or the root of a run (a job with such a step under it). The steps of
+   * a run feed each other as their own actors or the run's, so these actors
+   * never move to someone else.
    */
-  private async isRunJob(job: Job): Promise<boolean> {
-    return (await this.runOf(job)) !== null;
-  }
-
-  /** The run a job belongs to, judged from its record (see runOfRecord). */
   private async runOf(job: Job): Promise<RunRef | null> {
     if (job.step_name) {
       return runOfRecord(job, false);

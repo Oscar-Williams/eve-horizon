@@ -36,6 +36,18 @@ export function runOfRecord(
   return isRoot ? { key: `workflow:${job.id}`, rootId: job.id } : null;
 }
 
+/** What kind of run a job belongs to, for messages. */
+export function runKind(run: RunRef): 'workflow' | 'pipeline' {
+  return run.key.startsWith('pipeline:') ? 'pipeline' : 'workflow';
+}
+
+/** How to change what a run runs: retry a workflow, or start a new pipeline run. */
+export function howToChangeRun(run: RunRef): string {
+  return runKind(run) === 'pipeline'
+    ? 'start a new pipeline run (eve pipeline run)'
+    : 'retry the workflow (eve workflow retry)';
+}
+
 /** True for a person's own token: not a job, service, service-principal or app-link token. */
 export function isUserToken(caller: AuthUser): boolean {
   return describeActor(caller)[0] === 'user';
