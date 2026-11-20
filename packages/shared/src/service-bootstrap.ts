@@ -161,8 +161,11 @@ export function registerInternalAuthHook(
  * instance's `internal.service_key` profile and records the finding
  * (`decideSecurityRule` in `@eve/db`). A call is refused under `strict`.
  * The decision is reused for `cacheMs`, which also bounds how often
- * findings are written. When the profile cannot be read, the call is let
- * through as before this rule.
+ * findings are written. When the profile cannot be read (the database or
+ * the API is down, or answers 404 or 401 after a rollback), the last answer
+ * stands, however old, so a `strict` instance keeps refusing; only a judge
+ * that has never had an answer lets the call through, as before this rule.
+ * A failure is not cached: the next call asks again.
  */
 export function legacyInternalKeyJudge(
   decide: (path: string) => Promise<'legacy' | 'audit' | 'strict'>,
@@ -178,7 +181,7 @@ export function legacyInternalKeyJudge(
       cached = { allowed, at: now() };
       return allowed;
     } catch {
-      return true;
+      return cached?.allowed ?? true;
     }
   };
 }

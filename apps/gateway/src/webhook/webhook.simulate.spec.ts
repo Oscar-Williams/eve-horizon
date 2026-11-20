@@ -92,14 +92,20 @@ describe('WebhookController simulate endpoint', () => {
     );
   });
 
-  it('takes the deliver key and refuses the core key', async () => {
+  it('takes the deliver key, refuses the core key alone, and judges only the legacy key beside it', async () => {
     const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
     vi.stubEnv('EVE_INTERNAL_CALLER_HASHES', `core:${sha('core-key-0123')},deliver:${sha('deliver-key-0123')}`);
 
     await expect(
-      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'core.core-key-0123', 'x-eve-internal-token': INTERNAL_KEY })),
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'core.core-key-0123' })),
     ).rejects.toThrow(UnauthorizedException);
     expect(resolveAndRoute).not.toHaveBeenCalled();
+
+    // A previous release's API sends its core key and the legacy key: the core
+    // key is ignored and the call is judged on the legacy key (one release).
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'core.core-key-0123', 'x-eve-internal-token': INTERNAL_KEY })),
+    ).resolves.toBeDefined();
 
     vi.stubEnv('EVE_INTERNAL_API_KEY', '');
     await expect(

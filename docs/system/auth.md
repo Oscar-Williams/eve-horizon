@@ -149,7 +149,7 @@ time and fails closed: an unset key matches nothing.
 | Worker (`:4749`, and runner pods, which serve the worker app) | Every route: `/invoke`, `/deploy`, `/environments/delete`, `/scripts/execute`, `/actions/execute`, `/pipeline-runs/:id/execute`, `/registry/pull-secrets/resign`, and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
 | Agent runtime (`:4812`) | Every route, including `/invoke` and unknown paths | core; legacy under `internal.service_key` | `GET /health` only |
 | Orchestrator (`/system/orchestrator/*`) | Every route | core; legacy (`x-internal-api-key` or Bearer) under `internal.service_key` | — |
-| Gateway (`/internal/deliver`, simulate) | Delivery and simulate | deliver (by its hash); legacy under `internal.service_key`, which the gateway asks the API to decide (it holds no database). The core key is refused | Webhooks verify their provider's signature |
+| Gateway (`/internal/deliver`, simulate) | Delivery and simulate | deliver (by its hash); legacy under `internal.service_key`, which the gateway asks the API to decide (it holds no database). The core key never passes: for one release, a core key sent beside the legacy key (an API of the release before the deliver key) is ignored and the call judged on the legacy key | Webhooks verify their provider's signature |
 
 The worker and agent runtime enforce this with a Fastify `onRequest` hook
 (`registerInternalAuthHook`), so new routes are protected by default and

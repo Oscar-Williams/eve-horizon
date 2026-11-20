@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createSign, generateKeyPairSync } from 'node:crypto';
 import { codexAccountIdOf, CODEX_ID_TOKEN_ISSUER, verifiedCodexAccountId } from './codex-id-token.js';
 
@@ -72,13 +72,42 @@ describe('Codex auth.json: the access token and the plain account field', () => 
     await expect(verifiedCodexAccountId(json, jwks, NOW)).rejects.toThrow(/access_token/);
   });
 
-  it('refuses an access token the issuer did not sign, or that is not a signed token at all', async () => {
+  it("refuses an access token that names the issuer and one of its keys but is not signed with it", async () => {
     const forged = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_acme', { key: otherKeys.privateKey }) });
     await expect(verifiedCodexAccountId(forged, jwks, NOW)).rejects.toThrow(/access_token/);
-    const opaque = authJson({ id_token: idToken('acct_acme'), access_token: 'at-opaque' });
-    await expect(verifiedCodexAccountId(opaque, jwks, NOW)).rejects.toThrow(/access_token/);
-    const otherIssuer = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_acme', { iss: 'https://issuer.example' }) });
-    await expect(verifiedCodexAccountId(otherIssuer, jwks, NOW)).rejects.toThrow(/access_token/);
+  });
+
+  it('compares only the decoded account claim of an access token from another issuer or an unknown key', async () => {
+    for (const opts of [{ iss: 'https://issuer.example' }, { kid: 'unknown', key: otherKeys.privateKey }]) {
+      const same = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_acme', opts) });
+      await expect(verifiedCodexAccountId(same, jwks, NOW), JSON.stringify(opts)).resolves.toBe('acct_acme');
+      const other = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_other', opts) });
+      await expect(verifiedCodexAccountId(other, jwks, NOW), JSON.stringify(opts)).rejects.toThrow(/access_token/);
+    }
+  });
+
+  it('says so when it accepts an access token on its decoded claims only, and not when the token verifies', async () => {
+    for (const opts of [{ iss: 'https://issuer.example' }, { kid: 'unknown', key: otherKeys.privateKey }]) {
+      const note = vi.fn();
+      const json = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_acme', opts) });
+      await expect(verifiedCodexAccountId(json, jwks, NOW, note)).resolves.toBe('acct_acme');
+      expect(note, JSON.stringify(opts)).toHaveBeenCalledWith(expect.stringMatching(/access_token .*decoded claims only/));
+    }
+    const note = vi.fn();
+    await expect(verifiedCodexAccountId(authJson({ id_token: idToken('acct_acme') }), jwks, NOW, note)).resolves.toBe('acct_acme');
+    expect(note).not.toHaveBeenCalled();
+  });
+
+  it('skips the access token check, and says so, when the access token is not a JWT', async () => {
+    for (const access of ['at-opaque', undefined]) {
+      const note = vi.fn();
+      const json = authJson({ id_token: idToken('acct_acme'), access_token: access, account_id: 'acct_acme' });
+      await expect(verifiedCodexAccountId(json, jwks, NOW, note)).resolves.toBe('acct_acme');
+      expect(note).toHaveBeenCalledWith(expect.stringMatching(/access_token is not a JWT/));
+    }
+    // The id_token and the plain field are still checked.
+    const otherPlain = authJson({ id_token: idToken('acct_acme'), access_token: 'at-opaque', account_id: 'acct_other' });
+    await expect(verifiedCodexAccountId(otherPlain, jwks, NOW)).rejects.toThrow(/account_id/);
   });
 
   it('refuses an expired access token', async () => {
