@@ -447,14 +447,19 @@ The admission policies live in their own kustomization, `k8s/admission`
 
 `eve-worker-workload-guard` holds every pod and pod template the worker
 writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
-SandboxTemplates), in every namespace: no DaemonSet, and nothing Pod
-Security baseline refuses, at pod level or in any container (init and
+SandboxTemplates), and the ephemeral containers it would add through
+`pods/ephemeralcontainers` (no role of its grants that, but one an operator
+adds would be judged too), in every namespace: no DaemonSet, and nothing
+Pod Security baseline refuses, at pod level or in any container (init and
 ephemeral ones included): no privileged container, no host namespace
 (`hostNetwork`, `hostPID`, `hostIPC`), no Windows host process, no
 `hostPath`, no `hostPort`, no capability beyond baseline's, no seccomp or
-AppArmor `Unconfined` (field or `container.apparmor.security.beta.kubernetes.io/*`
-annotation), no `procMount` but `Default`, no sysctl outside baseline's
-safe set, no SELinux type, user or role beyond baseline's. It also refuses
+AppArmor `Unconfined` (field, or the annotation:
+`seccomp.security.alpha.kubernetes.io/pod`,
+`container.seccomp.security.alpha.kubernetes.io/*`,
+`container.apparmor.security.beta.kubernetes.io/*`), no `procMount` but
+`Default`, no sysctl outside baseline's safe set, no SELinux type, user or
+role beyond baseline's. It also refuses
 ephemeral volumes (a claim template could clone another claim), and wants a
 service account of `default`, `eve-runner` or, outside `eve`, an app account
 (`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label

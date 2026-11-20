@@ -19,16 +19,18 @@
 #   eve-worker-tenant would give back the platform's Secrets).
 # - No service account token Secret (it would mint a token for any account).
 #
-# eve-worker-workload-guard, on pods and every pod template it writes
-# (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs, agent-sandbox
-# SandboxTemplates), in every namespace:
+# eve-worker-workload-guard, on pods (ephemeral containers added through
+# their subresource included) and every pod template it writes (Deployments,
+# ReplicaSets, StatefulSets, Jobs, CronJobs, agent-sandbox SandboxTemplates),
+# in every namespace:
 # - no DaemonSet at all (the worker never makes one);
 # - nothing Pod Security baseline refuses, in any container (init and
 #   ephemeral ones included) or at pod level: no privileged container, host
 #   namespace (hostNetwork, hostPID, hostIPC), Windows host process, hostPath
 #   volume, hostPort, capability beyond baseline's, seccomp or AppArmor
-#   Unconfined (field or annotation), unmasked /proc, sysctl outside the safe
-#   set, or SELinux type, user or role beyond baseline's;
+#   Unconfined (field or annotation, seccomp's alpha annotations included),
+#   unmasked /proc, sysctl outside the safe set, or SELinux type, user or
+#   role beyond baseline's;
 # - the service account is default, eve-runner, or (outside the platform
 #   namespace) an app account: eve-app (IRSA) or eve-app-<env> (GKE Workload
 #   Identity). x-eve.networking.egress: stable on EKS (hostNetwork) is
@@ -167,10 +169,12 @@ spec:
   failurePolicy: Fail
   matchConstraints:
     resourceRules:
+      # pods/ephemeralcontainers: no role of the worker's grants it; if one
+      # ever does, the containers it adds are judged like any other.
       - apiGroups: [""]
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["pods"]
+        resources: ["pods", "pods/ephemeralcontainers"]
       - apiGroups: ["apps"]
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE"]
@@ -254,8 +258,11 @@ spec:
       message: "Pods the Eve worker writes use no hostPort"
     - expression: >-
         variables.securityContexts.all(sc, !has(sc.seccompProfile) ||
-        sc.seccompProfile.type in ['RuntimeDefault', 'Localhost'])
-      message: "Pods the Eve worker writes run nothing with seccomp Unconfined"
+        sc.seccompProfile.type in ['RuntimeDefault', 'Localhost']) &&
+        variables.podAnnotations.all(k, (k != 'seccomp.security.alpha.kubernetes.io/pod' &&
+        !k.startsWith('container.seccomp.security.alpha.kubernetes.io/')) ||
+        variables.podAnnotations[k] in ['runtime/default', 'docker/default'] || variables.podAnnotations[k].startsWith('localhost/'))
+      message: "Pods the Eve worker writes run nothing with seccomp Unconfined (seccompProfile, or the seccomp.security.alpha.kubernetes.io annotations)"
     - expression: >-
         variables.securityContexts.all(sc, !has(sc.appArmorProfile) ||
         sc.appArmorProfile.type in ['RuntimeDefault', 'Localhost']) &&
