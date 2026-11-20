@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
-import { ReviewDecidedError } from '@eve/db';
+import { ReviewDecidedError, ReviewRoundChangedError } from '@eve/db';
 import { JobsService } from './jobs.service';
 import { JobsController } from './jobs.controller';
 import { AccessService } from '../auth/access.service';
@@ -220,6 +220,24 @@ describe('the decider of a job review', () => {
     await route(controller(), 'approve', 'solo-r', {}, TEAMMATE);
 
     expect(m.state.findings).toEqual([]);
+  });
+});
+
+describe('a review decision naming the round the decider saw', () => {
+  it('is held to that attempt, on approve and on reject', async () => {
+    await route(controller(), 'approve', 'solo-r', { comment: 'ok', attempt_id: 'att_1' }, OWNER);
+    expect(m.jobQ.approveReview).toHaveBeenCalledWith('solo-r', 'user_owner', 'ok', 'user', { attemptId: 'att_1' });
+
+    m.state.jobs = m.seed();
+    await route(controller(), 'reject', 'solo-r', { reason: 'again', attempt_id: 'att_1' }, TEAMMATE);
+    expect(m.jobQ.rejectReview).toHaveBeenCalledWith('solo-r', 'user_mate', 'again', 'user', { attemptId: 'att_1' });
+  });
+
+  it('gets 409 once the job is in review on a later attempt', async () => {
+    m.jobQ.approveReview.mockRejectedValueOnce(new ReviewRoundChangedError('solo-r', 'att_1', 2));
+
+    await expect(route(controller(), 'approve', 'solo-r', { attempt_id: 'att_1' }, OWNER))
+      .rejects.toBeInstanceOf(ConflictException);
   });
 });
 
