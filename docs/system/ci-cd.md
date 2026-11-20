@@ -112,12 +112,18 @@ workflows from a release tag; do not deploy it.
 
 ## Pinned build inputs
 
-`scripts/check-supply-chain.mjs` runs in CI (with its `node --test` spec) and
-fails on any Dockerfile `@latest` or npm package without an exact version, any
-`FROM` image without an `@sha256:` digest, any action not pinned to a commit
-SHA, and any `github`, `inputs`, step-output or job-output expression inside a
-`run:` block (pass it through `env:` instead). `tests/manual/**` fixtures are
-not checked. To move a pinned input:
+`scripts/check-supply-chain.mjs` runs, with its `node --test` spec, in CI and
+as the first steps of the first job of every publishing workflow
+(`publish-images`, `toolchain-images`, `publish-cli`, `publish-sdk`,
+`publish-chat`), so a tag or hotfix release built from a commit CI never saw is
+gated too. It fails on any Dockerfile `@latest`; any package without an exact
+version that a `RUN` installs or runs (`npm install`, `npx`, `pnpm add`,
+`yarn add`, `pip install`), including a version passed through an ARG or ENV
+(`pkg@${X}`, `pkg==${X}`) whose value in that stage is not exact; any `FROM`
+image without an `@sha256:` digest; any action not pinned to a commit SHA; and
+any `github`, `inputs`, `env`, `matrix`, step-output or job-output expression
+inside a `run:` block (pass it through `env:` instead). `tests/manual/**`
+fixtures are not checked. To move a pinned input:
 
 - **Harness CLIs**: edit `docker/harness-clis/package.json`, then run
   `npm install --package-lock-only --ignore-scripts` there with npm 11 or later

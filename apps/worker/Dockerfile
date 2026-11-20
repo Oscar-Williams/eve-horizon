@@ -390,7 +390,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
        python3-pip \
        python3-venv \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --break-system-packages uv
+    && pip3 install --break-system-packages uv==0.13.7
 
 # Set Python environment variables
 ENV PYTHON_HOME=/usr
@@ -495,7 +495,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
        python3-venv \
        wget apt-transport-https gpg \
        unzip \
-    && pip3 install --break-system-packages uv \
+    && pip3 install --break-system-packages uv==0.13.7 \
     && wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(cat /etc/os-release | grep VERSION_CODENAME | cut -d= -f2) main" > /etc/apt/sources.list.d/adoptium.list \
     && apt-get update \
@@ -600,7 +600,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
        python3-venv \
        wget apt-transport-https gpg \
        unzip \
-    && pip3 install --break-system-packages uv \
+    && pip3 install --break-system-packages uv==0.13.7 \
     && wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(cat /etc/os-release | grep VERSION_CODENAME | cut -d= -f2) main" > /etc/apt/sources.list.d/adoptium.list \
     && apt-get update \

@@ -24,6 +24,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Supply chain gate
+        run: node scripts/check-supply-chain.mjs
+      - name: Supply chain gate tests
+        run: node --test scripts/__tests__/check-supply-chain.test.mjs
       - name: Publish only commits on main or a hotfix branch
         if: github.event_name == 'push'
         run: bash scripts/release/ancestry.sh "$GITHUB_SHA"
