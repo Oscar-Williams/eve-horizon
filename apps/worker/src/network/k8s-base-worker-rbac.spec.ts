@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse, parseAllDocuments } from 'yaml';
@@ -23,13 +23,20 @@ type Manifest = {
   spec?: any;
 };
 
-const baseDir = join(__dirname, '..', '..', '..', '..', 'k8s', 'base');
-const manifests: Manifest[] = readdirSync(baseDir)
-  .filter((file) => file.endsWith('.yaml'))
-  .flatMap((file) => parseAllDocuments(readFileSync(join(baseDir, file), 'utf8'))
+const k8sDir = join(__dirname, '..', '..', '..', '..', 'k8s');
+const baseDir = join(k8sDir, 'base');
+/** The admission policies: their own kustomization, applied after the worker's start-up reconcile. */
+const admissionDir = join(k8sDir, 'admission');
+const read = (dir: string): Manifest[] => (existsSync(dir) ? readdirSync(dir) : [])
+  .filter((file) => file.endsWith('.yaml') && file !== 'kustomization.yaml')
+  .flatMap((file) => parseAllDocuments(readFileSync(join(dir, file), 'utf8'))
     .map((doc) => doc.toJSON() as Manifest | null)
     .filter((doc): doc is Manifest => doc !== null));
+const manifests: Manifest[] = [...read(baseDir), ...read(admissionDir)];
 const kustomization = parse(readFileSync(join(baseDir, 'kustomization.yaml'), 'utf8')) as { resources: string[] };
+const admissionKustomization = (): { resources: string[] } | null => (existsSync(join(admissionDir, 'kustomization.yaml'))
+  ? parse(readFileSync(join(admissionDir, 'kustomization.yaml'), 'utf8')) as { resources: string[] }
+  : null);
 
 const WORKER = { kind: 'ServiceAccount', name: 'eve-worker', namespace: 'eve' };
 const isWorker = (s: { kind: string; name: string; namespace?: string }) =>
@@ -89,19 +96,52 @@ describe('k8s/base: eve-worker-tenant', () => {
     }
   });
 
-  it('is bound to the worker only per namespace: statically in eve and eve-runners', () => {
+  it('is bound to the worker only per namespace: statically in eve-runners, never in the platform namespace', () => {
     expect(of('ClusterRoleBinding').some((b) => b.roleRef?.name === 'eve-worker-tenant')).toBe(false);
     const statics = of('RoleBinding').filter((b) => b.roleRef?.kind === 'ClusterRole' && b.roleRef.name === 'eve-worker-tenant');
-    expect(statics.map((b) => b.metadata.namespace).sort()).toEqual(['eve', 'eve-runners']);
+    expect(statics.map((b) => b.metadata.namespace).sort()).toEqual(['eve-runners']);
     for (const binding of statics) expect(binding.subjects).toEqual([WORKER]);
+  });
+
+  it('holds no DaemonSets (the worker never makes one)', () => {
+    expect((clusterRole('eve-worker-tenant')!.rules ?? []).some((r) => r.resources.includes('daemonsets'))).toBe(false);
+  });
+});
+
+describe('k8s/base: the worker in the platform namespace', () => {
+  /** Every rule bound to the worker in eve, through a Role or a ClusterRole. */
+  function platformRules(): Rule[] {
+    return of('RoleBinding')
+      .filter((b) => b.metadata.namespace === 'eve' && (b.subjects ?? []).some(isWorker))
+      .flatMap((b) => (b.roleRef!.kind === 'Role'
+        ? of('Role').find((r) => r.metadata.name === b.roleRef!.name && r.metadata.namespace === 'eve')
+        : clusterRole(b.roleRef!.name))?.rules ?? []);
+  }
+  const verbsOn = (resource: string) => [...new Set(platformRules()
+    .filter((r) => r.resources.includes(resource)).flatMap((r) => r.verbs))].sort();
+
+  it('holds only what it uses there: runner pods and claims, kaniko Jobs and their Secrets, runner policies', () => {
+    const resources = [...new Set(platformRules().flatMap((r) => r.resources))].sort();
+    expect(resources).toEqual(['fqdnnetworkpolicies', 'jobs', 'networkpolicies', 'persistentvolumeclaims', 'pods', 'secrets', 'services']);
+    for (const rule of platformRules()) {
+      for (const field of [rule.apiGroups, rule.resources, rule.verbs]) expect(field).not.toContain('*');
+    }
+  });
+
+  it('never execs, and creates and deletes Secrets without reading any (eve-app and the rest stay out of reach)', () => {
+    expect(platformRules().some((r) => r.resources.includes('pods/exec'))).toBe(false);
+    expect(verbsOn('secrets')).toEqual(['create', 'delete']);
+    expect(verbsOn('services')).toEqual(['get']);
+    expect(verbsOn('pods')).not.toContain('update');
   });
 });
 
 describe('k8s/base: the worker namespace guard', () => {
   const policy = () => of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-namespace-guard');
 
-  it('is in the kustomization, fails closed and denies', () => {
-    expect(kustomization.resources).toContain('worker-admission-policy.yaml');
+  it('is in its own kustomization (k8s/admission), not in base, fails closed and denies', () => {
+    expect(kustomization.resources).not.toContain('worker-admission-policy.yaml');
+    expect(admissionKustomization()?.resources).toEqual(expect.arrayContaining(['worker-admission-policy.yaml', 'orchestrator-admission-policy.yaml']));
     expect(policy()?.spec.failurePolicy).toBe('Fail');
     const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-worker-namespace-guard');
     expect(binding?.spec.validationActions).toEqual(['Deny']);
@@ -124,5 +164,61 @@ describe('k8s/base: the worker namespace guard', () => {
     const messages = policy()!.spec.validations.map((v: { message?: string; messageExpression?: string }) => v.message ?? v.messageExpression);
     expect(messages.join('\n')).toMatch(/managed/);
     expect(policy()!.spec.validations.length).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe('k8s/admission: the worker workload guard', () => {
+  const policy = () => of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-workload-guard');
+
+  it('fails closed, denies, and matches the worker creating or changing pods and every pod template', () => {
+    expect(policy()?.spec.failurePolicy).toBe('Fail');
+    const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-worker-workload-guard');
+    expect(binding?.spec.validationActions).toEqual(['Deny']);
+    const rules = policy()!.spec.matchConstraints.resourceRules as Array<{ apiGroups: string[]; resources: string[]; operations: string[] }>;
+    const covered = rules.flatMap((r) => r.resources);
+    for (const resource of ['pods', 'deployments', 'replicasets', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'sandboxtemplates']) {
+      expect(covered, resource).toContain(resource);
+    }
+    for (const rule of rules) expect(rule.operations.sort()).toEqual(['CREATE', 'UPDATE']);
+    expect(JSON.stringify(policy()!.spec.matchConditions)).toContain("'system:serviceaccount:eve:eve-worker'");
+  });
+
+  it('refuses privileged pods, host namespaces and paths, other service accounts and DaemonSets, and guards the platform namespace', () => {
+    const text = JSON.stringify(policy()!.spec);
+    for (const needle of [
+      'hostNetwork', 'hostPID', 'hostIPC', 'hostPath', 'privileged', 'hostPort', 'capabilities',
+      'serviceAccountName', "'default'", "'eve-runner'", "'eve-app'", "'eve-app-'", "'daemonsets'",
+      "'kaniko-cfg-'", "'eve-ws-'", "'eve-org-fs-'", "'app.kubernetes.io/name'",
+    ]) {
+      expect(text, needle).toContain(needle);
+    }
+  });
+});
+
+describe('k8s/admission: the namespace guard refuses escalation through Secrets and namespace labels', () => {
+  it('refuses service account token Secrets and a privileged Pod Security enforce', () => {
+    const text = JSON.stringify(of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-namespace-guard')!.spec);
+    expect(text).toContain('kubernetes.io/service-account-token');
+    expect(text).toContain('pod-security.kubernetes.io/enforce');
+    expect(text).toContain("'privileged'");
+  });
+});
+
+describe('k8s/base: the orchestrator', () => {
+  it('scales Deployments and patches nothing else', () => {
+    const role = clusterRole('eve-orchestrator')!;
+    const writes = (role.rules ?? []).filter((r) => r.verbs.some((v) => ['create', 'update', 'patch', 'delete'].includes(v)));
+    expect(writes).toEqual([{ apiGroups: ['apps'], resources: ['deployments/scale'], verbs: ['patch'] }]);
+  });
+
+  it('is held by an admission policy to scaling to zero in managed namespaces', () => {
+    const policy = of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-orchestrator-scale-guard');
+    expect(policy?.spec.failurePolicy).toBe('Fail');
+    const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-orchestrator-scale-guard');
+    expect(binding?.spec.validationActions).toEqual(['Deny']);
+    const text = JSON.stringify(policy!.spec);
+    for (const needle of ["'system:serviceaccount:eve:eve-orchestrator'", "'scale'", "'eve.horizon/managed'", 'replicas']) {
+      expect(text, needle).toContain(needle);
+    }
   });
 });
