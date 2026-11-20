@@ -79,9 +79,10 @@ export function projectManifestQueries(db: Db) {
     },
 
     /**
-     * The manifest of the project's last explicit sync or deploy (synced_at),
-     * or null when it has none. Unlike findLatestByProject, a manifest the
-     * pipeline's drift check stored from a built ref never counts.
+     * The manifest of the project's last explicit sync (synced_at, set by
+     * the API's manifest sync alone), or null when it has none. Unlike
+     * findLatestByProject, a manifest the pipeline's drift check stored from
+     * a built ref never counts, even once a pipeline has deployed it.
      */
     async findLatestSyncedByProject(projectId: string): Promise<ProjectManifest | null> {
       const [row] = await db<ProjectManifest[]>`
@@ -93,7 +94,11 @@ export function projectManifestQueries(db: Db) {
       return row ?? null;
     },
 
-    /** Record an explicit sync or a deploy of this manifest (synced_at = now). */
+    /**
+     * Record an explicit sync of this manifest (synced_at = now). Only the
+     * API's manifest sync (`projects:write`) calls it, after the checks a
+     * sync runs; never a deploy or a pipeline.
+     */
     async markSynced(id: string): Promise<ProjectManifest | null> {
       const [row] = await db<ProjectManifest[]>`
         UPDATE project_manifests

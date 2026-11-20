@@ -442,6 +442,11 @@ export class PipelineExpanderService {
    * changes) will fail the step with manifest_invalid if its hash differs
    * from the job's inherited input.manifest_hash. That catches the case
    * where the ref was never synced.
+   *
+   * The row found for a SHA can be one that drift check stored, which no
+   * sync checked. A run may build and deploy from it, but it never becomes
+   * the project's synced manifest (`synced_at`, set by the API's sync
+   * alone), so runner egress allow lists never read it.
    */
   private async resolveManifestForRun(projectId: string, gitSha?: string) {
     if (gitSha) {

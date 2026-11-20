@@ -389,13 +389,9 @@ export class DeployerService {
       this.validateReleaseImageDigests(release.id, release.image_digests_json, manifest.manifest_yaml);
     }
 
-    // A deploy counts as an explicit choice of this manifest: runner egress
-    // allow lists (egress.allow_hosts) read the last synced or deployed one.
-    try {
-      await this.manifests.markSynced(manifest.id);
-    } catch (error) {
-      this.logger.warn(`Could not mark manifest ${manifest.id} as deployed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    // No synced mark here: a pipeline can build a release from a manifest its
+    // drift check stored from a built ref, which no sync checked. Runner
+    // egress allow lists read the last explicit sync (the API) only.
 
     const namespace = deriveNamespace(org.slug, project.slug, environment.name, environment.namespace);
     const namespaceLabels = {
