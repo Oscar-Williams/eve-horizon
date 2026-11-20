@@ -61,6 +61,9 @@ import {
   type ObjectStoreIsolation,
   type TcpIngressConfig,
   EGRESS_RULE,
+  ALLOW_HOSTS_RULE,
+  EgressProviderMissingError,
+  egressFqdnProvider,
   WORKLOAD_IDENTITY_LABEL,
 } from '@eve/shared';
 import * as dns from 'node:dns/promises';
@@ -436,7 +439,10 @@ export class DeployerService {
       }, { ownerLabel: 'eve.env_id' });
     }
 
-    await this.applyEgressPolicies({ id: envId, projectId: project.id, name: environment.name, namespace });
+    await this.applyEgressPolicies(
+      { id: envId, projectId: project.id, name: environment.name, namespace },
+      yaml.parse(manifest.manifest_yaml),
+    );
 
     const aliasDocuments: string[] = [];
     const desiredBoundAliases = new Set<string>();
@@ -1003,7 +1009,7 @@ export class DeployerService {
     }
 
     // A service job can run before the env's first deploy: its egress policies first.
-    await this.applyEgressPolicies({ id: environment.id, projectId: project.id, name: environment.name, namespace });
+    await this.applyEgressPolicies({ id: environment.id, projectId: project.id, name: environment.name, namespace }, parsed);
 
     // The run's own Secret, removed when the run ends.
     const hasJobSecret = Object.keys(sealed.data).length > 0;
@@ -2829,23 +2835,41 @@ export class DeployerService {
   }
 
   /**
-   * egress.default_deny: bring the env namespace's egress policies in line
-   * with the project's profile before any of its pods start, and the
-   * project's runner policies with its env namespaces. Under `strict` a
-   * failure stops the deploy (the namespace would be open); otherwise
-   * nothing is enforced yet, so it is logged and the deploy goes on.
+   * egress.default_deny and egress.allow_hosts: bring the env namespace's
+   * egress policies in line with the project's profiles before any of its
+   * pods start (with the GKE provider, one FQDN policy per host the manifest
+   * being deployed declares), and the project's runner policies with its env
+   * namespaces. A strict egress.allow_hosts with no FQDN provider stops the
+   * deploy before anything is written. Under `strict` a failure stops the
+   * deploy (the namespace would be open); otherwise nothing is enforced yet,
+   * so it is logged and the deploy goes on.
    */
-  private async applyEgressPolicies(env: EgressEnvRef): Promise<void> {
+  private async applyEgressPolicies(env: EgressEnvRef, manifest: unknown): Promise<void> {
     const profile = await governingSecurityProfile(this.db, {
       projectId: env.projectId,
       governing: 'project',
       rule: EGRESS_RULE,
     });
+    const allowHosts = await governingSecurityProfile(this.db, {
+      projectId: env.projectId,
+      governing: 'project',
+      rule: ALLOW_HOSTS_RULE,
+    });
+    if (allowHosts === 'strict' && egressFqdnProvider() === 'none') {
+      await decideSecurityRule(this.db, ALLOW_HOSTS_RULE, {
+        projectId: env.projectId,
+        governing: 'project',
+        actorType: 'service',
+        actorId: 'worker',
+        detail: { scope: 'deploy', env: env.name, reason: 'no_provider', provider: 'none' },
+      });
+      throw new EgressProviderMissingError();
+    }
     try {
-      await this.egress.applyEnv(env, profile);
+      await this.egress.applyEnv(env, profile, { allowHosts, manifest });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (profile === 'strict') {
+      if (profile === 'strict' || allowHosts === 'strict') {
         throw new Error(
           `The strict egress profile needs this environment's egress policies, which could not be written: ${message} (rule ${EGRESS_RULE})`,
         );
@@ -2853,7 +2877,7 @@ export class DeployerService {
       this.logger.warn(`Could not write the egress policies of ${env.namespace} (${profile}): ${message}`);
     }
     try {
-      await this.egress.applyRunners(env.projectId, profile);
+      await this.egress.applyRunners(env.projectId, profile, allowHosts);
     } catch (error) {
       this.logger.warn(
         `Could not write the runner egress policies of project ${env.projectId}: ${error instanceof Error ? error.message : String(error)}`,

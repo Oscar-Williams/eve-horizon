@@ -21,9 +21,10 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@eve/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@eve/db')>()),
+  // egress.allow_hosts stays legacy here (egress-allow-hosts.spec.ts covers it).
   governingSecurityProfile: vi.fn(async (_db: unknown, ctx: { projectId: string; rule: string }) => {
-    expect(ctx.rule).toBe('egress.default_deny');
-    return db.profiles.get(ctx.projectId) ?? 'legacy';
+    expect(['egress.default_deny', 'egress.allow_hosts']).toContain(ctx.rule);
+    return ctx.rule === 'egress.default_deny' ? db.profiles.get(ctx.projectId) ?? 'legacy' : 'legacy';
   }),
   systemSettingsQueries: () => ({
     get: async (key: string) => (db.settings.has(key) ? { key, value: db.settings.get(key) } : null),
@@ -92,6 +93,10 @@ function fakeCluster(namespaces: string[]) {
         .filter((p) => wanted.every(([k, v]) => p.metadata.labels?.[k] === v))
         .map((p) => ({ name: p.metadata.name, labels: p.metadata.labels }));
     }),
+    // No FQDN provider in these specs: never called.
+    applyFqdnNetworkPolicy: vi.fn(async () => { throw new Error('unexpected FQDN write'); }),
+    deleteFqdnNetworkPolicy: vi.fn(async () => { throw new Error('unexpected FQDN delete'); }),
+    listFqdnNetworkPolicies: vi.fn(async () => { throw new Error('unexpected FQDN list'); }),
   };
   const names = (namespace: string) =>
     [...store.values()].filter((p) => p.metadata.namespace === namespace).map((p) => p.metadata.name).sort();

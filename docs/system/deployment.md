@@ -547,6 +547,9 @@ Orchestrator:
 - `EVE_ORCH_ATTEMPT_STALE_MINUTES`
 
 Worker:
+- `EVE_EGRESS_FQDN_PROVIDER`: `gke` to enforce `x-eve.egress.hosts` with GKE
+  FQDNNetworkPolicies, `none` (default) for no enforcement; see
+  [egress policies](./egress-policies.md#host-allow-lists).
 - `EVE_RUNNER_REAPER_ENABLED`
 - `EVE_RUNNER_REAPER_INTERVAL_MS`
 - `EVE_RUNNER_REAPER_GRACE_SECONDS`

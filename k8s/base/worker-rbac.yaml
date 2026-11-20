@@ -98,6 +98,17 @@ rules:
       - delete
       - patch
       - update
+  # egress.allow_hosts with EVE_EGRESS_FQDN_PROVIDER=gke: one GKE
+  # FQDNNetworkPolicy per allowed host. Harmless where the CRD is absent.
+  - apiGroups: ["networking.gke.io"]
+    resources:
+      - fqdnnetworkpolicies
+    verbs:
+      - get
+      - list
+      - create
+      - delete
+      - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

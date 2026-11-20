@@ -7,8 +7,10 @@ policies themselves live in the cluster and are written by the worker.
 
 What they stop: a tenant pod or job reaching the platform's own services
 (other than the API's public port), the metadata server, another tenant's
-namespace, or any private address. What they do not stop (yet): job code
-sending data to an internet host. Host-level allow lists are planned.
+namespace, or any private address. With the project rule
+`egress.allow_hosts` at `strict` and an enforcement provider, they also stop
+job code and apps reaching internet hosts the project has not declared (see
+[host allow lists](#host-allow-lists)).
 
 NetworkPolicy does nothing on a CNI that does not enforce it. Set the
 instance setting `network.policy_enforced` to say whether yours does (see
@@ -91,6 +93,90 @@ holds a set the profile no longer wants; a failure there is logged and the
 job goes on (the deny still holds). Reconcile removes the runner policies of
 deleted projects.
 
+## Host allow lists
+
+The project rule `egress.allow_hosts` limits the internet hosts a project's
+runner pods and env pods reach. The hosts come from three places:
+
+- **The manifest:** `x-eve.egress.hosts` at project level (every pod of the
+  project's envs, and its runners) and on each service (that service's pods
+  only). See [manifest](manifest.md#x-eveegresshosts).
+- **The harnesses:** each harness adapter in
+  `packages/shared/src/harnesses/adapters` declares the hosts its CLI needs
+  (`egressHosts`). Every runner policy carries all of them, since a job may
+  name any harness:
+
+  | Harness | Hosts |
+  |---|---|
+  | `claude`, `mclaude` | `api.anthropic.com` |
+  | `zai` | `api.z.ai` |
+  | `gemini` | `generativelanguage.googleapis.com` |
+  | `codex`, `code` | `api.openai.com`, `chatgpt.com` (ChatGPT sign-in), `auth.openai.com` (its token refresh) |
+  | `pi` | `api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`, `api.z.ai` |
+
+  A custom base URL (`ANTHROPIC_BASE_URL`, `Z_AI_BASE_URL`), another pi
+  provider, Vertex AI or a Google sign-in for Gemini goes in the manifest.
+- **The repository:** runners also reach the git host of the project's
+  `repo_url` (HTTPS on 443, `ssh://` on its port, `git@host:` on 22).
+
+Env pods get the manifest lists only; runner pods get the project list, the
+harness hosts and the git host.
+
+### Providers
+
+`EVE_EGRESS_FQDN_PROVIDER` on the worker says what enforces the lists:
+
+- `gke`: the worker writes GKE `FQDNNetworkPolicy` objects
+  (`networking.gke.io/v1alpha1`). The cluster needs
+  `--enable-fqdn-network-policy` (Dataplane V2). One policy per host and
+  port, named `eve-fqdn-<hash>` and labelled `eve.horizon/egress=fqdn` (and
+  `eve.horizon/project-id`); the host is in the `eve.horizon/egress-host`
+  annotation. One per host keeps each under GKE's limit of 50 resolved
+  addresses per policy. In the runner namespaces they select
+  `eve.horizon/runner=true` and the project label; in an env namespace the
+  project list selects every pod and a service list selects
+  `eve.component=<service>`. A deploy or reconcile writes the wanted set
+  first, then deletes Eve's others; policies without the label are never
+  touched.
+- `none` (default): nothing is written, and a project whose
+  `egress.allow_hosts` is `strict` cannot deploy, run a service job or
+  dispatch a job: "egress allow lists need a provider
+  (EVE_EGRESS_FQDN_PROVIDER)".
+
+### By profile
+
+| `egress.allow_hosts` | What changes |
+|---|---|
+| `legacy` | Nothing. With `gke`, a deploy or reconcile removes Eve's FQDN policies. |
+| `audit` | With `gke`, the FQDN policies are written beside the internet rule and the allow-all companions. Rules add up, so nothing is blocked. A finding is recorded at each deploy and reconcile for a project that declares no hosts (`reason: no_declared_hosts`) or has no provider (`no_provider`). |
+| `strict` | The internet rule (`0.0.0.0/0` outside private ranges) and every allow-all companion are left out of `eve-egress` and `eve-runner-<project>`, so only the FQDN policies open the internet. Everything else in [env namespaces](#env-namespaces) and [runner pods](#runner-pods) stays. The static `eve-runner-deny` still holds a warm pod to DNS and the API. |
+
+The rule is rule set 3: a profile stamped before it runs it as `audit`, and
+under rule set 3 `strict` makes `egress.default_deny` strict too.
+
+Dispatch writes a project's runner FQDN policies when their names differ
+from what its manifest, harnesses and repository want (a first job, a
+changed list), before the pod starts.
+
+### Leaks
+
+- **Shared addresses:** GKE filters by the addresses a name resolves to, so
+  every host on the same addresses is reachable too: allowing
+  `generativelanguage.googleapis.com` opens Google's other APIs, and a CDN
+  name opens the CDN's other customers.
+- **DNS:** lookups succeed for any name, so a pod can still leak data in
+  DNS queries to a name server it does not control.
+- **The ingress controller:** calls to any public host of this instance
+  still reach the ingress controller, as under `egress.default_deny`.
+
+### Audit evidence
+
+Rules add up, so under `audit` nothing is blocked and Eve cannot see what
+`strict` would refuse. Log allowed flows for the project's namespaces (GKE:
+Dataplane V2 network logging with `allow.log`) and list connections whose
+destination is not one of the declared hosts. Fourteen days of that is the
+evidence before a project flips.
+
 ## The API URL apps and runners get
 
 Apps and runner pods get `EVE_API_APP_URL` as their `EVE_API_URL` (default
@@ -140,6 +226,11 @@ eve system settings set network.private_cidrs "198.18.0.0/15"
   kustomization) would move the runner-namespace copies of the static
   policies into the platform namespace; the build then fails on the duplicate
   names. Apply the runner namespace's objects from their own kustomization.
+- **FQDN policies:** the base ClusterRole lets the worker manage
+  `fqdnnetworkpolicies.networking.gke.io`; where the CRD is absent the
+  rule is inert. Turning on `--enable-fqdn-network-policy` restarts `anetd`
+  on each node; do it in an attended window, then set
+  `EVE_EGRESS_FQDN_PROVIDER=gke` on the worker.
 - **Flow logs:** to see what `strict` would refuse before turning it on,
   log allowed connections for Eve's namespaces (GKE: `NetworkLogging` with
   `allow.log` or `allow.delegate` and the namespace annotation) and compare
@@ -170,3 +261,11 @@ them, and they keep doing what they did:
   back; or delete `eve-egress` from their namespaces.
 - **Runner policies** select only `eve.horizon/runner=true`, which pods from
   earlier releases do not carry, so they affect nothing after a rollback.
+- **Host allow lists (0.1.328):** a release before them leaves the FQDN
+  policies in place. They only allow, so they block nothing; delete them
+  with `kubectl delete fqdnnetworkpolicies -A -l eve.horizon/egress=fqdn`
+  when tidying. Its first deploy or reconcile of a `strict` project puts
+  the internet rule back into `eve-egress` and `eve-runner-<project>` (it
+  knows only `egress.default_deny`), so a rollback opens the internet again
+  rather than closing anything. Manifests that declare `x-eve.egress` still
+  sync there, since earlier releases pass unknown `x-eve` keys through.

@@ -2,6 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as k8s from '@kubernetes/client-node';
 import yaml from 'yaml';
 import { PassThrough } from 'node:stream';
+import {
+  FQDN_POLICY_GROUP,
+  FQDN_POLICY_PLURAL,
+  FQDN_POLICY_VERSION,
+  type FqdnNetworkPolicy,
+} from '@eve/shared';
 import { K8sOperationError, isK8sConflict, isK8sNotFound, wrapK8sError } from './k8s-error.js';
 
 type K8sObject = k8s.KubernetesObject & {
@@ -17,6 +23,7 @@ export class K8sService {
   private appsApi?: k8s.AppsV1Api;
   private batchApi?: k8s.BatchV1Api;
   private networkingApi?: k8s.NetworkingV1Api;
+  private customApi?: k8s.CustomObjectsApi;
   private objectApi?: k8s.KubernetesObjectApi;
   private available = false;
 
@@ -28,6 +35,7 @@ export class K8sService {
       this.appsApi = this.kc.makeApiClient(k8s.AppsV1Api);
       this.batchApi = this.kc.makeApiClient(k8s.BatchV1Api);
       this.networkingApi = this.kc.makeApiClient(k8s.NetworkingV1Api);
+      this.customApi = this.kc.makeApiClient(k8s.CustomObjectsApi);
       this.objectApi = k8s.KubernetesObjectApi.makeApiClient(this.kc);
       this.available = true;
     } catch (error) {
@@ -472,6 +480,90 @@ export class K8sService {
       throw wrapK8sError(err, 'list', { kind: 'NetworkPolicy', namespace });
     }
     return (response.body.items ?? [])
+      .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
+      .filter((item) => item.name.length > 0);
+  }
+
+  /**
+   * Create or replace a GKE FQDNNetworkPolicy (egress.allow_hosts). Returns
+   * false, writing nothing, when the cluster already holds it with these
+   * labels, annotations and spec. Where the CRD is not installed the API
+   * answers 404, which fails as a K8sOperationError.
+   */
+  async applyFqdnNetworkPolicy(policy: FqdnNetworkPolicy): Promise<boolean> {
+    this.ensureAvailable();
+    const { name, namespace } = policy.metadata;
+    const ref = { kind: 'FQDNNetworkPolicy', name, namespace };
+    const args = [FQDN_POLICY_GROUP, FQDN_POLICY_VERSION, namespace, FQDN_POLICY_PLURAL] as const;
+    type Stored = FqdnNetworkPolicy & { metadata: { resourceVersion?: string } };
+    let existing: Stored | null = null;
+    try {
+      existing = (await this.customApi!.getNamespacedCustomObject(...args, name)).body as Stored;
+    } catch (err) {
+      if (!isK8sNotFound(err)) throw wrapK8sError(err, 'read', ref);
+    }
+    if (!existing) {
+      try {
+        await this.customApi!.createNamespacedCustomObject(...args, policy);
+        return true;
+      } catch (err) {
+        throw wrapK8sError(err, 'create', ref);
+      }
+    }
+    if (
+      canonicalJson(existing.spec) === canonicalJson(policy.spec)
+      && canonicalJson(existing.metadata?.labels ?? {}) === canonicalJson(policy.metadata.labels)
+      && canonicalJson(existing.metadata?.annotations ?? {}) === canonicalJson(policy.metadata.annotations)
+    ) {
+      return false;
+    }
+    try {
+      await this.customApi!.replaceNamespacedCustomObject(...args, name, {
+        ...policy,
+        metadata: { ...policy.metadata, resourceVersion: existing.metadata?.resourceVersion },
+      });
+      return true;
+    } catch (err) {
+      throw wrapK8sError(err, 'replace', ref);
+    }
+  }
+
+  async deleteFqdnNetworkPolicy(namespace: string, name: string): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.customApi!.deleteNamespacedCustomObject(FQDN_POLICY_GROUP, FQDN_POLICY_VERSION, namespace, FQDN_POLICY_PLURAL, name);
+      this.logger.log(`Deleted FQDNNetworkPolicy ${name} from namespace ${namespace}`);
+    } catch (err) {
+      if (isK8sNotFound(err)) return;
+      throw wrapK8sError(err, 'delete', { kind: 'FQDNNetworkPolicy', name, namespace });
+    }
+  }
+
+  /** FQDNNetworkPolicies in a namespace matching a label selector (none where the namespace or the CRD is absent). */
+  async listFqdnNetworkPolicies(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    this.ensureAvailable();
+    let response: { body: unknown };
+    try {
+      response = await this.customApi!.listNamespacedCustomObject(
+        FQDN_POLICY_GROUP,
+        FQDN_POLICY_VERSION,
+        namespace,
+        FQDN_POLICY_PLURAL,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector,
+      );
+    } catch (err) {
+      if (isK8sNotFound(err)) return [];
+      throw wrapK8sError(err, 'list', { kind: 'FQDNNetworkPolicy', namespace });
+    }
+    const items = (response.body as { items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> }).items ?? [];
+    return items
       .map((item) => ({ name: item.metadata?.name ?? '', labels: item.metadata?.labels ?? {} }))
       .filter((item) => item.name.length > 0);
   }

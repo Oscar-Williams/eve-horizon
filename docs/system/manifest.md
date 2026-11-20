@@ -558,6 +558,7 @@ services:
 | `rollout` | `recreate` or `rolling`; overrides the default rollout strategy (see Persistent Storage) |
 | `managed` | Managed DB config (requires `role: managed_db`) |
 | `security` | How the service runs under the `strict` pod security profile: `{ run_as_user?: number, run_as_group?: number, run_as_root?: boolean, capabilities?: string[] }` (see [x-eve.security](#x-evesecurity)) |
+| `egress` | Internet hosts this service's pods may reach under a `strict` `egress.allow_hosts` profile, beside the project's list: `{ hosts: [...] }` (see [x-eve.egress.hosts](#x-eveegresshosts)). Not the same as `networking.egress` (`nat` or `stable`), which picks the route out. |
 | `audit_log_table` | Optional table used by `eve env diagnose --request` |
 | `request_id_column` | Optional request ID column for `audit_log_table` (default `request_id`) |
 
@@ -646,6 +647,46 @@ services:
 Unknown fields under `x-eve.security` fail manifest validation, so a misspelt
 opt-out is not silently ignored. `x-eve.networking.egress: stable` is refused
 under `strict`.
+
+### x-eve.egress.hosts
+
+The internet hosts a project's pods may reach when its rule
+`egress.allow_hosts` is `strict` (see
+[egress policies](egress-policies.md#host-allow-lists)). At project level the
+list covers every pod of the project's environments and its job runners; on
+a service it adds hosts for that service's pods only.
+
+```yaml
+x-eve:
+  egress:
+    hosts:
+      - api.example.com              # one host, port 443
+      - "*.cdn.example.com"          # any one label under cdn.example.com
+      - { name: smtp.example.com, port: 587 }
+      - { pattern: "*.hooks.example.com", port: 8443 }
+
+services:
+  web:
+    x-eve:
+      egress:
+        hosts: [payments.example.com]
+```
+
+- An entry is a host name, a `*.` pattern (the `*` stands for exactly one
+  label, so `*.example.com` matches `a.example.com`, not `a.b.example.com`
+  or `example.com`), or the object form with `name` or `pattern` and an
+  optional TCP `port` (default 443).
+- Refused at sync: a scheme (`https://`), a path, a port inside the string
+  (use the object form), a bare `*`, a `*` anywhere but the first label, a
+  pattern over a top-level domain (`*.com`), IP addresses, single-label
+  names and cluster names (`*.svc`, `*.cluster.local`, `*.internal`:
+  in-cluster peers need no entry).
+- At most 50 entries per list.
+- Runners also reach their harnesses' model APIs and the repository's git
+  host without an entry; apps do not.
+- Under `legacy` and `audit` nothing is blocked. Under `audit`, with the GKE
+  provider, Eve writes the policies so they can be reviewed, and a project
+  with no hosts is recorded.
 
 ### TCP Ingress
 
