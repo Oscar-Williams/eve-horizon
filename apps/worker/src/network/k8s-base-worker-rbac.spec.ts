@@ -201,6 +201,37 @@ describe('k8s/admission: the worker workload guard', () => {
   });
 });
 
+describe('k8s/admission: the worker platform guard', () => {
+  const policy = () => of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-platform-guard');
+
+  it("fails closed, denies, and matches every write of the worker's in the platform namespace", () => {
+    expect(policy()?.spec.failurePolicy).toBe('Fail');
+    const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-worker-platform-guard');
+    expect(binding?.spec.validationActions).toEqual(['Deny']);
+    expect(policy()!.spec.matchConstraints.resourceRules).toEqual([
+      { apiGroups: ['*'], apiVersions: ['*'], operations: ['CREATE', 'UPDATE', 'DELETE'], resources: ['*/*'] },
+    ]);
+    const conditions = JSON.stringify(policy()!.spec.matchConditions);
+    expect(conditions).toContain("'system:serviceaccount:eve:eve-worker'");
+    expect(conditions).toContain("request.namespace == 'eve'");
+  });
+
+  it('holds Secrets, claims, pods, Jobs and policies there to what the worker makes, before and after the change', () => {
+    const text = JSON.stringify(policy()!.spec);
+    for (const needle of [
+      "'kaniko-cfg-'", "'eve-ws-'", "'eve-org-fs-'", 'dataSource', 'dataSourceRef', 'volumeName',
+      "'eve.type'", "'runner'", "'eve.horizon/component'", "'kaniko-build'", "'eve.horizon/egress'", 'oldObject',
+    ]) {
+      expect(text, needle).toContain(needle);
+    }
+  });
+
+  it('is joined by the workload guard refusing ephemeral volumes anywhere', () => {
+    const workload = of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-workload-guard')!;
+    expect(JSON.stringify(workload.spec)).toContain('ephemeral');
+  });
+});
+
 describe('k8s/admission: the namespace guard refuses escalation through Secrets and namespace labels', () => {
   it('refuses service account token Secrets and a privileged Pod Security enforce', () => {
     const text = JSON.stringify(of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-namespace-guard')!.spec);
