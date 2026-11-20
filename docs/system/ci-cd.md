@@ -139,6 +139,23 @@ fixtures are not checked. To move a pinned input:
   `git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>*'` (the
   `^{}` line for an annotated tag) and keep the tag in the comment.
 
+### Not pinned
+
+These build inputs are fetched by version or by name, without a checked
+digest, and the gate does not cover them:
+
+- **The whisper model** (`ggml-small.en.bin`, worker and agent-runtime media
+  steps and the media toolchain), from the `main` branch on Hugging Face.
+- **The Kotlin compiler zip** (worker `kotlin` and `full` stages), by
+  `KOTLIN_VERSION` from GitHub releases, with no sha256.
+- **Playwright's Chromium** (browser toolchain), whichever build the pinned
+  Playwright version downloads.
+- **Rust** (`rustup` with `--default-toolchain stable`), the JDK and system
+  packages from apt repositories (signed by their keys, not pinned to
+  versions).
+- **The cc-mirror variants' Claude Code**, which `cc-mirror quick` installs
+  at the locked version but outside the lock, so without its integrity hash.
+
 ## npm packages — the version comes from the tag
 
 `publish-cli`, `publish-sdk` and `publish-chat` all derive the version from the
