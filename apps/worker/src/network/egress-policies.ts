@@ -38,7 +38,9 @@ import {
   envEgressPolicies,
   envFqdnPolicies,
   envIngressPolicies,
+  ingressControllerRoutes,
   manifestEgressHosts,
+  mergeEnvironmentServices,
   parseCidrList,
   profileHarnesses,
   readDeclaredProfiles,
@@ -53,7 +55,9 @@ import {
   type EnvIngressNetworkPolicy,
   type FqdnNetworkPolicy,
   type IngressPeers,
+  type IngressRoute,
   type SecurityProfile,
+  type Service,
 } from '@eve/shared';
 
 /** What EgressPolicies needs of the Kubernetes API (K8sService). */
@@ -228,9 +232,11 @@ export class EgressPolicies {
     const allowHosts = options.allowHosts ?? await this.allowHostsProfile(env.projectId);
     const provider = egressFqdnProvider();
     const result: EgressSync = { profile: resolved, applied: [], removed: [] };
+    let read: Promise<unknown> | undefined;
+    const manifest = () => (read ??= options.manifest !== undefined ? Promise.resolve(options.manifest) : this.envManifest(env));
     let fqdn: FqdnNetworkPolicy[] = [];
     if (allowHosts !== 'legacy') {
-      const lists = manifestEgressHosts(options.manifest !== undefined ? options.manifest : await this.envManifest(env));
+      const lists = manifestEgressHosts(await manifest());
       const declared = lists.project.length + Object.values(lists.services).reduce((n, hosts) => n + hosts.length, 0);
       await this.recordAllowHosts(env.projectId, provider, declared, { scope: 'env', env: env.name });
       if (allowHosts === 'strict' && provider === 'none') throw new EgressProviderMissingError();
@@ -245,16 +251,36 @@ export class EgressPolicies {
       merge(result, await this.syncFqdnUnder(allowHosts, env.projectId, env.namespace, FQDN_SELECTOR, fqdn, { scope: 'env', env: env.name }));
     }
 
-    // network.ingress_isolation: who may connect in.
-    const ingress = await this.ingressProfile(env.projectId);
-    const ingressPolicies = ingress === 'legacy'
-      ? []
-      : envIngressPolicies(env.namespace, ingress, await this.ingressPeers(env), {
+    merge(result, await this.syncIngress(env, manifest));
+    return result;
+  }
+
+  /**
+   * network.ingress_isolation: who may connect in. NetworkPolicies add up,
+   * so any Eve allow widens a project's own ingress policies for the pods it
+   * selects: only `strict` writes policies. `audit` records what `strict`
+   * would write, and `audit` and `legacy` remove every Eve ingress policy
+   * the namespace holds (left by `strict`, or an earlier release's allow-all
+   * companion), never one of the project's own.
+   */
+  private async syncIngress(env: EgressEnvRef, manifest: () => Promise<unknown>): Promise<{ applied: string[]; removed: string[] }> {
+    const profile = await this.ingressProfile(env.projectId);
+    let desired: EnvIngressNetworkPolicy[] = [];
+    if (profile !== 'legacy') {
+      const wanted = envIngressPolicies(env.namespace, 'strict', await this.ingressPeers(env, await manifest()), {
         platformNamespace: this.platformNamespace,
         runnerNamespace: process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE,
       });
-    merge(result, await this.sync(env.namespace, INGRESS_SELECTOR, ingressPolicies));
-    return result;
+      await decideSecurityRule(this.db, INGRESS_RULE, {
+        projectId: env.projectId,
+        governing: 'project',
+        actorType: 'service',
+        actorId: 'worker',
+        detail: { scope: 'env', env: env.name, enforced: profile === 'strict', policies: wanted.map((p) => p.metadata.name).join(',') },
+      });
+      if (profile === 'strict') desired = wanted;
+    }
+    return this.sync(env.namespace, INGRESS_SELECTOR, desired);
   }
 
   /**
@@ -617,12 +643,14 @@ export class EgressPolicies {
 
   /**
    * Who may call an env namespace (network.ingress_isolation): the project's
-   * own env namespaces and runners, and the projects consuming its app links
-   * through a live API grant for this env. A `same` link admits the
-   * consumer's env of the same name (and its runners, when it has one); a
-   * link fixed to this env admits all the consumer's envs and its runners.
+   * own env namespaces and runners (every pod); the ingress controller (the
+   * services the deployer gives an Ingress); and the projects consuming its
+   * app links through a live API grant for this env (the granted service).
+   * A `same` link admits the consumer's env of the same name (and its
+   * runners, when it has one); a link fixed to this env admits all the
+   * consumer's envs and its runners.
    */
-  private async ingressPeers(env: EgressEnvRef): Promise<IngressPeers> {
+  private async ingressPeers(env: EgressEnvRef, manifest: unknown): Promise<IngressPeers> {
     const project = await this.projects.findById(env.projectId);
     const org = project ? await this.orgs.findById(project.org_id) : null;
     const projectNamespaces = [env.namespace];
@@ -630,11 +658,10 @@ export class EgressPolicies {
       projectNamespaces.push(...(await this.activeEnvs(env.projectId))
         .map((e) => deriveNamespace(org.slug, project.slug, e.name, e.namespace)));
     }
-    const consumerNamespaces: string[] = [];
-    const runnerProjects = new Set([env.projectId]);
+    const links = new Map<string, { service: string; port: number | null; namespaces: string[]; runnerProjects: string[] }>();
     for (const subscription of await this.appLinks.listWithGrants({ producer_project_id: env.projectId })) {
       const grant = subscription.api_grant;
-      if (!grant || grant.revoked_at || grant.producer_project_id !== env.projectId) continue;
+      if (!grant || grant.revoked_at || grant.producer_project_id !== env.projectId || !grant.service_name) continue;
       if (grant.envs.length > 0 && !grant.envs.includes(env.name)) continue;
       const consumer = await this.projects.findById(subscription.consumer_project_id);
       const consumerOrg = consumer ? await this.orgs.findById(consumer.org_id) : null;
@@ -649,10 +676,34 @@ export class EgressPolicies {
       } else {
         continue;
       }
-      runnerProjects.add(consumer.id);
-      consumerNamespaces.push(...callers.map((e) => deriveNamespace(consumerOrg.slug, consumer.slug, e.name, e.namespace)));
+      let link = links.get(grant.service_name);
+      if (!link) {
+        // The port the consumers' egress allows (producerPeers).
+        link = { service: grant.service_name, port: await this.servicePort(env.projectId, grant.service_name), namespaces: [], runnerProjects: [] };
+        links.set(grant.service_name, link);
+      }
+      link.runnerProjects.push(consumer.id);
+      link.namespaces.push(...callers.map((e) => deriveNamespace(consumerOrg.slug, consumer.slug, e.name, e.namespace)));
     }
-    return { projectNamespaces, consumerNamespaces, runnerProjects: [...runnerProjects] };
+    return {
+      projectNamespaces,
+      runnerProjects: [env.projectId],
+      routes: await this.ingressRoutes(env, manifest),
+      links: [...links.values()],
+    };
+  }
+
+  /**
+   * The services the ingress controller routes to in an env: those the
+   * deployer gives an Ingress, read from the env's manifest with its stored
+   * overrides, as the deployer reads them.
+   */
+  private async ingressRoutes(env: EgressEnvRef, manifest: unknown): Promise<IngressRoute[]> {
+    const fields = manifest && typeof manifest === 'object' && !Array.isArray(manifest) ? manifest as Record<string, unknown> : {};
+    const services = fields.services && typeof fields.services === 'object' ? fields.services as Record<string, Service> : {};
+    const row = await this.envs.findById(env.id);
+    const implicitPublic = await governingSecurityProfile(this.db, { projectId: env.projectId, governing: 'project', rule: 'ports.implicit_public' });
+    return ingressControllerRoutes(mergeEnvironmentServices(fields, services, env.name, row?.overrides_json ?? null), implicitPublic);
   }
 
   /** runnerExtras when the profiles write a project set that uses them (none under legacy alone). */

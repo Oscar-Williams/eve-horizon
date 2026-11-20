@@ -239,7 +239,7 @@ describe('env namespaces: network.ingress_isolation', () => {
     const cluster = fakeCluster([PROD.namespace, 'eve-runners', 'eve']);
     const egress = egressFor(cluster);
     await cluster.api.applyNetworkPolicy(tenantPolicy(PROD.namespace));
-    // An allow-all companion an earlier release wrote under audit.
+    // An allow-all companion a pre-release build wrote under audit.
     await cluster.api.applyNetworkPolicy({
       metadata: { name: 'eve-ingress-audit', namespace: PROD.namespace,
         labels: { 'app.kubernetes.io/managed-by': 'eve-horizon', 'eve.horizon/ingress': 'env' } },
