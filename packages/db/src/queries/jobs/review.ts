@@ -19,8 +19,8 @@ export interface JobLifecycleContext {
  * rejected and sent back to run. The API answers 409.
  */
 export class ReviewDecidedError extends Error {
-  constructor(readonly jobId: string, readonly reviewStatus: string) {
-    super(`Job ${jobId}'s review was already decided (${reviewStatus})`);
+  constructor(readonly jobId: string, readonly reviewStatus?: string) {
+    super(`Job ${jobId}'s review was already decided${reviewStatus ? ` (${reviewStatus})` : ''}`);
     this.name = 'ReviewDecidedError';
   }
 }
@@ -188,7 +188,7 @@ export function jobReviewQueries(db: Db) {
         RETURNING *
       `;
       if (!updatedJob) {
-        throw new ReviewDecidedError(jobId, 'decided');
+        throw new ReviewDecidedError(jobId);
       }
 
       // 3. Audit log the approval
@@ -258,7 +258,7 @@ export function jobReviewQueries(db: Db) {
         RETURNING *
       `;
       if (!updatedJob) {
-        throw new ReviewDecidedError(jobId, 'decided');
+        throw new ReviewDecidedError(jobId);
       }
 
       // 3. Create new attempt for retry
