@@ -94,10 +94,12 @@ describe('managedDbQueries lifecycle', () => {
 
     await db`DELETE FROM environments WHERE id = ${envId}`;
 
-    const after = await managedDb.findTenantById(tenant.id);
-    expect(after).not.toBeNull();
-    expect(after!.status).toBe('deleting');
-    expect(after!.env_id).toBeNull();
+    const [after] = await db<Array<{ status: string; env_id: string | null }>>`
+      SELECT status, env_id FROM managed_db_tenants WHERE id = ${tenant.id}
+    `;
+    expect(after).toBeDefined();
+    expect(after.status).toBe('deleting');
+    expect(after.env_id).toBeNull();
     const queued = await managedDb.listTenantsNeedingReconciliation();
     expect(queued.map((t) => t.id)).toContain(tenant.id);
   });

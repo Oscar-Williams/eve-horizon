@@ -334,9 +334,12 @@ export function generateManagedDbName(
   orgSlug: string,
   projectSlug: string,
   envName: string,
+  envId?: string,
 ): string {
   const base = `${slugify(orgSlug)}-${slugify(projectSlug)}-${slugify(envName)}`;
-  const hash = shortHash(`${orgSlug}/${projectSlug}/${envName}`);
+  // With the environment id, a later environment of the same name gets a
+  // different database, so it can never attach to one still being dropped.
+  const hash = shortHash(`${orgSlug}/${projectSlug}/${envName}${envId ? `/${envId}` : ''}`);
   const name = `${base}-${hash}`;
   return name.slice(0, MAX_PG_IDENTIFIER);
 }
@@ -346,9 +349,10 @@ export function generateManagedDbUser(
   orgSlug: string,
   projectSlug: string,
   envName: string,
+  envId?: string,
 ): string {
   const base = `${slugify(orgSlug)}-${slugify(projectSlug)}-${slugify(envName)}-u`;
-  const hash = shortHash(`${orgSlug}/${projectSlug}/${envName}/user`);
+  const hash = shortHash(`${orgSlug}/${projectSlug}/${envName}${envId ? `/${envId}` : ''}/user`);
   const name = `${base}-${hash}`;
   return name.slice(0, MAX_PG_IDENTIFIER);
 }

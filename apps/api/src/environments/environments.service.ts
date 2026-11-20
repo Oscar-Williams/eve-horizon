@@ -284,14 +284,9 @@ export class EnvironmentsService {
     await this.cleanupManagedDbTenants(environment.id, data.force);
     await this.teardownEnvironmentDeployment(environment.id, data.force);
 
-    // Force-delete: hard-remove any remaining managed_db_tenants rows to
-    // avoid FK constraint violations on the environments table.
-    if (data.force) {
-      const removed = await this.managedDb.hardDeleteTenantsByEnv(environment.id);
-      if (removed > 0) {
-        this.logger.log(`[env-delete] Hard-deleted ${removed} managed DB tenant row(s) for env ${environment.id}`);
-      }
-    }
+    // Managed DB tenants stay, queued for drop: deleting the environment row
+    // clears their env_id, and the reconciler drops each database. Removing
+    // the rows here would leave the databases behind.
 
     const deleted = await this.environments.delete(environment.id);
     if (!deleted) {

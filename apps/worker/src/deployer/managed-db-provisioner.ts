@@ -126,8 +126,8 @@ export class ManagedDbProvisioner {
         }
 
         // Create tenant record
-        const dbName = generateManagedDbName(params.orgSlug, params.projectSlug, params.envName);
-        const dbUser = generateManagedDbUser(params.orgSlug, params.projectSlug, params.envName);
+        const dbName = generateManagedDbName(params.orgSlug, params.projectSlug, params.envName, params.envId);
+        const dbUser = generateManagedDbUser(params.orgSlug, params.projectSlug, params.envName, params.envId);
 
         tenant = await this.managedDb.createTenant({
           id: generateManagedDbTenantId(),

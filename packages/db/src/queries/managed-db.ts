@@ -49,7 +49,7 @@ export interface ManagedDbTenant {
   id: string;
   org_id: string;
   project_id: string;
-  env_id: string;
+  env_id: string | null;
   service_name: string;
   instance_id: string;
   provider_tenant_id: string | null;
@@ -218,6 +218,39 @@ export function managedDbQueries(db: Db) {
           SELECT * FROM managed_db_tenants
           WHERE env_id = ${input.env_id} AND service_name = ${input.service_name}
         `;
+        if (existing?.deleted_at) {
+          if (existing.status !== 'deleted') {
+            throw new Error(
+              `Managed DB for service "${input.service_name}" is still being deleted (status ${existing.status}); ` +
+              'deploy again once it is gone',
+            );
+          }
+          // Destroyed and dropped: provision a fresh database in the same row
+          // (the row keeps its id; the old database no longer exists).
+          const [revived] = await db<ManagedDbTenant[]>`
+            UPDATE managed_db_tenants
+            SET instance_id = ${input.instance_id},
+                db_name = ${input.db_name},
+                db_user = ${input.db_user},
+                class = ${input.class},
+                desired_class = NULL,
+                desired_extensions = ${desiredExtensions}::text[],
+                enabled_extensions = '{}'::text[],
+                desired_roles = ${desiredRoles},
+                provider_tenant_id = NULL,
+                credential_secret_ref = NULL,
+                status = 'provisioning',
+                operation_token = NULL,
+                last_error_code = NULL,
+                last_error_message = NULL,
+                ready_at = NULL,
+                deleted_at = NULL,
+                updated_at = NOW()
+            WHERE id = ${existing.id} AND status = 'deleted' AND deleted_at IS NOT NULL
+            RETURNING *
+          `;
+          if (revived) return revived;
+        }
         return existing;
       }
       return row;
