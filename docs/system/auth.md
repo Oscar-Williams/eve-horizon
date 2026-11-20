@@ -194,19 +194,41 @@ Secret and the service's pods roll once. A value the manifest sets for
 Renewal rolls pods unattended, so it is paced:
 
 - **A few a pass.** Each hourly pass first reads every deployed
-  environment's service Secrets, then renews and rolls at most
-  `EVE_SERVICE_TOKEN_RENEW_BATCH` Deployments (default 3, at least 1): a
-  revoked token first, then the soonest to expire. The rest wait for the next
-  pass. A rotation renews its whole environment at once.
+  environment's service Secrets, then works through them, a revoked token
+  first, then the soonest to expire, until it has renewed or rolled
+  `EVE_SERVICE_TOKEN_RENEW_BATCH` of them (default 3, at least 1). The rest
+  wait for the next pass. A Secret that fails does not count against the
+  batch. A rotation renews its whole environment at once.
 - **Recreate Deployments wait.** A Deployment with the `Recreate` strategy (a
   `database` role, a ReadWriteOnce volume, stable egress, or
   `x-eve.rollout: recreate`) stops serving while it rolls. Its Secret is
-  renewed, but it rolls only once the token its pods hold is revoked or within
-  7 days of expiry; the Secret's `eve.tokens-roll-by` annotation records when,
-  and the worker log says so. A pod that restarts by itself picks up the new
-  token sooner. A token signed by a retired key is renewed in the Secret but
-  does not roll a Recreate Deployment early: keep a retired key in the API's
-  key ring until those services have restarted or rolled.
+  renewed on the pass that takes it, and the Deployment rolls:
+  - **at once** when the token its pods hold is revoked (issued before the
+    environment was created or before its `service_tokens_not_before`),
+    whether or not that token also expires soon or was signed by a retired
+    key;
+  - **otherwise within 7 days of that token's expiry**: on the first pass from
+    7 days before it expires, or at once if it already expires within 7 days.
+    The Secret's `eve.tokens-roll-by` annotation records when, and the worker
+    log says so.
+
+  A pod that restarts by itself (a crash, an eviction, a node drain) reads the
+  Secret again and picks up the new token earlier; the Deployment still rolls
+  at its roll-by. A token signed by a retired key, and not revoked, does not
+  roll a Recreate Deployment early: keep a retired key in the API's key ring
+  until those services have restarted or rolled.
+- **Failures back off.** When the API mints no token for a Secret (a revoked
+  app-link grant, a release that is gone) or its Deployment does not roll (an
+  admission webhook refuses the patch), the worker logs a warning and records
+  the failure on the Secret in the `eve.tokens-renew-failed` annotation: JSON
+  with `at`, `failures` (in a row) and a short `reason` (the key or
+  Deployment and a Kubernetes status, never a token or an error message). The
+  hourly pass tries that Secret again an hour later, then after 2, 4, 8 and
+  16 hours, then once a day, and logs each failure. A Secret that renews one
+  token and fails another writes and rolls the one it renewed, and still
+  backs off. A success removes the annotation, and so does a deploy (it
+  replaces the Secret). A rotation tries every Secret at once, whatever its
+  record.
 - **Rollouts are checked.** On its next pass the worker checks each roll it
   started (the same rollout test deploys use). One not done 180 s after it
   started gets a warning in the worker log and a
@@ -222,8 +244,9 @@ Renewal rolls pods unattended, so it is paced:
   for a deploy.
 
 **Revocation.** The API refuses a service token, and an app-link token
-injected into a service (principal `service:<name>`), when its environment or
-its project is gone (a soft-deleted project's environments count as gone),
+injected into a service (principal `service:<name>`), when its environment,
+its project or its org is gone (a soft-deleted project's or org's
+environments count as gone; the worker does not renew their tokens either),
 when it was issued before the environment row was created (an environment
 deleted and created again under the same name gets a fresh floor), and when
 it was issued before the environment's `service_tokens_not_before`. The
