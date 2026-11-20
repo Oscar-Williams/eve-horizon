@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunnerTemplatesService } from './runner-templates.service.js';
 
@@ -49,6 +50,9 @@ beforeEach(() => {
   k.crds = true; k.applied = []; k.calls = [];
   vi.stubEnv('EVE_RUNNER_IMAGE', 'eve-horizon/worker:0.1.327');
   vi.stubEnv('EVE_RUNNER_NAMESPACE', 'eve-runners');
+  vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key-for-test');
+  vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+  vi.stubEnv('EVE_RUNNER_POOL_KEY', '');
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -72,6 +76,34 @@ describe('runner template reconcile', () => {
     await service().reconcile();
     const heavy = k.applied.find((o) => o.kind === 'SandboxTemplate' && o.metadata.name === 'eve-runner-heavy')!;
     expect(heavy.spec.volumeClaimTemplates[0].spec.resources.requests.storage).toBe('5Gi');
+  });
+
+  it("puts only the hash of the worker's pool key in every template, which changes when the key does", async () => {
+    const poolHash = (objects: Array<Record<string, any>>) => objects.filter((o) => o.kind === 'SandboxTemplate')
+      .map((o) => o.spec.podTemplate.spec.containers[0].env.find((e: { name: string }) => e.name === 'EVE_RUNNER_POOL_KEY_SHA256')?.value);
+
+    await service().reconcile();
+    const derived = poolHash(k.applied);
+    expect(derived).toHaveLength(3);
+    expect(new Set(derived).size).toBe(1);
+    expect(derived[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(k.applied)).not.toContain('core-key-for-test');
+
+    k.applied = [];
+    vi.stubEnv('EVE_RUNNER_POOL_KEY', 'pool-key-for-test');
+    await service().reconcile();
+    const dedicated = poolHash(k.applied);
+    expect(dedicated[0]).toBe(createHash('sha256').update('pool-key-for-test').digest('hex'));
+    expect(JSON.stringify(k.applied)).not.toContain('pool-key-for-test');
+    expect(dedicated[0]).not.toBe(derived[0]);
+  });
+
+  it('renders no template when the worker holds no key to derive the pool key from', async () => {
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', '');
+    const report = await service().reconcile();
+    expect(report).toMatchObject({ backend: 'pod' });
+    expect(report.reason).toMatch(/pool key/);
+    expect(k.applied).toEqual([]);
   });
 
   it('does nothing without the agent-sandbox CRDs', async () => {
