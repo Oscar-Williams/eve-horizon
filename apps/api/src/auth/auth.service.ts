@@ -670,6 +670,21 @@ export class AuthService {
     return { ...token, user_id: authUser.user_id };
   }
 
+  /**
+   * The key tokens are signed with now: its kid and public JWK. The worker
+   * renews service tokens signed by any other key (P4-3); a retired key that
+   * still verifies (EVE_AUTH_PUBLIC_KEY_OLD) is never named here.
+   */
+  getSigningKey(): { kid: string; public_key: Record<string, unknown> } {
+    if (!this.signerKey?.privateKey) {
+      throw new Error('Signing key not configured');
+    }
+    return {
+      kid: this.signerKey.kid,
+      public_key: this.signerKey.publicKey.export({ format: 'jwk' }) as Record<string, unknown>,
+    };
+  }
+
   getJwks(): { keys: Array<Record<string, unknown>> } {
     const keys = this.keys.map((entry) => {
       const jwk = entry.publicKey.export({ format: 'jwk' }) as Record<string, unknown>;

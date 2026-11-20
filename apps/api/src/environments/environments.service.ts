@@ -19,6 +19,7 @@ import {
   type ApiSpec,
   type DeleteEnvironmentRequest,
   type UndeployEnvironmentRequest,
+  type RotateServiceTokensResponse,
   getServicesFromManifest,
   toK8sName,
   deriveNamespace,
@@ -1139,6 +1140,59 @@ export class EnvironmentsService {
   private isProductionEnvName(name: string): boolean {
     const normalized = name.trim().toLowerCase();
     return normalized === 'production' || normalized === 'prod';
+  }
+
+  /**
+   * `eve env rotate-service-tokens`: refuse the environment's service tokens
+   * (and the app-link tokens injected into its services) issued until now,
+   * then ask the worker to renew them at once, which rolls the services. The
+   * floor is in whole seconds on the API's clock, the clock that stamps a new
+   * token's `iat`, so the renewed tokens pass. When the worker cannot be
+   * reached its hourly renewal follows. Each API replica sees the floor within
+   * a minute.
+   */
+  async rotateServiceTokens(projectId: string, envName: string): Promise<RotateServiceTokensResponse> {
+    const environment = await this.environments.findByProjectAndName(projectId, envName);
+    if (!environment) {
+      throw new NotFoundException(`Environment "${envName}" not found for project ${projectId}`);
+    }
+    const notBefore = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const updated = await this.environments.revokeServiceTokens(environment.id, notBefore);
+    if (!updated?.service_tokens_not_before) {
+      throw new NotFoundException(`Environment ${environment.id} not found after rotation`);
+    }
+    this.logger.log(`Revoked service tokens of environment "${envName}" (${environment.id}) issued before ${notBefore.toISOString()}`);
+
+    const renewed = await this.renewServiceTokens(environment.id);
+    return {
+      id: environment.id,
+      name: environment.name,
+      service_tokens_not_before: new Date(updated.service_tokens_not_before).toISOString(),
+      renewal: renewed ? 'done' : 'scheduled',
+      renewed: (renewed ?? []).map(({ secret, key, reason }) => ({ secret, key, reason })),
+    };
+  }
+
+  /** Ask the worker to renew one environment's service tokens now; null when it cannot. */
+  private async renewServiceTokens(envId: string): Promise<Array<{ secret: string; key: string; reason: string }> | null> {
+    try {
+      const response = await fetch(`${resolveWorkerUrl('renew service tokens')}/service-tokens/renew`, {
+        method: 'POST',
+        headers: workerRequestHeaders(),
+        body: JSON.stringify({ env_id: envId }),
+      });
+      if (!response.ok) {
+        this.logger.warn(`Worker service-token renewal for ${envId} returned ${response.status}; the hourly renewal follows`);
+        return null;
+      }
+      const body = await response.json() as { renewed?: Array<{ secret: string; key: string; reason: string }> };
+      return Array.isArray(body.renewed) ? body.renewed : [];
+    } catch (error) {
+      this.logger.warn(
+        `Worker service-token renewal for ${envId} failed: ${error instanceof Error ? error.message : String(error)}; the hourly renewal follows`,
+      );
+      return null;
+    }
   }
 
   async suspend(

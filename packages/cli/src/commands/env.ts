@@ -321,9 +321,12 @@ export async function handleEnv(
     case 'resume':
       return handleResume(positionals, flags, context, json);
 
+    case 'rotate-service-tokens':
+      return handleRotateServiceTokens(positionals, flags, context, json);
+
     default:
       throw new Error(
-        'Usage: eve env <list|show|create|deploy|undeploy|logs|diagnose|services|delete|rollback|reset|recover|suspend|resume>\n' +
+        'Usage: eve env <list|show|create|deploy|undeploy|logs|diagnose|services|delete|rollback|reset|recover|suspend|resume|rotate-service-tokens>\n' +
         '  list [project]                          - list environments for a project\n' +
         '  show <project> <name>                   - show details of an environment\n' +
         '  create <name> --type=<type> [options]   - create an environment\n' +
@@ -337,7 +340,8 @@ export async function handleEnv(
         '  reset <env> [--release <id|tag|previous>] [--project=<id>] [--force] [--danger-reset-production] [--skip-preflight] - teardown and redeploy\n' +
         '  recover <project> <env>                 - analyze environment and suggest recovery action\n' +
         '  suspend <project> <env> --reason "..."  - suspend an environment\n' +
-        '  resume <project> <env>                  - resume a suspended environment',
+        '  resume <project> <env>                  - resume a suspended environment\n' +
+        '  rotate-service-tokens <env> [--project=<id>] - revoke the env\'s service tokens and renew them',
       );
   }
 }
@@ -1219,6 +1223,55 @@ async function handleResume(
   } else {
     console.log(`Environment "${response.name}" resumed.`);
     console.log(`  Status: ${response.status}`);
+  }
+}
+
+/**
+ * eve env rotate-service-tokens <env> [--project=<id>]
+ * Refuse the environment's service tokens issued until now and renew them
+ * (the services roll onto the new tokens).
+ */
+async function handleRotateServiceTokens(
+  positionals: string[],
+  flags: Record<string, FlagValue>,
+  context: ResolvedContext,
+  json: boolean,
+): Promise<void> {
+  const projectId = getStringFlag(flags, ['project']) ?? context.projectId;
+  const envName = positionals[0] ?? getStringFlag(flags, ['env', 'name']);
+
+  if (!projectId || !envName) {
+    throw new Error('Usage: eve env rotate-service-tokens <env> [--project=<id>]');
+  }
+
+  const response = await requestJson<{
+    id: string;
+    name: string;
+    service_tokens_not_before: string;
+    renewal: 'done' | 'scheduled';
+    renewed: Array<{ secret: string; key: string; reason: string }>;
+  }>(
+    context,
+    `/projects/${projectId}/envs/${envName}/rotate-service-tokens`,
+    { method: 'POST', body: {} },
+  );
+
+  if (json) {
+    outputJson(response, json);
+    return;
+  }
+  console.log(`Service tokens of environment "${response.name}" issued before ${formatDate(response.service_tokens_not_before)} are refused.`);
+  if (response.renewal === 'scheduled') {
+    console.log('  The worker could not renew them now; its hourly renewal will.');
+    return;
+  }
+  if (response.renewed.length === 0) {
+    console.log('  No service token to renew.');
+    return;
+  }
+  console.log('  Renewed (the services roll onto the new tokens):');
+  for (const item of response.renewed) {
+    console.log(`    ${item.secret}  ${item.key}  (${item.reason})`);
   }
 }
 

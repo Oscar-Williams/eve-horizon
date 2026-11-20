@@ -161,6 +161,12 @@ function resolveRunTimeoutSeconds(
   );
 }
 
+/** "; still rolling: a, b" for the Deployments not rolled out yet, else nothing. */
+function stillRolling(status: { k8sStatus?: { rolling?: string[] } }): string {
+  const rolling = status.k8sStatus?.rolling ?? [];
+  return rolling.length > 0 ? `; still rolling: ${rolling.join(', ')}` : '';
+}
+
 function normalizeRepoSlug(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -1912,13 +1918,13 @@ export class ActionExecutorService {
       await this.appendLog(attemptId, 'status', {
         message: `Deployment status: ${lastStatus.k8sStatus?.availableReplicas ?? 0}/${
           lastStatus.k8sStatus?.desiredReplicas ?? 0
-        } ready`,
+        } available${stillRolling(lastStatus)}`,
         timestamp: new Date().toISOString(),
       });
     }
 
     if (!lastStatus.k8sStatus?.ready) {
-      const message = `Deployment did not become ready within ${timeoutSeconds}s`;
+      const message = `Deployment did not become ready within ${timeoutSeconds}s${stillRolling(lastStatus)}`;
       const environment = await this.envs.findById(envId);
       let snapshot: Awaited<ReturnType<DeployerService['collectClusterSnapshot']>> | undefined;
       let failure: ReturnType<typeof classifyFromSnapshot> = null;
@@ -1940,12 +1946,16 @@ export class ActionExecutorService {
         }
       }
 
+      // A crash loop or a failed image pull explains itself; otherwise the
+      // message names the Deployments still rolling.
       throw new DeployFailureError(
-        failure ?? {
-          kind: 'readiness_timeout',
-          notReady: snapshot?.pods.filter((pod) => !pod.ready).map((pod) => pod.name) ?? [],
-          message,
-        },
+        failure && failure.kind !== 'readiness_timeout'
+          ? failure
+          : {
+              kind: 'readiness_timeout',
+              notReady: failure?.notReady ?? snapshot?.pods.filter((pod) => !pod.ready).map((pod) => pod.name) ?? [],
+              message,
+            },
         snapshot,
         { cause: new Error(message), manifestApplied: true },
       );

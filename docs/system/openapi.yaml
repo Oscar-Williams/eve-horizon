@@ -452,6 +452,15 @@ paths:
           description: ""
       summary: Mint a service token for deployed app services (internal only)
       tags: *a5
+  /internal/auth/signing-key:
+    get:
+      operationId: AuthInternalController_signingKey
+      parameters: []
+      responses:
+        "200":
+          description: ""
+      summary: The key the API signs tokens with now (internal only)
+      tags: *a5
   /internal/auth/mint-app-link-token:
     post:
       operationId: AuthInternalController_mintAppLinkToken
@@ -5421,6 +5430,33 @@ paths:
           description: ""
       security: *a50
       summary: Reset environment by tearing down workloads and redeploying release
+      tags: *a51
+  /projects/{id}/envs/{name}/rotate-service-tokens:
+    post:
+      description: Service tokens (and app-link tokens injected into services) issued
+        before now are refused; the worker renews them at once, rolling the
+        services, or within the hour.
+      operationId: EnvironmentsController_rotateServiceTokens
+      parameters:
+        - name: id
+          required: true
+          in: path
+          schema:
+            type: string
+        - name: name
+          required: true
+          in: path
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service tokens revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateServiceTokensResponse"
+      security: *a50
+      summary: Revoke the environment's service tokens issued until now and renew them
       tags: *a51
   /projects/{id}/envs/{name}/recover:
     get:
@@ -22677,6 +22713,43 @@ components:
             - pipeline_run
             - environment
           additionalProperties: false
+    RotateServiceTokensResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        service_tokens_not_before:
+          type: string
+        renewal:
+          type: string
+          enum:
+            - done
+            - scheduled
+        renewed:
+          type: array
+          items:
+            type: object
+            properties:
+              secret:
+                type: string
+              key:
+                type: string
+              reason:
+                type: string
+            required:
+              - secret
+              - key
+              - reason
+            additionalProperties: false
+      required:
+        - id
+        - name
+        - service_tokens_not_before
+        - renewal
+        - renewed
+      additionalProperties: false
     EnvLogsResponse:
       type: object
       properties:

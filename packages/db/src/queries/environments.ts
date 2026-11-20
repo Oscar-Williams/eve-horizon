@@ -24,8 +24,22 @@ export interface Environment {
   registry_pull_epoch: number;  // Bumped each time the deployer rewrites the eve-registry pull secret
   registry_key_version: string | null;  // Version of the registry key that signed the pull secret
   registry_key_epoch: number | null;    // registry_pull_epoch when registry_key_version was recorded
+  /** Service tokens (and app-link tokens injected into services) issued before this are refused. */
+  service_tokens_not_before: Date | null;
   created_at: Date;
   updated_at: Date;
+}
+
+/** A deployed environment whose services' Eve tokens the worker renews. */
+export interface ServiceTokenRenewalTarget {
+  id: string;
+  project_id: string;
+  org_id: string;
+  name: string;
+  namespace: string;
+  /** The release applied last: the one whose service Secrets the cluster holds. */
+  release_id: string;
+  service_tokens_not_before: Date | null;
 }
 
 export interface ListEnvironmentsOptions {
@@ -56,7 +70,7 @@ export function environmentQueries(db: Db) {
     },
 
     async create(
-      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch'> & { deploy_status?: string },
+      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch' | 'service_tokens_not_before'> & { deploy_status?: string },
     ): Promise<Environment> {
       const overridesJson = environment.overrides_json
         ? db.json(environment.overrides_json as never)
@@ -403,6 +417,40 @@ export function environmentQueries(db: Db) {
         RETURNING *
       `;
       return row ?? null;
+    },
+
+    /**
+     * Revoke the environment's service tokens issued before `notBefore`. The
+     * floor only moves forward. Null when the environment is gone.
+     */
+    async revokeServiceTokens(id: string, notBefore: Date): Promise<Environment | null> {
+      const [row] = await db<Environment[]>`
+        UPDATE environments
+        SET service_tokens_not_before = GREATEST(service_tokens_not_before, ${notBefore}),
+            updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+      return row ?? null;
+    },
+
+    /**
+     * Deployed environments, for service-token renewal: those with a current
+     * release and a namespace, in a project not deleted. With `envId`, that
+     * environment only.
+     */
+    async listForServiceTokenRenewal(envId?: string): Promise<ServiceTokenRenewalTarget[]> {
+      return db<ServiceTokenRenewalTarget[]>`
+        SELECT e.id, e.project_id, p.org_id, e.name, e.namespace,
+               COALESCE(e.last_applied_release_id, e.current_release_id) AS release_id,
+               e.service_tokens_not_before
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        WHERE e.current_release_id IS NOT NULL
+          AND e.namespace IS NOT NULL
+          ${envId ? db`AND e.id = ${envId}` : db``}
+        ORDER BY e.id
+      `;
     },
 
     async resume(id: string): Promise<Environment | null> {

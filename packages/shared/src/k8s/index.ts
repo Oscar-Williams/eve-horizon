@@ -7,3 +7,4 @@ export * from './fqdn-policies.js';
 export * from './managed-namespaces.js';
 export * from './ingress-policies.js';
 export * from './egress-host-addresses.js';
+export * from './deployment-rollout.js';

@@ -208,3 +208,45 @@ export async function mintAppLinkToken(
     return null;
   }
 }
+
+export interface SigningKeyResult {
+  kid: string;
+  /** The public key as a JWK. */
+  public_key: Record<string, unknown>;
+}
+
+/**
+ * The key the API signs tokens with now (internal API). The worker renews a
+ * deployed service's token signed by any other key. Null when the API cannot
+ * be reached or names none.
+ */
+export async function fetchSigningKey(): Promise<SigningKeyResult | null> {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+  } catch {
+    return null;
+  }
+
+  if (!hasInternalCredential() || !config.EVE_API_URL) {
+    console.warn('[auth-client] Missing an internal key or EVE_API_URL — cannot read the signing key');
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${config.EVE_API_URL}/internal/auth/signing-key`, {
+      headers: { ...internalAuthHeaders(), ...getCorrelationHeaders() },
+    });
+    if (!response.ok) {
+      console.warn(`[auth-client] signing-key returned ${response.status}: ${response.statusText}`);
+      return null;
+    }
+    const body = await response.json() as Partial<SigningKeyResult>;
+    return typeof body.kid === 'string' && body.public_key && typeof body.public_key === 'object'
+      ? { kid: body.kid, public_key: body.public_key }
+      : null;
+  } catch (err) {
+    console.warn(`[auth-client] Failed to read the signing key: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}

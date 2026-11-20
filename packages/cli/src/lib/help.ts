@@ -1278,6 +1278,18 @@ for cloud deployments. Credentials are stored globally per API URL.`,
           'eve env reset production --danger-reset-production --release v1.2.3',
         ],
       },
+      'rotate-service-tokens': {
+        description: 'Revoke an environment\'s service tokens issued until now and renew them (the services roll)',
+        usage: 'eve env rotate-service-tokens <env> [--project <id>]',
+        options: [
+          '<env>                  Environment name',
+          '--project <id>         Project ID (uses profile default if omitted)',
+        ],
+        examples: [
+          'eve env rotate-service-tokens production',
+          'eve env rotate-service-tokens staging --project proj_xxx --json',
+        ],
+      },
       recover: {
         description: 'Analyze environment issues and suggest the next recovery command',
         usage: 'eve env recover <project> <env>',

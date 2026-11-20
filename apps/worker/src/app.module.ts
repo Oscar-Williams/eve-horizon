@@ -11,6 +11,7 @@ import { ReaperModule } from './reaper/reaper.module';
 import { RegistryModule } from './registry/registry.module.js';
 import { RunnerTemplatesModule } from './runner-templates/runner-templates.module.js';
 import { NetworkModule } from './network/network.module.js';
+import { ServiceTokensModule } from './service-tokens/service-tokens.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { NetworkModule } from './network/network.module.js';
     RegistryModule,
     RunnerTemplatesModule,
     NetworkModule,
+    ServiceTokensModule,
   ],
 })
 export class AppModule {}
