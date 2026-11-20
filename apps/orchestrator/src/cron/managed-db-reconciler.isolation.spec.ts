@@ -1,0 +1,188 @@
+import { Logger } from '@nestjs/common';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ManagedDbReconcilerService } from './managed-db-reconciler.service.js';
+
+// A tenant database accepts only its own logins, and each login has a
+// connection limit from its class, so one tenant can neither connect to
+// another's database nor use up the connections the platform shares.
+
+type FakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
+  unsafe: (text: string) => Promise<unknown[]>;
+  end: () => Promise<void>;
+  statements: string[];
+};
+
+function normalizeSql(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Logins and their current limit (-1 is "no limit"), as pg_roles would answer. */
+function createFakeSql(limits: Record<string, number> = {}): FakeSql {
+  const statements: string[] = [];
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = normalizeSql(strings.reduce((acc, part, index) => acc + part + (index < values.length ? `$${index + 1}` : ''), ''));
+    statements.push(text);
+    if (text.includes('rolconnlimit')) {
+      const login = String(values[0]);
+      return Promise.resolve(login in limits ? [{ rolconnlimit: limits[login] }] : []);
+    }
+    return Promise.resolve([]);
+  }) as FakeSql;
+  sql.unsafe = (text: string) => {
+    statements.push(normalizeSql(text));
+    return Promise.resolve([]);
+  };
+  sql.end = vi.fn().mockResolvedValue(undefined);
+  sql.statements = statements;
+  return sql;
+}
+
+const instance = {
+  id: 'mdbi_1',
+  provider: 'local',
+  provider_instance_id: 'local-system-postgres',
+  engine_version: '16',
+  host: 'db.internal',
+  port: 5432,
+  status: 'active',
+};
+
+const OWNER = 'acme-shop-test-u-1a2b3c';
+const DB = 'acme-shop-test-1a2b3c';
+
+function buildTenant(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'mdbt_1',
+    status: 'provisioning',
+    instance_id: instance.id,
+    db_name: DB,
+    db_user: OWNER,
+    class: 'db.p1',
+    desired_class: null,
+    provider_tenant_id: null,
+    credential_secret_ref: null,
+    snapshot_on_delete: false,
+    org_id: 'org_1',
+    project_id: 'proj_1',
+    env_id: 'env_1',
+    backup_retention: null,
+    desired_extensions: [],
+    enabled_extensions: [],
+    desired_roles: [],
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+function createService(tenants: Array<ReturnType<typeof buildTenant>>, overrides: Record<string, unknown> = {}) {
+  const mockDb = Object.assign(() => Promise.resolve([]), { json: vi.fn(), end: vi.fn() }) as unknown as import('@eve/db').Db;
+  const service = new ManagedDbReconcilerService(mockDb);
+  const managedDb = {
+    forceReleaseStaleOperationLocks: vi.fn().mockResolvedValue([]),
+    listTenantsNeedingReconciliation: vi.fn().mockResolvedValue(tenants),
+    findOrphanedTenants: vi.fn().mockResolvedValue([]),
+    acquireOperationLock: vi.fn().mockImplementation(async (id: string) => tenants.find((t) => t.id === id)),
+    releaseOperationLock: vi.fn().mockResolvedValue(true),
+    findInstanceById: vi.fn().mockResolvedValue(instance),
+    listInstances: vi.fn().mockResolvedValue([instance]),
+    listTenantsByInstance: vi.fn().mockResolvedValue(tenants),
+    transitionStatus: vi.fn().mockResolvedValue(tenants[0]),
+    markTenantExtensionsEnabled: vi.fn().mockResolvedValue(tenants[0]),
+    listTenantRoles: vi.fn().mockResolvedValue([]),
+    upsertTenantRole: vi.fn().mockImplementation(async (input: Record<string, unknown>) => ({ id: 'mdbr_new', ...input })),
+    updateTenantRoleGrants: vi.fn().mockResolvedValue(null),
+    deleteTenantRole: vi.fn().mockResolvedValue(true),
+    deleteTenantRoles: vi.fn().mockResolvedValue(0),
+    ...overrides,
+  };
+  Object.assign(service, { managedDb });
+  return { service, managedDb };
+}
+
+describe('ManagedDbReconcilerService tenant isolation', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, DATABASE_URL: 'postgres://eve:eve@localhost:5432/eve?sslmode=disable' };
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    vi.restoreAllMocks();
+  });
+
+  it('revokes public connect and limits the owner when it provisions a database', async () => {
+    const adminSql = createFakeSql({ [OWNER]: -1 });
+    const { service } = createService([buildTenant()]);
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.reconcile();
+
+    expect(adminSql.statements).toEqual(expect.arrayContaining([
+      `REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`,
+      `ALTER ROLE "${OWNER}" CONNECTION LIMIT 25`,
+    ]));
+    const revoke = adminSql.statements.indexOf(`REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`);
+    const create = adminSql.statements.findIndex((s) => s.startsWith(`CREATE DATABASE "${DB}"`));
+    expect(create).toBeGreaterThanOrEqual(0);
+    expect(revoke).toBeGreaterThan(create);
+  });
+
+  it('keeps a limit already set on a login', async () => {
+    const adminSql = createFakeSql({ [OWNER]: 40 });
+    const { service } = createService([buildTenant()]);
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.reconcile();
+
+    expect(adminSql.statements).toContain(`REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`);
+    expect(adminSql.statements.some((s) => s.startsWith(`ALTER ROLE "${OWNER}" CONNECTION LIMIT`))).toBe(false);
+  });
+
+  it('creates declared roles with the class connection limit', async () => {
+    const adminSql = createFakeSql({ [OWNER]: -1 });
+    const tenantSql = createFakeSql();
+    const { service } = createService([buildTenant({ class: 'db.p2', desired_roles: [{ name: 'app', grants: 'readwrite' }] })]);
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+    vi.spyOn(service as any, 'connectToTenantDb').mockReturnValue(tenantSql);
+
+    await service.reconcile();
+
+    expect(adminSql.statements).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^CREATE ROLE "${OWNER}-app" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 100 PASSWORD '[0-9a-f]{32}'$`)),
+      `ALTER ROLE "${OWNER}" CONNECTION LIMIT 100`,
+    ]));
+  });
+
+  it('isolates every ready tenant once when the reconciler starts', async () => {
+    process.env.EVE_MANAGED_DB_RECONCILER_ENABLED = 'true';
+    process.env.EVE_MANAGED_DB_RECONCILER_CRON = '0 0 1 1 *';
+    const ready = buildTenant({ status: 'ready' });
+    const other = buildTenant({ id: 'mdbt_2', status: 'ready', db_name: 'acme-lab-test-4d5e6f', db_user: 'acme-lab-test-u-4d5e6f' });
+    const gone = buildTenant({ id: 'mdbt_3', status: 'deleted', db_name: 'acme-old-test-7a8b9c', db_user: 'acme-old-test-u-7a8b9c' });
+    const adminSql = createFakeSql({ [OWNER]: -1, [`${OWNER}-app`]: -1, 'acme-lab-test-u-4d5e6f': 30 });
+    const { service } = createService([ready, other, gone], {
+      listTenantsNeedingReconciliation: vi.fn().mockResolvedValue([]),
+      listTenantRoles: vi.fn().mockImplementation(async (id: string) => (id === 'mdbt_1'
+        ? [{ id: 'mdbr_app', tenant_id: 'mdbt_1', name: 'app', grants: 'readwrite', db_user: `${OWNER}-app`, credential_secret_ref: null }]
+        : [])),
+    });
+    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+    await service.onModuleInit();
+    await (service as any).isolationBackfill;
+    await service.onModuleDestroy();
+
+    expect(adminSql.statements).toEqual(expect.arrayContaining([
+      `REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`,
+      `ALTER ROLE "${OWNER}" CONNECTION LIMIT 25`,
+      `ALTER ROLE "${OWNER}-app" CONNECTION LIMIT 25`,
+      `REVOKE CONNECT ON DATABASE "acme-lab-test-4d5e6f" FROM PUBLIC`,
+    ]));
+    expect(adminSql.statements.some((s) => s.includes('acme-lab-test-u-4d5e6f" CONNECTION LIMIT'))).toBe(false);
+    expect(adminSql.statements.some((s) => s.includes('acme-old-test'))).toBe(false);
+  });
+});
