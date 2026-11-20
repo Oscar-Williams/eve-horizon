@@ -182,6 +182,19 @@ manifest of the release being deployed (`release_id`, sent by the worker) or
 the env's current release; anything else requested is left out. The env must
 exist in the project, and the project in the org (404 otherwise).
 
+A service token (and an app-link token injected into a service) lives 90
+days. The worker renews it hourly once it expires within
+`EVE_SERVICE_TOKEN_RENEW_DAYS` (default 30, at most 60; `0` turns the hourly
+pass off), was signed by a key other than the API's current one
+(`GET /internal/auth/signing-key`), or was issued before the environment's
+`service_tokens_not_before`. It writes the new token into the service's
+Secret and the service's pods roll once. A value the manifest sets for
+`EVE_SERVICE_TOKEN` is never touched. The API refuses a service token issued
+before its environment's `service_tokens_not_before`, or one whose environment
+no longer exists (read at most once a minute per API replica).
+`eve env rotate-service-tokens <env>` (`envs:write`) sets that time to now and
+has the worker renew the environment at once.
+
 The key is a network-level credential, not a substitute for network policy:
 keep the worker, agent runtime and BuildKit reachable only from platform pods.
 
