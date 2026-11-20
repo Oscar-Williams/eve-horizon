@@ -103,8 +103,16 @@ runner pods and env pods reach. The hosts come from three places:
   only). See [manifest](manifest.md#x-eveegresshosts).
 - **The harnesses:** each harness adapter in
   `packages/shared/src/harnesses/adapters` declares the hosts its CLI needs
-  (`egressHosts`). Every runner policy carries all of them, since a job may
-  name any harness:
+  (`egressHosts`). A project's runner policies carry those of the harnesses
+  it can run: the harnesses its harness profiles name
+  (`x-eve.agents.profiles`, every target, fallbacks included; the agents
+  config's, else the synced manifest's), else, with no profile, the
+  harnesses its project, org and instance secrets are credentials for
+  (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` for Claude,
+  `OPENAI_API_KEY` or a Codex sign-in for Codex, and so on; `pi` counts
+  only through the profile, its hosts being its providers'). A job that
+  names another harness gets no route to its API under `strict`: declare a
+  profile for it. Each harness's hosts:
 
   | Harness | Hosts |
   |---|---|
@@ -119,8 +127,12 @@ runner pods and env pods reach. The hosts come from three places:
 - **The repository:** runners also reach the git host of the project's
   `repo_url` (HTTPS on 443, `ssh://` on its port, `git@host:` on 22).
 
-Env pods get the manifest lists only; runner pods get the project list, the
-harness hosts and the git host.
+Env pods get the manifest lists only (from the release the env runs);
+runner pods get the project list, the harness hosts and the git host. The
+runner list comes from the manifest of the project's last explicit
+`eve project sync` or deploy (`project_manifests.synced_at`), never from a
+manifest the pipeline's drift check stored from a built ref, whose contents
+job code controls.
 
 ### Providers
 
@@ -154,9 +166,26 @@ harness hosts and the git host.
 The rule is rule set 3: a profile stamped before it runs it as `audit`, and
 under rule set 3 `strict` makes `egress.default_deny` strict too.
 
-Dispatch writes a project's runner FQDN policies when their names differ
-from what its manifest, harnesses and repository want (a first job, a
-changed list), before the pod starts.
+Order and failures: a deploy, dispatch or reconcile writes the
+NetworkPolicies first (in every runner namespace), then the FQDN policies.
+A failed FQDN write (the CRD missing, the feature off, a refusal) never
+leaves an older, wider NetworkPolicy behind:
+
+- under `strict` it fails the deploy, and a job of the project is refused
+  ("The runner egress policies of project ... could not be written, so the
+  strict profile refuses the job"); until the hosts are written the
+  project's pods have no internet at all. A job is refused the same way
+  under a strict `egress.default_deny` whenever its runner NetworkPolicies
+  cannot be written.
+- under `audit` it is logged and recorded (`reason: fqdn_write_failed`),
+  and blocks nothing.
+
+Dispatch writes a project's runner policies when what a runner namespace
+holds differs from what its profiles, manifest, harnesses, repository, envs
+and app links want: FQDN policies by name (a name is a hash of the host and
+port), runner NetworkPolicies by name and content (each carries
+`eve.horizon/spec-hash`, a hash of its spec, so an `egress.allow_hosts` move
+from `audit` to `strict` takes effect at the next job).
 
 ### Leaks
 
@@ -166,6 +195,17 @@ changed list), before the pod starts.
   name opens the CDN's other customers.
 - **DNS:** lookups succeed for any name, so a pod can still leak data in
   DNS queries to a name server it does not control.
+- **Names that move:** the API resolves each declared name at sync and
+  refuses one that points at a private, CGNAT, link-local or loopback
+  address or into `network.private_cidrs`, and refuses names under wildcard
+  DNS services. GKE resolves the names again on its own schedule, so a name
+  whose owner later points it inside the network opens that address. Test
+  this on the cluster (a name moved to a private address after sync) before
+  setting `EVE_EGRESS_FQDN_PROVIDER=gke`.
+- **Model APIs:** an allowed model API (and the git host) accepts any
+  account's key, so job code can still send data out through it under a key
+  of its own. Only the harnesses a project can run are allowed, which keeps
+  that to the providers it already uses.
 - **The ingress controller:** calls to any public host of this instance
   still reach the ingress controller, as under `egress.default_deny`.
 
@@ -194,9 +234,15 @@ neither sync deletes the other's.
 
 - the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
   `kube-system`), for the env's hosts;
-- the platform's own services in the platform namespace (`eve-api` fetches
-  app API specs and proxies app calls), but no runner pod there (pods
-  without `eve.horizon/runner`);
+- the API in the platform namespace (`app.kubernetes.io/name: eve-api`),
+  which fetches app API specs, delivers webhooks to private targets and runs
+  `eve db` queries. No other pod there: the worker, orchestrator and gateway
+  reach apps only through the Kubernetes API, and tenant code runs in the
+  platform namespace too (agent runtime inline jobs, the shared buildkitd,
+  kaniko Jobs, legacy pipeline steps in the worker). Only the template's
+  workloads carry that label there; the worker's admission policy refuses a
+  pod or pod template of its own in the platform namespace that sets
+  `app.kubernetes.io/name` or `app`;
 - the project's own env namespaces, this one included;
 - the project's runner pods (`eve.horizon/runner=true` and its
   `eve.horizon/project-id`, in `eve-runners` and the platform namespace);
@@ -250,8 +296,8 @@ eve system settings set network.private_cidrs "198.18.0.0/15"
 
 - **The worker's rights:** the worker manages NetworkPolicies through
   `eve-worker-tenant`, bound in the namespaces it manages and statically in
-  the platform and runner namespaces (see
-  [deployment](deployment.md#worker-rights)). Hold its writes in the
+  the runner namespace, and through its Role `eve-worker` in the platform
+  namespace (see [deployment](deployment.md#worker-rights)). Hold its writes in the
   platform and runner namespaces to `eve-runner-<project>` policies with an
   admission policy:
   name prefix `eve-runner-`, not `eve-runner-deny` or `eve-runner-ingress`,

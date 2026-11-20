@@ -38,7 +38,11 @@ vi.mock('@eve/db', async (importOriginal) => ({
         .filter((s) => (options.consumer_project_id ? s.consumer_project_id === options.consumer_project_id : true))
         .filter((s) => (options.producer_project_id ? s.api_grant?.producer_project_id === options.producer_project_id : true)),
   }),
-  projectManifestQueries: () => ({ findLatestByProject: async () => null, findByProjectAndHash: async () => null }),
+  projectManifestQueries: () => ({
+    findLatestByProject: async () => null,
+    findLatestSyncedByProject: async () => null,
+    findByProjectAndHash: async () => null,
+  }),
   securityQueries: () => ({
     listProjectProfiles: async () => [...db.projects.values()].map((p) => ({ id: p.id, slug: p.slug, org_id: p.org_id })),
   }),

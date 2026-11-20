@@ -34,6 +34,14 @@ describe('ensureRunnerEgress', () => {
     warn.mockRestore();
   });
 
+  it("refuses the job when a strict project's runner policies could not be written", async () => {
+    const failure = Object.assign(new Error('the runner egress policies of project proj_shop could not be written: forbidden'), {
+      name: 'RunnerEgressSyncError',
+    });
+    registerRunnerEgress({ ensureRunnersForDispatch: vi.fn(async () => { throw failure; }) });
+    await expect(ensureRunnerEgress('proj_shop')).resolves.toBe(failure.message);
+  });
+
   it('refuses the job when egress.allow_hosts is strict with no provider', async () => {
     registerRunnerEgress({ ensureRunnersForDispatch: vi.fn(async () => { throw new EgressProviderMissingError(); }) });
     await expect(ensureRunnerEgress('proj_shop')).resolves

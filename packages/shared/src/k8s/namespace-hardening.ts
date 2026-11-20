@@ -158,29 +158,99 @@ export const POD_SECURITY_ADMISSION_RULE = 'isolation.pod_security_admission';
 
 const PSA = 'pod-security.kubernetes.io';
 
+/** On a namespace where Eve set `enforce` (value: the level), so only Eve's is ever removed. */
+export const POD_SECURITY_ENFORCE_ANNOTATION = 'eve.horizon/pod-security-enforce';
+
 /**
- * The Pod Security labels an env namespace should carry, as a merge patch
- * (null removes a label). `level` is the namespace's level from the render:
- * `restricted`, or `baseline` once a service opts out (isolation.pod_security).
- * - `strict`: `enforce` at that level (version `latest`), with `warn` and `audit`.
- * - `audit`: `warn` and `audit` only.
- * - `legacy`: nothing set.
- * Eve owns `enforce` on env namespaces: under `audit` and `legacy` an
- * `enforce` a strict profile left is removed, so dropping the profile never
- * keeps refusing pods.
+ * The Pod Security Standards version `enforce` is pinned to when
+ * `EVE_POD_SECURITY_VERSION` is not set: the oldest Kubernetes minor Eve's
+ * admission policies support. Pinned, not `latest`, so a cluster upgrade
+ * never tightens the checks on running namespaces; set the variable to the
+ * cluster's minor to follow it.
  */
-export function podSecurityAdmissionLabels(
-  profile: 'legacy' | 'audit' | 'strict',
-  level: 'restricted' | 'baseline' = 'restricted',
-): Record<string, string | null> {
-  if (profile === 'strict') {
-    return {
-      [`${PSA}/enforce`]: level,
-      [`${PSA}/enforce-version`]: 'latest',
-      [`${PSA}/warn`]: level,
-      [`${PSA}/audit`]: level,
-    };
+export const DEFAULT_POD_SECURITY_VERSION = 'v1.30';
+
+/** `EVE_POD_SECURITY_VERSION` when it is `v1.<minor>`, else the default. */
+export function podSecurityVersion(value: string | null | undefined = process.env.EVE_POD_SECURITY_VERSION): string {
+  const trimmed = value?.trim() ?? '';
+  return /^v1\.\d{1,3}$/.test(trimmed) ? trimmed : DEFAULT_POD_SECURITY_VERSION;
+}
+
+export type PodSecurityAdmissionLevel = 'restricted' | 'baseline';
+
+export interface NamespaceMetadata {
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+}
+
+/** A merge patch of a namespace's labels and annotations (null removes). */
+export interface NamespaceMetadataPatch {
+  labels: Record<string, string | null>;
+  annotations: Record<string, string | null>;
+}
+
+const RANK: Record<string, number> = { privileged: 0, baseline: 1, restricted: 2 };
+
+/**
+ * isolation.pod_security_admission: what an env namespace's Pod Security
+ * labels need at one point of a deploy, as a patch holding only what differs
+ * from `current`. `level` is the namespace's level from the render: the
+ * least of every service's, service jobs included (`baseline` once one opts
+ * out).
+ *
+ * - `before` the workloads: `warn` and `audit` at the level under `strict`
+ *   and `audit`. Under `strict` an `enforce` Eve set that is stricter than
+ *   the level is lowered to it now (the release's pods would be refused);
+ *   it is never raised or added here. Under `audit` and `legacy` an
+ *   `enforce` Eve set (marked by POD_SECURITY_ENFORCE_ANNOTATION) goes, with
+ *   its version and mark; one Eve did not set stays.
+ * - `after` a rollout that succeeded: under `strict`, `enforce` at the
+ *   level, pinned to `version`, marked as Eve's. Raising enforce only then
+ *   keeps pods of the old release that do not meet it from being refused
+ *   when a node is replaced. Nothing under `audit` and `legacy`.
+ */
+export function podSecurityAdmissionPatch(input: {
+  profile: 'legacy' | 'audit' | 'strict';
+  level: PodSecurityAdmissionLevel;
+  phase: 'before' | 'after';
+  current: NamespaceMetadata;
+  version?: string;
+}): NamespaceMetadataPatch {
+  const { profile, level, phase, current } = input;
+  const version = input.version ?? podSecurityVersion();
+  const labels: Record<string, string | null> = {};
+  const annotations: Record<string, string | null> = {};
+  const evesEnforce = POD_SECURITY_ENFORCE_ANNOTATION in current.annotations;
+
+  if (phase === 'after') {
+    if (profile === 'strict') {
+      Object.assign(labels, {
+        [`${PSA}/enforce`]: level,
+        [`${PSA}/enforce-version`]: version,
+        [`${PSA}/warn`]: level,
+        [`${PSA}/audit`]: level,
+      });
+      annotations[POD_SECURITY_ENFORCE_ANNOTATION] = level;
+    }
+  } else if (profile === 'strict') {
+    Object.assign(labels, { [`${PSA}/warn`]: level, [`${PSA}/audit`]: level });
+    const enforced = current.labels[`${PSA}/enforce`];
+    if (evesEnforce && enforced !== undefined && (RANK[enforced] ?? 0) > RANK[level]) {
+      labels[`${PSA}/enforce`] = level;
+      annotations[POD_SECURITY_ENFORCE_ANNOTATION] = level;
+    }
+  } else {
+    if (profile === 'audit') Object.assign(labels, { [`${PSA}/warn`]: level, [`${PSA}/audit`]: level });
+    if (evesEnforce) {
+      Object.assign(labels, { [`${PSA}/enforce`]: null, [`${PSA}/enforce-version`]: null });
+      annotations[POD_SECURITY_ENFORCE_ANNOTATION] = null;
+    }
   }
-  const drop = { [`${PSA}/enforce`]: null, [`${PSA}/enforce-version`]: null };
-  return profile === 'audit' ? { ...drop, [`${PSA}/warn`]: level, [`${PSA}/audit`]: level } : drop;
+
+  const differs = (have: Record<string, string>) => ([key, value]: [string, string | null]) =>
+    (value === null ? key in have : have[key] !== value);
+  return {
+    labels: Object.fromEntries(Object.entries(labels).filter(differs(current.labels))),
+    annotations: Object.fromEntries(Object.entries(annotations).filter(differs(current.annotations))),
+  };
 }

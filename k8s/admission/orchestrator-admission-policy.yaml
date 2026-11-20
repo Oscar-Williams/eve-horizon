@@ -1,0 +1,45 @@
+# The orchestrator's guard (0.1.328). Its only write is the env health
+# watchdog's circuit breaker: scaling a failing app Deployment to zero. Its
+# ClusterRole grants patch on deployments/scale alone (cluster-wide, since env
+# namespaces come and go); this holds that to scaling to zero replicas in
+# namespaces the worker manages (eve.horizon/managed=true), so the account
+# cannot scale the platform's or the cluster's own Deployments, or scale an
+# app up. Needs ValidatingAdmissionPolicy (GA in Kubernetes 1.30).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eve-orchestrator-scale-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["*/*"]
+  matchConditions:
+    - name: the-orchestrator
+      expression: "request.userInfo.username == 'system:serviceaccount:eve:eve-orchestrator'"
+  variables:
+    - name: hostLabels
+      expression: >-
+        namespaceObject != null && has(namespaceObject.metadata.labels) ? namespaceObject.metadata.labels : {}
+  validations:
+    - expression: >-
+        request.resource.group == 'apps' && request.resource.resource == 'deployments' &&
+        has(request.subResource) && request.subResource == 'scale' && request.operation == 'UPDATE'
+      message: "The Eve orchestrator writes nothing but the scale of a Deployment"
+    - expression: "'eve.horizon/managed' in variables.hostLabels && variables.hostLabels['eve.horizon/managed'] == 'true'"
+      message: "The Eve orchestrator scales Deployments only in namespaces labelled eve.horizon/managed=true"
+    # A Scale's replicas is omitted when it is zero.
+    - expression: >-
+        object != null && (!has(object.spec) || !has(object.spec.replicas) || object.spec.replicas == 0)
+      message: "The Eve orchestrator scales a Deployment only to zero (the circuit breaker)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eve-orchestrator-scale-guard
+spec:
+  policyName: eve-orchestrator-scale-guard
+  validationActions: [Deny]

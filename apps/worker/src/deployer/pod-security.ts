@@ -93,10 +93,7 @@ export function planPodSecurity(input: {
     ...(uid !== undefined ? { runAsUser: uid } : {}),
     ...(gid !== undefined ? { runAsGroup: gid } : {}),
   };
-  // Restricted allows adding back NET_BIND_SERVICE only, and no root user.
-  const level: PodSecurityLevel = runAsRoot || capabilities.some((cap) => cap !== 'NET_BIND_SERVICE')
-    ? 'baseline'
-    : 'restricted';
+  const level = podSecurityLevelOf(security);
 
   const wouldAdd = [
     'seccomp_runtime_default',
@@ -130,6 +127,16 @@ export function planPodSecurity(input: {
       strict_blocker: blocker,
     },
   };
+}
+
+/**
+ * The Pod Security Standard a service's pod meets under strict, from its
+ * `x-eve.security` alone: restricted allows adding back NET_BIND_SERVICE
+ * only, and no root user.
+ */
+export function podSecurityLevelOf(security: ServiceSecurity | undefined): PodSecurityLevel {
+  const runAsRoot = security?.run_as_root === true;
+  return runAsRoot || (security?.capabilities ?? []).some((cap) => cap !== 'NET_BIND_SERVICE') ? 'baseline' : 'restricted';
 }
 
 /** Whether strict needs the image's user: the manifest does not settle it. */

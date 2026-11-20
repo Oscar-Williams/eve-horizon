@@ -61,7 +61,10 @@ function deployerFor() {
     },
     projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_shop', org_id: 'org_acme', slug: 'shop', repo_url: null }) },
     orgs: { findById: vi.fn().mockResolvedValue({ id: 'org_acme', slug: 'acme' }) },
-    manifests: { findByProjectAndHash: vi.fn().mockResolvedValue({ manifest_yaml: MANIFEST }) },
+    manifests: {
+      findByProjectAndHash: vi.fn().mockResolvedValue({ id: 'man_1', manifest_yaml: MANIFEST }),
+      markSynced: vi.fn(async () => { order.push('synced'); }),
+    },
     ensureImagePullSecret: vi.fn().mockResolvedValue(null),
     renderManifest: vi.fn(async () => {
       order.push('render');
@@ -99,7 +102,17 @@ describe('deploy: egress.allow_hosts', () => {
       'strict',
       { allowHosts: 'strict', manifest: expect.objectContaining({ 'x-eve': { egress: { hosts: ['api.example.com'] } } }) },
     );
-    expect(order).toEqual(['render', 'env:strict', 'runners:strict', 'workloads']);
+    expect(order.filter((step) => step !== 'synced')).toEqual(['render', 'env:strict', 'runners:strict', 'workloads']);
+  });
+
+  it("marks the release's manifest as the project's last explicit sync or deploy before the runner policies", async () => {
+    vi.stubEnv('EVE_EGRESS_FQDN_PROVIDER', 'gke');
+    mocks.profiles = { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'strict' };
+    const { deployer, order } = deployerFor();
+    await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
+    expect((deployer as any).manifests.markSynced).toHaveBeenCalledWith('man_1');
+    expect(order.indexOf('synced')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('synced')).toBeLessThan(order.indexOf('runners:strict'));
   });
 
   it('under audit with no provider deploys as before', async () => {

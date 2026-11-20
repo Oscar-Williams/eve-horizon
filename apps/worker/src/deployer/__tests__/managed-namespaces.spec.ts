@@ -147,10 +147,10 @@ describe('start-up reconcile of env namespaces from earlier releases', () => {
   }
 
   it('labels and binds each env namespace it can match to an environment row, once', async () => {
-    db.envs.set('env_staging', { id: 'env_staging', project_id: 'proj_shop', name: 'staging', namespace: 'shop-staging-custom', status: 'active' });
+    db.envs.set('env_staging', { id: 'env_staging', project_id: 'proj_shop', name: 'staging', namespace: 'eve-acme-shop-custom', status: 'active' });
     const c = cluster([
       { name: 'eve-acme-shop-prod', labels: ENV_LABELS },
-      { name: 'shop-staging-custom', labels: { ...ENV_LABELS, 'eve.env_id': 'env_staging' } },
+      { name: 'eve-acme-shop-custom', labels: { ...ENV_LABELS, 'eve.env_id': 'env_staging' } },
       // A row that no longer exists, and a label pointing at another env's namespace.
       { name: 'eve-acme-shop-old', labels: { ...ENV_LABELS, 'eve.env_id': 'env_gone' } },
       { name: 'eve-acme-other', labels: { ...ENV_LABELS } },
@@ -160,7 +160,7 @@ describe('start-up reconcile of env namespaces from earlier releases', () => {
 
     const report = await reconciler.reconcile();
     expect(c.writes.sort()).toEqual([
-      'bind:eve-acme-shop-prod', 'bind:shop-staging-custom', 'label:eve-acme-shop-prod', 'label:shop-staging-custom',
+      'bind:eve-acme-shop-custom', 'bind:eve-acme-shop-prod', 'label:eve-acme-shop-custom', 'label:eve-acme-shop-prod',
     ]);
     expect(c.store.get('eve-acme-shop-prod')!.labels['eve.horizon/managed']).toBe('true');
     expect(c.store.get('eve-acme-shop-old')!.labels['eve.horizon/managed']).toBeUndefined();
@@ -182,6 +182,21 @@ describe('start-up reconcile of env namespaces from earlier releases', () => {
     c.writes.length = 0;
     await reconciler.reconcile();
     expect(c.writes).toEqual(['bind:eve-acme-shop-prod']);
+  });
+
+  it("leaves alone a namespace outside the project's prefix, even when a live environment row names it", async () => {
+    // A stored namespace from before the prefix rule, or a row pointing at
+    // a namespace another tenant or the platform owns: never adopted.
+    db.envs.set('env_staging', { id: 'env_staging', project_id: 'proj_shop', name: 'staging', namespace: 'shop-staging-custom', status: 'active' });
+    db.envs.set('env_other', { id: 'env_other', project_id: 'proj_shop', name: 'other', namespace: 'eve-acme-shopfront-prod', status: 'active' });
+    const c = cluster([
+      { name: 'shop-staging-custom', labels: { ...ENV_LABELS, 'eve.env_id': 'env_staging' } },
+      { name: 'eve-acme-shopfront-prod', labels: { ...ENV_LABELS, 'eve.env_id': 'env_other' } },
+    ]);
+    const reconciler = await reconcilerFor(c.api);
+    const report = await reconciler.reconcile();
+    expect(c.writes).toEqual([]);
+    expect(report).toMatchObject({ labelled: 0, bound: 0, unmatched: 2 });
   });
 
   it('skips a terminated environment and goes on after a failure', async () => {

@@ -163,6 +163,16 @@ describe('isolation.pod_security under strict', () => {
     expect(result.podSecurityLevel).toBe('baseline');
   });
 
+  it('counts service jobs in the namespace level: a migrate job that runs as root makes it baseline', async () => {
+    // The job pod starts later in the same namespace; an enforce at
+    // restricted would refuse it.
+    const { result } = await render({
+      web: { image: 'web:1', ports: ['8080'] },
+      migrate: { image: 'web:1', 'x-eve': { role: 'job', security: { run_as_root: true } } },
+    });
+    expect(result.podSecurityLevel).toBe('baseline');
+  });
+
   it('keeps the namespace restricted when every service fits it', async () => {
     const { result } = await render({
       web: { image: 'web:1', ports: ['8080'], 'x-eve': { security: { capabilities: ['NET_BIND_SERVICE'] } } },

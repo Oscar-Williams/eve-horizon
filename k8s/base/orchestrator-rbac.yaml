@@ -17,13 +17,22 @@ rules:
     verbs:
       - get
       - list
+  # The env health watchdog's circuit breaker: find a failing pod's
+  # Deployment through its ReplicaSet and scale it to zero. Reads, and the
+  # scale subresource alone; k8s/admission holds that to zero replicas in
+  # managed namespaces (eve-orchestrator-scale-guard).
   - apiGroups: ["apps"]
     resources:
       - deployments
       - deployments/scale
+      - replicasets
     verbs:
       - get
       - list
+  - apiGroups: ["apps"]
+    resources:
+      - deployments/scale
+    verbs:
       - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -728,6 +728,10 @@ run_deploy() {
   eh_kubectl_local -n eve rollout status deployment/eve-api --timeout=120s
   eh_kubectl_local -n eve rollout status deployment/eve-orchestrator --timeout=120s
   eh_kubectl_local -n eve rollout status deployment/eve-worker --timeout=120s
+  # The admission policies go on once the worker has run its start-up
+  # reconcile (it labels and binds env namespaces of earlier releases).
+  echo "Applying the admission policies (k8s/admission)..."
+  kubectl_mutate_local apply -k "$REPO_ROOT/k8s/admission"
   eh_kubectl_local -n eve rollout status deployment/eve-dashboard --timeout=120s
   eh_kubectl_local -n eve rollout status deployment/eve-sso --timeout=120s
   eh_kubectl_local -n eve rollout status statefulset/eve-agent-runtime --timeout=180s

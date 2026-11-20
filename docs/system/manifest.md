@@ -680,10 +680,17 @@ services:
   (use the object form), a bare `*`, a `*` anywhere but the first label, a
   pattern over a top-level domain (`*.com`), IP addresses, single-label
   names and cluster names (`*.svc`, `*.cluster.local`, `*.internal`:
-  in-cluster peers need no entry).
+  in-cluster peers need no entry), and names or patterns under wildcard DNS
+  services (`nip.io`, `sslip.io`, `xip.io`, `localtest.me`).
+- Also refused at sync: a name that resolves to an address outside the
+  public internet (private, CGNAT, link-local, loopback, other reserved
+  ranges, or the instance's `network.private_cidrs`). Each name is resolved
+  once at sync; one that does not resolve yet passes, and DNS can change
+  later, so this stops mistakes, not the owner of a name's DNS. Patterns are
+  not resolved.
 - At most 50 entries per list.
-- Runners also reach their harnesses' model APIs and the repository's git
-  host without an entry; apps do not.
+- Runners also reach the model APIs of the harnesses the project can run and
+  the repository's git host without an entry; apps do not.
 - Under `legacy` and `audit` nothing is blocked. Under `audit`, with the GKE
   provider, Eve writes the policies so they can be reviewed, and a project
   with no hosts is recorded.

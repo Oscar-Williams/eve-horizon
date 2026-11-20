@@ -9,6 +9,12 @@ export interface ProjectManifest {
   branch: string | null;
   parsed_defaults: Record<string, unknown> | null;
   parsed_agents: Record<string, unknown> | null;
+  /**
+   * When an explicit `eve project sync` or a deploy last used this row; null
+   * for a row only the pipeline's drift check stored. Runner egress allow
+   * lists read the latest row by this, never by updated_at.
+   */
+  synced_at?: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -68,6 +74,32 @@ export function projectManifestQueries(db: Db) {
         WHERE project_id = ${projectId}
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 1
+      `;
+      return row ?? null;
+    },
+
+    /**
+     * The manifest of the project's last explicit sync or deploy (synced_at),
+     * or null when it has none. Unlike findLatestByProject, a manifest the
+     * pipeline's drift check stored from a built ref never counts.
+     */
+    async findLatestSyncedByProject(projectId: string): Promise<ProjectManifest | null> {
+      const [row] = await db<ProjectManifest[]>`
+        SELECT * FROM project_manifests
+        WHERE project_id = ${projectId} AND synced_at IS NOT NULL
+        ORDER BY synced_at DESC, updated_at DESC
+        LIMIT 1
+      `;
+      return row ?? null;
+    },
+
+    /** Record an explicit sync or a deploy of this manifest (synced_at = now). */
+    async markSynced(id: string): Promise<ProjectManifest | null> {
+      const [row] = await db<ProjectManifest[]>`
+        UPDATE project_manifests
+        SET synced_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
       `;
       return row ?? null;
     },

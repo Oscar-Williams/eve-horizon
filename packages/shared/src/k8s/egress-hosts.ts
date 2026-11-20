@@ -13,7 +13,11 @@
  * Refused: schemes, paths, ports inside the string, a bare `*`, wildcards
  * anywhere but the first label or over a single label (`*.com`), IP
  * addresses (an FQDN policy matches names), single-label and cluster service
- * names (in-cluster peers are allowed by the NetworkPolicies).
+ * names (in-cluster peers are allowed by the NetworkPolicies), and names or
+ * patterns under wildcard DNS services (`nip.io` and the like answer any
+ * name with the address it spells, private ones included). At sync the API
+ * also resolves each exact name once and refuses one that points at a
+ * private address (egress-host-addresses.ts).
  */
 
 /** At most this many entries in one list (GKE resolves at most 50 addresses per policy). */
@@ -32,6 +36,8 @@ export type EgressHostEntry = string | { name?: string; pattern?: string; port?:
 
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const CLUSTER_SUFFIXES = ['.cluster.local', '.svc', '.local', '.localhost', '.internal'];
+/** Public wildcard DNS services: any name under them resolves to the address it spells. */
+export const WILDCARD_DNS_DOMAINS: readonly string[] = ['nip.io', 'sslip.io', 'xip.io', 'localtest.me'];
 
 function nameProblem(name: string): string | null {
   if (name.length > 253) return 'is longer than 253 characters';
@@ -49,6 +55,8 @@ function nameProblem(name: string): string | null {
   if (CLUSTER_SUFFIXES.some((suffix) => name.endsWith(suffix))) {
     return 'is a cluster or local name; in-cluster peers need no allow list entry';
   }
+  const wildcard = WILDCARD_DNS_DOMAINS.find((domain) => name === domain || name.endsWith(`.${domain}`));
+  if (wildcard) return `is under ${wildcard}, a wildcard DNS service that answers any name with the address it spells`;
   return null;
 }
 

@@ -16,7 +16,13 @@ const db = vi.hoisted(() => ({
   orgs: new Map<string, { id: string; slug: string }>(),
   envs: [] as Array<Record<string, any>>,
   manifests: new Map<string, string>(),
+  /** The manifest of each project's last explicit sync or deploy (the drift check never sets it). */
+  syncedManifests: new Map<string, string>(),
   releaseManifests: new Map<string, string>(),
+  /** The agents config's x-eve per project (harness profiles live there). */
+  agentConfigs: new Map<string, string>(),
+  /** Secret names per `scope:id` (project, org, system). */
+  secretKeys: new Map<string, string[]>(),
 }));
 
 const profileOf = (projectId: string, rule: string) => db.profiles.get(projectId)?.[rule] ?? 'legacy';
@@ -46,10 +52,19 @@ vi.mock('@eve/db', async (importOriginal) => ({
   projectManifestQueries: () => ({
     findLatestByProject: async (projectId: string) =>
       (db.manifests.has(projectId) ? { manifest_yaml: db.manifests.get(projectId) } : null),
+    findLatestSyncedByProject: async (projectId: string) =>
+      (db.syncedManifests.has(projectId) ? { manifest_yaml: db.syncedManifests.get(projectId) } : null),
     findByProjectAndHash: async (_projectId: string, hash: string) => {
       const id = hash.replace(/^hash-/, '');
       return db.releaseManifests.has(id) ? { manifest_yaml: db.releaseManifests.get(id) } : null;
     },
+  }),
+  agentConfigQueries: () => ({
+    findLatestByProject: async (projectId: string) =>
+      (db.agentConfigs.has(projectId) ? { x_eve_yaml: db.agentConfigs.get(projectId) } : null),
+  }),
+  secretQueries: () => ({
+    listKeysByScope: async (scopeType: string, scopeId: string) => db.secretKeys.get(`${scopeType}:${scopeId}`) ?? [],
   }),
   securityQueries: () => ({
     listProjectProfiles: async (scope: { projectId?: string }) =>
@@ -146,7 +161,10 @@ beforeEach(() => {
   db.orgs = new Map([['org_acme', { id: 'org_acme', slug: 'acme' }]]);
   db.envs = [{ id: 'env_prod', project_id: SHOP, name: 'prod', namespace: null, status: 'active', last_applied_release_id: 'rel_1', current_release_id: 'rel_1' }];
   db.manifests = new Map([[SHOP, MANIFEST]]);
+  db.syncedManifests = new Map([[SHOP, MANIFEST]]);
   db.releaseManifests = new Map([['rel_1', MANIFEST]]);
+  db.agentConfigs = new Map([[SHOP, 'agents:\n  profiles:\n    primary:\n      - harness: claude\n']]);
+  db.secretKeys = new Map();
 });
 
 const strict = () => db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'strict' });
@@ -184,7 +202,7 @@ describe('provider none', () => {
 describe('provider gke', () => {
   beforeEach(() => { vi.stubEnv('EVE_EGRESS_FQDN_PROVIDER', 'gke'); });
 
-  it('under strict writes one FQDN policy per host before removing the internet rule from the env namespace', async () => {
+  it('under strict writes the NetworkPolicies first, then one FQDN policy per host', async () => {
     strict();
     const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
     await egressFor(cluster).applyEnv(PROD);
@@ -197,9 +215,77 @@ describe('provider gke', () => {
     });
     expect(cluster.npNames(NS)).toEqual(['eve-egress', 'eve-egress-metadata']);
     expect(hasInternet(cluster.np(NS, 'eve-egress'))).toBe(false);
-    const lastFqdn = Math.max(...cluster.log.map((entry, i) => (entry.startsWith('fqdn:apply') ? i : -1)));
+    // A failed FQDN write must never leave an older, wider NetworkPolicy in place.
+    const firstFqdn = cluster.log.findIndex((entry) => entry.startsWith('fqdn:apply'));
     const egressWrite = cluster.log.indexOf(`np:apply:${NS}/eve-egress`);
-    expect(lastFqdn).toBeLessThan(egressWrite);
+    expect(egressWrite).toBeGreaterThanOrEqual(0);
+    expect(egressWrite).toBeLessThan(firstFqdn);
+  });
+
+  it('under audit (a rule set 2 stamp beside a strict default deny) a failed FQDN write is recorded and blocks nothing', async () => {
+    db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'audit' });
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const missingCrd = Object.assign(new Error('the server could not find the requested resource'), { statusCode: 404 });
+    cluster.api.applyFqdnNetworkPolicy.mockRejectedValue(missingCrd);
+    const egress = egressFor(cluster);
+
+    await expect(egress.applyEnv(PROD)).resolves.toBeDefined();
+    expect(cluster.npNames(NS)).toEqual(['eve-egress', 'eve-egress-metadata']);
+    await expect(egress.applyRunners(SHOP)).resolves.toBeDefined();
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBeDefined();
+    expect(cluster.npNames('eve-runners')).toEqual([expect.stringMatching(/^eve-runner-/)]);
+    expect(db.findings).toEqual(expect.arrayContaining([expect.objectContaining({
+      rule: 'egress.allow_hosts',
+      detail: expect.objectContaining({ reason: 'fqdn_write_failed', scope: 'env', env: 'prod' }),
+    }), expect.objectContaining({
+      rule: 'egress.allow_hosts',
+      detail: expect.objectContaining({ reason: 'fqdn_write_failed', scope: 'runner' }),
+    })]));
+  });
+
+  it('under strict a failed FQDN write leaves the runners no internet rule and refuses the job', async () => {
+    audit();
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    expect(cluster.npNames('eve-runners').some((name) => name.endsWith('-audit'))).toBe(true);
+
+    strict();
+    cluster.api.applyFqdnNetworkPolicy.mockRejectedValue(new Error('admission webhook denied the request'));
+    const refusal = await egress.ensureRunnersForDispatch(SHOP).then(() => null, (error: Error) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal!.name).toBe('RunnerEgressSyncError');
+    expect(refusal!.message).toMatch(/proj_shop/);
+    expect(refusal!.message).toMatch(/admission webhook denied the request/);
+    for (const namespace of ['eve-runners', 'eve']) {
+      expect(cluster.npNames(namespace).some((name) => name.endsWith('-audit'))).toBe(false);
+      for (const name of cluster.npNames(namespace)) expect(hasInternet(cluster.np(namespace, name))).toBe(false);
+    }
+  });
+
+  it('under strict refuses the job when the runner NetworkPolicies cannot be written', async () => {
+    strict();
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    cluster.api.applyNetworkPolicy.mockRejectedValue(new Error('networkpolicies is forbidden'));
+    const refusal = await egressFor(cluster).ensureRunnersForDispatch(SHOP).then(() => null, (error: Error) => error);
+    expect(refusal?.name).toBe('RunnerEgressSyncError');
+    expect(refusal?.message).toMatch(/networkpolicies is forbidden/);
+  });
+
+  it('at dispatch rewrites a runner policy whose content changed under the same name (egress.allow_hosts audit to strict)', async () => {
+    db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'audit' });
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
+    const [name] = cluster.npNames('eve-runners');
+    expect(hasInternet(cluster.np('eve-runners', name))).toBe(true);
+
+    strict();
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
+    expect(cluster.npNames('eve-runners')).toEqual([name]);
+    expect(hasInternet(cluster.np('eve-runners', name))).toBe(false);
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
   });
 
   it('takes the hosts of the manifest passed at deploy over the stored release', async () => {
@@ -209,8 +295,10 @@ describe('provider gke', () => {
     expect(cluster.fqdnHosts(NS)).toEqual(['hooks.example.com:443']);
   });
 
-  it('writes runner policies from the project list, every harness host and the git host, selecting the project label', async () => {
+  it('writes runner policies from the project list, the hosts of the harnesses its profiles name and the git host, selecting the project label', async () => {
     strict();
+    // A fallback target counts too.
+    db.agentConfigs.set(SHOP, 'agents:\n  profiles:\n    primary:\n      - harness: claude\n      - harness: codex\n');
     const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
     await egressFor(cluster).applyRunners(SHOP);
 
@@ -220,12 +308,77 @@ describe('provider gke', () => {
         'api.example.com:443', '*.cdn.example.com:443', 'github.com:443', 'api.anthropic.com:443', 'api.openai.com:443',
       ]));
       expect(listed).not.toContain('smtp.example.com:587');
+      // Harnesses the project cannot run add nothing: each allowed model API
+      // can carry data out under a key the job code brings.
+      expect(listed).not.toContain('generativelanguage.googleapis.com:443');
+      expect(listed).not.toContain('api.z.ai:443');
       for (const selector of Object.values(cluster.fqdnSelectors(namespace))) {
         expect(selector).toEqual({ matchLabels: { 'eve.horizon/runner': 'true', 'eve.horizon/project-id': SHOP } });
       }
     }
     const runnerPolicy = [...cluster.nps.values()].find((p) => p.metadata.namespace === 'eve-runners')!;
     expect(hasInternet(runnerPolicy)).toBe(false);
+  });
+
+  it("takes the harness profiles from the synced manifest when the agents config declares none", async () => {
+    strict();
+    db.agentConfigs.delete(SHOP);
+    db.syncedManifests.set(SHOP, [
+      'x-eve:',
+      '  egress:',
+      '    hosts: [api.example.com]',
+      '  agents:',
+      '    profiles:',
+      '      default:',
+      '        - harness: gemini',
+      '',
+    ].join('\n'));
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    await egressFor(cluster).applyRunners(SHOP);
+    const listed = cluster.fqdnHosts('eve-runners');
+    expect(listed).toContain('generativelanguage.googleapis.com:443');
+    expect(listed).not.toContain('api.anthropic.com:443');
+    expect(listed).not.toContain('api.openai.com:443');
+  });
+
+  it('with no harness profile, takes the harnesses the project, org and instance secrets are credentials for', async () => {
+    strict();
+    db.agentConfigs.delete(SHOP);
+    db.secretKeys.set(`project:${SHOP}`, ['OPENAI_API_KEY', 'STRIPE_KEY']);
+    db.secretKeys.set('org:org_acme', ['Z_AI_API_KEY']);
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    let listed = cluster.fqdnHosts('eve-runners');
+    expect(listed).toEqual(expect.arrayContaining(['api.openai.com:443', 'auth.openai.com:443', 'api.z.ai:443', 'github.com:443']));
+    // pi (any provider key) is not counted: its hosts are its providers', which their own harnesses list.
+    expect(listed).not.toContain('api.anthropic.com:443');
+    expect(listed).not.toContain('generativelanguage.googleapis.com:443');
+
+    // With no credential either, no model API at all.
+    db.secretKeys = new Map();
+    await egress.applyRunners(SHOP);
+    listed = cluster.fqdnHosts('eve-runners');
+    expect(listed.sort()).toEqual(['*.cdn.example.com:443', 'api.example.com:443', 'github.com:443']);
+  });
+
+  it('takes runner hosts from the last explicit sync or deploy, not a manifest the drift check stored from a built ref', async () => {
+    strict();
+    // Job code controls the repository: a built ref's manifest, stored by
+    // the pipeline's drift check, must not widen the project's runner list.
+    db.manifests.set(SHOP, 'x-eve:\n  egress:\n    hosts: [exfil.example.net]\n');
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    expect(cluster.fqdnHosts('eve-runners')).toContain('api.example.com:443');
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('exfil.example.net:443');
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
+
+    // With no explicit sync at all, no project hosts.
+    db.syncedManifests.delete(SHOP);
+    await egress.applyRunners(SHOP);
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('exfil.example.net:443');
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('api.example.com:443');
   });
 
   it('prunes the policy of a host the manifest drops, leaving FQDN policies Eve did not write', async () => {
@@ -293,6 +446,7 @@ describe('provider gke', () => {
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
     db.manifests.set(SHOP, 'x-eve:\n  egress:\n    hosts: [api.example.com, hooks.example.com]\n');
+    db.syncedManifests.set(SHOP, db.manifests.get(SHOP)!);
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
     expect(cluster.fqdnHosts('eve-runners')).toContain('hooks.example.com:443');
     expect(cluster.fqdnHosts('eve-runners')).not.toContain('*.cdn.example.com:443');

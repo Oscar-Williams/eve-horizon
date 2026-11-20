@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeployerService } from '../deployer.service.js';
 
 // isolation.pod_security_admission at deploy: under strict the env namespace
-// enforces its Pod Security level before any workload is applied; under
-// audit it carries warn and audit only; an enforce label a strict profile
-// left goes when the profile drops. Each strict or audit deploy is recorded.
+// gets warn and audit before the workloads and enforce at its level only once
+// the rollout has succeeded (old pods that do not meet it would otherwise be
+// stranded); under audit it carries warn and audit only; an enforce label Eve
+// set goes when the profile drops, one it did not set stays. Each strict or
+// audit deploy is recorded.
 
 const mocks = vi.hoisted(() => ({
   profiles: {} as Record<string, 'legacy' | 'audit' | 'strict'>,
@@ -37,21 +39,39 @@ vi.mock('@eve/shared', async (importOriginal) => {
 });
 
 const NS = 'eve-acme-shop-prod';
-const ENFORCE = 'pod-security.kubernetes.io/enforce';
+const PSA = 'pod-security.kubernetes.io';
+const ENFORCE = `${PSA}/enforce`;
+const MARK = 'eve.horizon/pod-security-enforce';
 
-function deployerFor(current: Record<string, string> = {}, level: 'restricted' | 'baseline' = 'restricted') {
+function deployerFor(
+  current: { labels?: Record<string, string>; annotations?: Record<string, string> } = {},
+  level: 'restricted' | 'baseline' = 'restricted',
+  rollout: 'ready' | 'not_ready' | 'fails' = 'ready',
+) {
   const order: string[] = [];
   const k8s = {
     createNamespace: vi.fn(async () => undefined),
-    getNamespaceLabels: vi.fn(async () => ({ 'eve.env_id': 'env_prod', ...current })),
-    setNamespaceLabels: vi.fn(async (_ns: string, labels: Record<string, string | null>) => { order.push(`labels:${JSON.stringify(labels)}`); }),
-    applyManifest: vi.fn(async () => { order.push('workloads'); }),
+    getNamespaceMetadata: vi.fn(async () => ({
+      labels: { 'eve.env_id': 'env_prod', ...(current.labels ?? {}) },
+      annotations: { ...(current.annotations ?? {}) },
+    })),
+    patchNamespaceMetadata: vi.fn(async (_ns: string, patch: { labels: Record<string, string | null>; annotations: Record<string, string | null> }) => {
+      order.push(`patch:${JSON.stringify(patch)}`);
+    }),
+    applyManifest: vi.fn(async () => {
+      order.push('workloads');
+      if (rollout === 'fails') throw new Error('admission webhook denied the request');
+    }),
     listAliasIngresses: vi.fn(async () => []),
     listCustomDomainIngresses: vi.fn(async () => []),
     listSecrets: vi.fn(async () => []),
+    listPodsWithLabel: vi.fn(async () => []),
     deleteSecret: vi.fn(),
     deploymentExists: vi.fn(async () => false),
-    getDeploymentStatus: vi.fn(async () => ({ ready: true, availableReplicas: 0, desiredReplicas: 0, conditions: [] })),
+    getDeploymentStatus: vi.fn(async () => {
+      order.push('rollout');
+      return { ready: rollout === 'ready', availableReplicas: 0, desiredReplicas: 0, conditions: [] };
+    }),
   };
   const deployer = new DeployerService(null as any, k8s as any);
   Object.assign(deployer as any, {
@@ -68,52 +88,90 @@ function deployerFor(current: Record<string, string> = {}, level: 'restricted' |
     },
     projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_shop', org_id: 'org_acme', slug: 'shop', repo_url: null }) },
     orgs: { findById: vi.fn().mockResolvedValue({ id: 'org_acme', slug: 'acme' }) },
-    manifests: { findByProjectAndHash: vi.fn().mockResolvedValue({ manifest_yaml: 'services: {}' }) },
+    manifests: { findByProjectAndHash: vi.fn().mockResolvedValue({ id: 'man_1', manifest_yaml: 'services: {}' }), markSynced: vi.fn() },
     ensureImagePullSecret: vi.fn().mockResolvedValue(null),
     renderManifest: vi.fn(async () => ({
       manifestYaml: 'kind: List', services: {}, aliasIngresses: [], customDomainIngresses: [],
       desiredTcpIngressServices: [], serviceSecrets: [], podSecurityLevel: level,
     })),
   });
-  return { deployer, k8s, order };
+  const patches = () => k8s.patchNamespaceMetadata.mock.calls.map((call) => call[1]);
+  return { deployer, k8s, order, patches };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   mocks.profiles = {};
   mocks.decided = [];
 });
 
 describe('deploy: isolation.pod_security_admission', () => {
-  it('under strict labels the namespace enforce at its level before the workloads, and records it', async () => {
+  it('under strict sets warn and audit before the workloads, and enforce (pinned, marked) only after the rollout succeeded', async () => {
     mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
-    const { deployer, k8s, order } = deployerFor({}, 'baseline');
+    const { deployer, order, patches } = deployerFor({}, 'baseline');
     await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
 
-    expect(k8s.setNamespaceLabels).toHaveBeenCalledWith(NS, expect.objectContaining({
-      [ENFORCE]: 'baseline', 'pod-security.kubernetes.io/enforce-version': 'latest',
-    }));
-    expect(order.findIndex((o) => o.startsWith('labels:'))).toBeLessThan(order.indexOf('workloads'));
+    const [before, after] = patches();
+    expect(before).toEqual({ labels: { [`${PSA}/warn`]: 'baseline', [`${PSA}/audit`]: 'baseline' }, annotations: {} });
+    expect(after.labels).toEqual(expect.objectContaining({ [ENFORCE]: 'baseline', [`${PSA}/enforce-version`]: 'v1.30' }));
+    expect(after.annotations).toEqual({ [MARK]: 'baseline' });
+    const enforceAt = order.findIndex((o) => o.includes(`"${ENFORCE}":"baseline"`));
+    expect(enforceAt).toBeGreaterThan(order.indexOf('rollout'));
+    expect(order.findIndex((o) => o.startsWith('patch:'))).toBeLessThan(order.indexOf('workloads'));
     expect(mocks.decided).toContainEqual(expect.objectContaining({
       rule: 'isolation.pod_security_admission', detail: expect.objectContaining({ env: 'prod', level: 'baseline' }),
     }));
   });
 
-  it('under audit sets warn and audit, and removes an enforce left behind', async () => {
-    mocks.profiles = { 'isolation.pod_security_admission': 'audit' };
-    const { deployer, k8s } = deployerFor({ [ENFORCE]: 'restricted' });
+  it('pins enforce-version to EVE_POD_SECURITY_VERSION', async () => {
+    vi.stubEnv('EVE_POD_SECURITY_VERSION', 'v1.32');
+    mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
+    const { deployer, patches } = deployerFor();
     await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
-    expect(k8s.setNamespaceLabels).toHaveBeenCalledWith(NS, {
-      [ENFORCE]: null,
-      'pod-security.kubernetes.io/warn': 'restricted',
-      'pod-security.kubernetes.io/audit': 'restricted',
-    });
+    expect(patches().at(-1)!.labels[`${PSA}/enforce-version`]).toBe('v1.32');
   });
 
-  it('under legacy writes nothing to a namespace that never enforced', async () => {
-    const { deployer, k8s } = deployerFor({});
+  it('leaves enforce as it was when the rollout fails or does not finish', async () => {
+    mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
+    const failed = deployerFor({}, 'restricted', 'fails');
+    await expect(failed.deployer.deploy('env_prod', 'rel_1', { skipPreflight: true })).rejects.toThrow();
+    expect(failed.patches().some((p) => ENFORCE in p.labels)).toBe(false);
+
+    const slow = deployerFor({}, 'restricted', 'not_ready');
+    await slow.deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
+    expect(slow.patches().some((p) => ENFORCE in p.labels)).toBe(false);
+  });
+
+  it('under strict lowers an enforce Eve set before the workloads when the level drops', async () => {
+    mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
+    const { deployer, order, patches } = deployerFor(
+      { labels: { [ENFORCE]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30' }, annotations: { [MARK]: 'restricted' } },
+      'baseline',
+    );
     await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
-    expect(k8s.setNamespaceLabels).not.toHaveBeenCalled();
+    expect(patches()[0].labels[ENFORCE]).toBe('baseline');
+    expect(order.findIndex((o) => o.includes(`"${ENFORCE}":"baseline"`))).toBeLessThan(order.indexOf('workloads'));
+  });
+
+  it('under audit sets warn and audit, and removes an enforce Eve set', async () => {
+    mocks.profiles = { 'isolation.pod_security_admission': 'audit' };
+    const { deployer, patches } = deployerFor({ labels: { [ENFORCE]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30' }, annotations: { [MARK]: 'restricted' } });
+    await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
+    expect(patches()).toEqual([{
+      labels: { [ENFORCE]: null, [`${PSA}/enforce-version`]: null, [`${PSA}/warn`]: 'restricted', [`${PSA}/audit`]: 'restricted' },
+      annotations: { [MARK]: null },
+    }]);
+  });
+
+  it('under legacy leaves an enforce Eve did not set, and writes nothing to a namespace that never enforced', async () => {
+    const operators = deployerFor({ labels: { [ENFORCE]: 'baseline' } });
+    await operators.deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
+    expect(operators.k8s.patchNamespaceMetadata).not.toHaveBeenCalled();
+
+    const plain = deployerFor({});
+    await plain.deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
+    expect(plain.k8s.patchNamespaceMetadata).not.toHaveBeenCalled();
     expect(mocks.decided.filter((d) => d.rule === 'isolation.pod_security_admission')).toEqual([]);
   });
 });

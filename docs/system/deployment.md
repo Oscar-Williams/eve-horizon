@@ -405,48 +405,85 @@ The worker holds two ClusterRoles (`k8s/base/worker-rbac.yaml`):
   RoleBindings (create, get, list, delete) and `bind` on the ClusterRole
   `eve-worker-tenant` alone. Nothing on Secrets or workloads.
 - `eve-worker-tenant`, never bound cluster-wide: pods, Services,
-  ConfigMaps, Secrets, PVCs, Deployments and the other workloads, Jobs,
-  Ingresses, NetworkPolicies and GKE FQDNNetworkPolicies. The worker binds
-  it (RoleBinding `eve-worker-tenant`) in each namespace it creates or
-  adopts; the template binds it in `eve` and `eve-runners`.
+  ConfigMaps, Secrets, PVCs, Deployments, ReplicaSets, StatefulSets, Jobs,
+  CronJobs, Ingresses, NetworkPolicies and GKE FQDNNetworkPolicies (no
+  DaemonSets). The worker binds it (RoleBinding `eve-worker-tenant`) in each
+  namespace it creates or adopts; the template binds it in `eve-runners`.
+
+In the platform namespace `eve` the worker holds only the Role `eve-worker`,
+never `eve-worker-tenant`: tenant code runs there too (kaniko builds, legacy
+pipeline steps in the worker), so its rights there are what it uses and no
+more: plain runner pods for org filesystem jobs and their workspace claims
+(get, list, watch, create, patch, delete), kaniko Jobs (get, list, watch,
+create, delete), kaniko credentials Secrets (create and delete, never read,
+so `eve-app` and the platform's other Secrets stay out of reach), a Service's
+ClusterIP (get), and runner NetworkPolicies and FQDN policies. No
+`pods/exec` (the worker never execs), no ConfigMaps, no Deployments.
 
 Every namespace the worker creates carries `eve.horizon/managed=true`. At
 start-up the worker labels and binds the env namespaces earlier releases
 created (they carry `eve.env_id`) when that label names a live environment
-whose namespace it is; others are left alone and logged.
+whose namespace it is and the namespace is under the project's prefix
+(`eve-<org>-<project>-`); others are left alone and logged. An env whose
+stored namespace predates the prefix rule is not adopted: move it under the
+prefix (or bind `eve-worker-tenant` there by hand) before the old
+`eve-worker` ClusterRole goes.
 
-The template's ValidatingAdmissionPolicy `eve-worker-namespace-guard`
-(`k8s/base/worker-admission-policy.yaml`, Kubernetes 1.30 or later) refuses
-the worker's service account:
+The admission policies live in their own kustomization, `k8s/admission`
+(Kubernetes 1.30 or later), applied after the worker's start-up reconcile.
+`eve-worker-namespace-guard` refuses the worker's service account:
 
 - writes of namespaced objects outside managed namespaces and `eve`,
   `eve-runners` and `eve-builds`, and any cluster-scoped write but
   namespaces;
 - creating a namespace without the managed label; changing a namespace that
   has neither that label nor `eve.env_id`; deleting one without the label,
-  or a static one;
+  or a static one; setting Pod Security `enforce: privileged`;
 - a RoleBinding (created or deleted) to any role but `eve-worker-tenant`, or
-  for any subject but the worker.
+  for any subject but the worker;
+- a Secret of type `kubernetes.io/service-account-token`.
+
+`eve-worker-workload-guard` holds every pod and pod template the worker
+writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
+SandboxTemplates), in every namespace: no DaemonSet, no privileged
+container, no host namespace (`hostNetwork`, `hostPID`, `hostIPC`), no
+`hostPath`, no `hostPort`, no capability beyond Pod Security baseline, and a
+service account of `default`, `eve-runner` or, outside `eve`, an app account
+(`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label
+(`app.kubernetes.io/name`, `app`: they name the platform's own pods to
+network policies), any Secret but `kaniko-cfg-*` (volumes, `env`,
+`envFrom`), and any claim but `eve-ws-*` and `eve-org-fs-*`.
+`x-eve.networking.egress: stable` on EKS runs a host-network pod, which the
+guard refuses: an instance that needs it drops that rule in its overlay.
+
+The orchestrator (`k8s/base/orchestrator-rbac.yaml`) reads pods, events,
+Deployments and ReplicaSets, and patches only `deployments/scale` (the env
+health watchdog's circuit breaker). `eve-orchestrator-scale-guard` holds
+that to scaling to zero in namespaces labelled `eve.horizon/managed=true`,
+and refuses its every other write.
 
 `tests/k8s/worker-guard.kind.sh` runs each allowed and refused write on a
-kind cluster as the worker (`kubectl --as`).
+kind cluster as the worker and the orchestrator (`kubectl --as`).
 
 Other templates: an overlay that sets one `namespace:` for every object
-moves `eve-worker-tenant-runners` into the platform namespace; apply the
-runner namespace's objects from their own kustomization, as for the runner
-policies. The `aws-nlb` TCP ingress check reads
-`deployment/aws-load-balancer-controller` in `kube-system`; with no rights
-there it logs that it could not check and goes on.
+moves `eve-worker-tenant-runners` into the platform namespace, which would
+give the worker `eve-worker-tenant` there; apply the runner namespace's
+objects from their own kustomization, as for the runner policies. The
+`aws-nlb` TCP ingress check reads `deployment/aws-load-balancer-controller`
+in `kube-system`; with no rights there it logs that it could not check and
+goes on.
 
-**Rollout (0.1.328):** apply the new ClusterRoles and bindings (the old
-`eve-worker` ClusterRole and ClusterRoleBinding stay for now), deploy the
-worker and wait for its log line "Managed namespaces reconciled", apply the
-admission policy, then delete `clusterrole/eve-worker` and
-`clusterrolebinding/eve-worker`. **Rollback:** re-apply the previous
-template, which brings back `eve-worker` with its all-namespace rights,
-and delete the admission policy (an earlier worker creates namespaces
-without the managed label, which the policy refuses). The labels,
-`eve-worker-tenant` and its RoleBindings stay, unused and harmless.
+**Rollout (0.1.328):** apply `k8s/base` (the new ClusterRoles, the Role
+`eve-worker` and bindings; the old `eve-worker` ClusterRole and
+ClusterRoleBinding stay for now), deploy the worker and wait for its log
+line "Managed namespaces reconciled", apply `k8s/admission`, then delete
+`clusterrole/eve-worker`, `clusterrolebinding/eve-worker` and, where an
+earlier render of this release made it, `rolebinding/eve-worker-tenant` in
+`eve`. **Rollback:** delete `k8s/admission` (an earlier worker creates
+namespaces without the managed label, which the guard refuses), then
+re-apply the previous template, which brings back `eve-worker` with its
+all-namespace rights. The labels, `eve-worker-tenant` and its RoleBindings
+stay, unused and harmless.
 
 ### Pod Security
 
@@ -461,14 +498,31 @@ opt-out); `enforce` comes from the rule `isolation.pod_security_admission`
 below. Under `audit` and `legacy` pod specs are unchanged;
 `audit` records each service's image user and what `strict` would add.
 
-Under the rule `isolation.pod_security_admission` (rule set 3) the deploy
-also sets, before any workload is applied, `pod-security.kubernetes.io/enforce`
-at the namespace's level (`restricted`, or `baseline` after an opt-out) with
-`enforce-version: latest`, beside `warn` and `audit`. Under `audit` the
-namespace carries `warn` and `audit` only, and under `audit` and `legacy` an
-`enforce` a strict profile left is removed at the next deploy. Labels are
-written only when they differ. Under `strict` a failure to set them stops the
-deploy. Each `audit` and `strict` deploy is recorded with the env and level.
+Under the rule `isolation.pod_security_admission` (rule set 3) a strict
+deploy sets `warn` and `audit` at the namespace's level before the workloads,
+and `pod-security.kubernetes.io/enforce` at that level only once the
+rollout has succeeded, so pods of the old release that do not meet it are
+never refused when a node is replaced. The level is the least of every
+service's, service jobs included (`restricted`, or `baseline` once a service
+or a job such as a migration opts out with `run_as_root` or a capability).
+`enforce-version` is pinned to `EVE_POD_SECURITY_VERSION` on the worker
+(`v1.<minor>`, default `v1.30`, the oldest minor Eve's admission policies
+support; set it to the cluster's minor), never `latest`, so a cluster
+upgrade does not tighten running namespaces. Eve marks the namespace
+`eve.horizon/pod-security-enforce` when it sets `enforce`.
+
+- A rollout that fails or does not finish leaves `enforce` as it was; the
+  next successful deploy sets it. A failure to set it after the rollout is
+  logged.
+- When a release lowers the level (a new opt-out), an `enforce` Eve set is
+  lowered before the workloads, so the new pods are admitted.
+- Under `audit` the namespace carries `warn` and `audit` only. Under `audit`
+  and `legacy` an `enforce` Eve set (marked) is removed at the next deploy;
+  one Eve did not set stays.
+
+Labels are written only when they differ. Under `strict` a failure to set
+the labels before the workloads stops the deploy. Each `audit` and `strict`
+deploy is recorded with the env and level.
 
 ### Load Balancer Recovery
 

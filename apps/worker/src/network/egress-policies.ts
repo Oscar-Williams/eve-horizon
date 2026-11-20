@@ -1,8 +1,10 @@
 import { Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import yaml from 'yaml';
 import {
+  agentConfigQueries,
   appLinkSubscriptionQueries,
   decideSecurityRule,
   environmentQueries,
@@ -12,6 +14,7 @@ import {
   projectManifestQueries,
   projectQueries,
   releaseQueries,
+  secretQueries,
   securityQueries,
   systemSettingsQueries,
   type Db,
@@ -29,6 +32,7 @@ import {
   FQDN_POLICY_LABEL_VALUE,
   NETWORK_PRIVATE_CIDRS_SETTING,
   RUNNER_PROJECT_LABEL,
+  credentialHarnesses,
   deriveNamespace,
   egressFqdnProvider,
   envEgressPolicies,
@@ -36,6 +40,8 @@ import {
   envIngressPolicies,
   manifestEgressHosts,
   parseCidrList,
+  profileHarnesses,
+  readDeclaredProfiles,
   runnerAllowHosts,
   runnerEgressPolicies,
   runnerFqdnPolicies,
@@ -109,6 +115,33 @@ export interface NetworkReconcileReport {
 
 type LoggerLike = Pick<Logger, 'log' | 'warn'>;
 
+/**
+ * A strict project's runner policies could not be written before a job:
+ * the pod would start with whatever older (possibly wider) set the runner
+ * namespace holds, so the job is refused instead (runner-egress.ts).
+ */
+export class RunnerEgressSyncError extends Error {
+  constructor(projectId: string, cause: unknown) {
+    super(
+      `The runner egress policies of project ${projectId} could not be written, so the strict profile refuses the job: ` +
+        `${errorMessage(cause)} (rules ${EGRESS_RULE}, ${ALLOW_HOSTS_RULE})`,
+    );
+    this.name = 'RunnerEgressSyncError';
+  }
+}
+
+/**
+ * On each runner NetworkPolicy: a hash of its spec, so dispatch sees a
+ * change of content under the same name (an egress.allow_hosts move from
+ * audit to strict drops the internet rule and keeps the name).
+ */
+export const SPEC_HASH_LABEL = 'eve.horizon/spec-hash';
+
+function withSpecHash<T extends EgressNetworkPolicy>(policy: T): T {
+  const hash = createHash('sha256').update(JSON.stringify(policy.spec)).digest('hex').slice(0, 16);
+  return { ...policy, metadata: { ...policy.metadata, labels: { ...policy.metadata.labels, [SPEC_HASH_LABEL]: hash } } };
+}
+
 const ENV_SELECTOR = `${EGRESS_POLICY_LABEL}=env`;
 const RUNNER_SELECTOR = `${EGRESS_POLICY_LABEL}=runner`;
 const runnerSelector = (projectId: string) => `${RUNNER_SELECTOR},${RUNNER_PROJECT_LABEL}=${projectId}`;
@@ -141,6 +174,8 @@ export class EgressPolicies {
   private readonly manifests: ReturnType<typeof projectManifestQueries>;
   private readonly releases: ReturnType<typeof releaseQueries>;
   private readonly security: ReturnType<typeof securityQueries>;
+  private readonly agentConfigs: ReturnType<typeof agentConfigQueries>;
+  private readonly secrets: ReturnType<typeof secretQueries>;
 
   constructor(
     private readonly db: Db,
@@ -159,6 +194,8 @@ export class EgressPolicies {
     this.manifests = projectManifestQueries(db);
     this.releases = releaseQueries(db);
     this.security = securityQueries(db);
+    this.agentConfigs = agentConfigQueries(db);
+    this.secrets = secretQueries(db);
   }
 
   /** The profile egress.default_deny runs under for a project (stamps honoured). */
@@ -178,30 +215,35 @@ export class EgressPolicies {
 
   /**
    * Bring an env namespace's egress policies in line with the project's
-   * profiles. With the GKE provider and egress.allow_hosts above `legacy`,
-   * one FQDN policy per declared host is written first, so a namespace
-   * moving to `strict` never loses the internet rule before its hosts are
-   * allowed. `strict` with no provider is refused before anything is written.
+   * profiles. The NetworkPolicies go first, then (with the GKE provider) one
+   * FQDN policy per declared host, so a failed FQDN write (CRD missing,
+   * feature off, a refusal) never leaves an older, wider NetworkPolicy in
+   * place: under `strict` it fails the call, and the namespace has no
+   * internet until the hosts are written; under `audit` it is logged and
+   * recorded, and blocks nothing. `strict` with no provider is refused
+   * before anything is written.
    */
   async applyEnv(env: EgressEnvRef, profile?: SecurityProfile, options: EnvApplyOptions = {}): Promise<EgressSync> {
     const resolved = profile ?? await this.profile(env.projectId);
     const allowHosts = options.allowHosts ?? await this.allowHostsProfile(env.projectId);
     const provider = egressFqdnProvider();
     const result: EgressSync = { profile: resolved, applied: [], removed: [] };
+    let fqdn: FqdnNetworkPolicy[] = [];
     if (allowHosts !== 'legacy') {
       const lists = manifestEgressHosts(options.manifest !== undefined ? options.manifest : await this.envManifest(env));
       const declared = lists.project.length + Object.values(lists.services).reduce((n, hosts) => n + hosts.length, 0);
       await this.recordAllowHosts(env.projectId, provider, declared, { scope: 'env', env: env.name });
       if (allowHosts === 'strict' && provider === 'none') throw new EgressProviderMissingError();
-      if (provider === 'gke') merge(result, await this.syncFqdn(env.namespace, FQDN_SELECTOR, envFqdnPolicies(env.namespace, env.projectId, lists)));
+      fqdn = envFqdnPolicies(env.namespace, env.projectId, lists);
     }
     const open = resolved === 'legacy' && allowHosts !== 'strict';
     const desired = open
       ? []
       : envEgressPolicies(env.namespace, resolved, await this.envExtras(env), await this.settings(), allowHosts);
     merge(result, await this.sync(env.namespace, ENV_SELECTOR, desired));
-    // Back to legacy: the FQDN policies go only once the internet rule is back.
-    if (allowHosts === 'legacy' && provider === 'gke') merge(result, await this.syncFqdn(env.namespace, FQDN_SELECTOR, []));
+    if (provider === 'gke') {
+      merge(result, await this.syncFqdnUnder(allowHosts, env.projectId, env.namespace, FQDN_SELECTOR, fqdn, { scope: 'env', env: env.name }));
+    }
 
     // network.ingress_isolation: who may connect in.
     const ingress = await this.ingressProfile(env.projectId);
@@ -217,8 +259,11 @@ export class EgressPolicies {
 
   /**
    * Bring a project's runner policies in line with its profiles, in each
-   * runner namespace the cluster has: the NetworkPolicies, and with the GKE
-   * provider one FQDN policy per host the project's runners may reach.
+   * runner namespace the cluster has: the NetworkPolicies first, then with
+   * the GKE provider one FQDN policy per host the project's runners may
+   * reach. A failed FQDN write fails the call under a `strict`
+   * egress.allow_hosts (the runners then have no internet at all) and is
+   * logged and recorded under `audit`.
    */
   async applyRunners(projectId: string, profile?: SecurityProfile, allowHosts?: SecurityProfile): Promise<EgressSync> {
     const resolved = profile ?? await this.profile(projectId);
@@ -232,28 +277,38 @@ export class EgressPolicies {
       hosts = runner.hosts;
     }
     const settings = await this.settings();
-    const extras = resolved === 'legacy' && hostsProfile !== 'strict' ? {} : await this.runnerExtras(projectId);
+    const extras = await this.runnerExtrasUnder(projectId, resolved, hostsProfile);
     const result: EgressSync = { profile: resolved, applied: [], removed: [] };
-    for (const namespace of await this.runnerNamespaces()) {
-      const synced: EgressSync = { profile: resolved, applied: [], removed: [] };
-      // FQDN policies before the NetworkPolicies when they allow, after them when they go.
-      const fqdn = () => this.syncFqdn(namespace, runnerFqdnSelector(projectId), runnerFqdnPolicies(namespace, projectId, hosts));
-      if (provider === 'gke' && hostsProfile !== 'legacy') merge(synced, await fqdn());
-      const desired = runnerEgressPolicies(namespace, projectId, resolved, extras, settings, hostsProfile);
-      merge(synced, await this.sync(namespace, runnerSelector(projectId), desired));
-      if (provider === 'gke' && hostsProfile === 'legacy') merge(synced, await fqdn());
+    const record = (namespace: string, synced: { applied: string[]; removed: string[] }) => {
       result.applied.push(...synced.applied.map((name) => `${namespace}/${name}`));
       result.removed.push(...synced.removed.map((name) => `${namespace}/${name}`));
+    };
+    const namespaces = await this.runnerNamespaces();
+    // Every namespace's NetworkPolicies before any FQDN policy, so a failed
+    // FQDN write leaves no namespace with an older, wider set.
+    for (const namespace of namespaces) {
+      const desired = runnerEgressPolicies(namespace, projectId, resolved, extras, settings, hostsProfile).map(withSpecHash);
+      record(namespace, await this.sync(namespace, runnerSelector(projectId), desired));
+    }
+    if (provider === 'gke') {
+      for (const namespace of namespaces) {
+        record(namespace, await this.syncFqdnUnder(hostsProfile, projectId, namespace, runnerFqdnSelector(projectId),
+          runnerFqdnPolicies(namespace, projectId, hosts), { scope: 'runner', namespace }));
+      }
     }
     return result;
   }
 
   /**
    * Before a runner pod starts: write the project's runner policies only
-   * when a runner namespace lacks them or holds a set the profiles no longer
-   * want (a profile change, a project's first job, a change in its declared
-   * hosts). No writes otherwise. A strict egress.allow_hosts with no
-   * provider refuses the job (EgressProviderMissingError).
+   * when a runner namespace lacks them or holds a set whose content the
+   * profiles no longer want (a profile change, a project's first job, a
+   * change in its declared hosts, envs or app links). No writes otherwise.
+   * A strict egress.allow_hosts with no provider refuses the job
+   * (EgressProviderMissingError); under either strict rule a policy write
+   * that fails refuses it too (RunnerEgressSyncError), since the pod would
+   * otherwise meet an older, possibly wider set. Under `audit` and `legacy`
+   * a failure is thrown for the caller to log, and the job goes on.
    */
   async ensureRunnersForDispatch(projectId: string): Promise<'current' | 'written'> {
     const profile = await this.profile(projectId);
@@ -263,23 +318,32 @@ export class EgressPolicies {
       await this.recordAllowHosts(projectId, provider, 0, { scope: 'dispatch' });
       throw new EgressProviderMissingError();
     }
-    const settings = await this.settings();
-    const hosts = provider === 'gke' && allowHosts !== 'legacy' ? (await this.runnerHosts(projectId)).hosts : [];
-    for (const namespace of await this.runnerNamespaces()) {
-      const wanted = runnerEgressPolicies(namespace, projectId, profile, {}, settings, allowHosts).map((p) => p.metadata.name).sort();
-      const held = (await this.k8s.listNetworkPolicies(namespace, runnerSelector(projectId))).map((p) => p.name).sort();
-      let current = wanted.join(',') === held.join(',');
-      if (current && provider === 'gke') {
-        const wantedFqdn = runnerFqdnPolicies(namespace, projectId, hosts).map((p) => p.metadata.name).sort();
-        const heldFqdn = (await this.k8s.listFqdnNetworkPolicies(namespace, runnerFqdnSelector(projectId))).map((p) => p.name).sort();
-        current = wantedFqdn.join(',') === heldFqdn.join(',');
+    try {
+      const settings = await this.settings();
+      const extras = await this.runnerExtrasUnder(projectId, profile, allowHosts);
+      const hosts = provider === 'gke' && allowHosts !== 'legacy' ? (await this.runnerHosts(projectId)).hosts : [];
+      for (const namespace of await this.runnerNamespaces()) {
+        const wanted = runnerEgressPolicies(namespace, projectId, profile, extras, settings, allowHosts)
+          .map(withSpecHash)
+          .map((p) => `${p.metadata.name}@${p.metadata.labels[SPEC_HASH_LABEL]}`);
+        const held = (await this.k8s.listNetworkPolicies(namespace, runnerSelector(projectId)))
+          .map((p) => `${p.name}@${p.labels[SPEC_HASH_LABEL] ?? ''}`);
+        let current = sameSet(wanted, held);
+        if (current && provider === 'gke') {
+          const wantedFqdn = runnerFqdnPolicies(namespace, projectId, hosts).map((p) => p.metadata.name);
+          const heldFqdn = (await this.k8s.listFqdnNetworkPolicies(namespace, runnerFqdnSelector(projectId))).map((p) => p.name);
+          current = sameSet(wantedFqdn, heldFqdn);
+        }
+        if (!current) {
+          await this.applyRunners(projectId, profile, allowHosts);
+          return 'written';
+        }
       }
-      if (!current) {
-        await this.applyRunners(projectId, profile, allowHosts);
-        return 'written';
-      }
+      return 'current';
+    } catch (error) {
+      if (profile === 'strict' || allowHosts === 'strict') throw new RunnerEgressSyncError(projectId, error);
+      throw error;
     }
-    return 'current';
   }
 
   /**
@@ -408,6 +472,39 @@ export class EgressPolicies {
   }
 
   /**
+   * syncFqdn under a project's egress.allow_hosts profile (`legacy` wants
+   * none). A failure throws under `strict`; under `audit` and `legacy` it is
+   * logged and, under `audit`, recorded (reason `fqdn_write_failed`), and
+   * nothing is reported written.
+   */
+  private async syncFqdnUnder(
+    allowHosts: SecurityProfile,
+    projectId: string,
+    namespace: string,
+    selector: string,
+    desired: FqdnNetworkPolicy[],
+    detail: Record<string, string>,
+  ): Promise<{ applied: string[]; removed: string[] }> {
+    try {
+      return await this.syncFqdn(namespace, selector, allowHosts === 'legacy' ? [] : desired);
+    } catch (error) {
+      if (allowHosts === 'strict') throw error;
+      const message = errorMessage(error);
+      this.logger.warn(`Could not write the FQDN policies of project ${projectId} in ${namespace} (${allowHosts}): ${message}`);
+      if (allowHosts === 'audit') {
+        await decideSecurityRule(this.db, ALLOW_HOSTS_RULE, {
+          projectId,
+          governing: 'project',
+          actorType: 'service',
+          actorId: 'worker',
+          detail: { ...detail, reason: 'fqdn_write_failed', provider: 'gke', error: message.slice(0, 300) },
+        });
+      }
+      return { applied: [], removed: [] };
+    }
+  }
+
+  /**
    * egress.allow_hosts evidence: a project that declares no hosts (strict
    * would leave it the harness and git hosts only, or nothing for an env),
    * or one with no provider to enforce its list. Under `strict` with no
@@ -429,21 +526,50 @@ export class EgressPolicies {
     });
   }
 
-  /** The hosts a project's runners may reach (its list, every harness's hosts, its git host), and how many it declares. */
+  /**
+   * The hosts a project's runners may reach (its list, the hosts of the
+   * harnesses it can run, its git host), and how many it declares. The list
+   * comes from the manifest of its last explicit sync or deploy: the
+   * pipeline's drift check stores manifests from whatever ref a build checked
+   * out, which job code controls, so the latest row could widen the list.
+   */
   private async runnerHosts(projectId: string): Promise<{ hosts: EgressHost[]; declared: number }> {
     const project = await this.projects.findById(projectId);
-    const record = await this.manifests.findLatestByProject(projectId);
+    const record = await this.manifests.findLatestSyncedByProject(projectId);
     const declared = manifestEgressHosts(parseManifest(record?.manifest_yaml)).project;
-    return { hosts: runnerAllowHosts({ projectHosts: declared, repoUrl: project?.repo_url }), declared: declared.length };
+    const harnesses = project ? await this.runnerHarnesses(project, record?.manifest_yaml) : [];
+    return { hosts: runnerAllowHosts({ projectHosts: declared, harnesses, repoUrl: project?.repo_url }), declared: declared.length };
   }
 
-  /** The manifest an env runs: its applied (else current) release's, else the project's latest. */
+  /**
+   * The harnesses a project's runners can run: those its harness profiles
+   * name (the agents config's x-eve, else the synced manifest's, as dispatch
+   * reads them), else those its project, org and instance secrets are
+   * credentials for. Each allowed model API can carry data out under a key
+   * the job code brings, so a harness the project cannot run adds nothing.
+   */
+  private async runnerHarnesses(
+    project: { id: string; org_id: string },
+    manifestYaml: string | undefined,
+  ): Promise<string[]> {
+    const config = await this.agentConfigs.findLatestByProject(project.id);
+    const named = profileHarnesses(readDeclaredProfiles({ xEveYaml: config?.x_eve_yaml, manifestYaml }).profiles);
+    if (named.length > 0) return named;
+    const keys = [
+      ...await this.secrets.listKeysByScope('project', project.id),
+      ...await this.secrets.listKeysByScope('org', project.org_id),
+      ...await this.secrets.listKeysByScope('system', 'system'),
+    ];
+    return credentialHarnesses(keys);
+  }
+
+  /** The manifest an env runs: its applied (else current) release's, else the project's last synced or deployed one. */
   private async envManifest(env: EgressEnvRef): Promise<unknown> {
     const row = await this.envs.findById(env.id);
     const releaseId = row?.last_applied_release_id ?? row?.current_release_id;
     const release = releaseId ? await this.releases.findById(releaseId) : null;
     const record = (release ? await this.manifests.findByProjectAndHash(env.projectId, release.manifest_hash) : null)
-      ?? await this.manifests.findLatestByProject(env.projectId);
+      ?? await this.manifests.findLatestSyncedByProject(env.projectId);
     return parseManifest(record?.manifest_yaml);
   }
 
@@ -528,6 +654,11 @@ export class EgressPolicies {
     return { projectNamespaces, consumerNamespaces, runnerProjects: [...runnerProjects] };
   }
 
+  /** runnerExtras when the profiles write a project set that uses them (none under legacy alone). */
+  private async runnerExtrasUnder(projectId: string, profile: SecurityProfile, allowHosts: SecurityProfile): Promise<EgressExtras> {
+    return profile === 'legacy' && allowHosts !== 'strict' ? {} : this.runnerExtras(projectId);
+  }
+
   /** A project's runner pods call its own envs (app APIs, any port) and its app-link producers. */
   private async runnerExtras(projectId: string): Promise<EgressExtras> {
     const project = await this.projects.findById(projectId);
@@ -598,10 +729,10 @@ export class EgressPolicies {
     return [...peers.values()];
   }
 
-  /** The container port of a producer's service: its first declared port, from its latest manifest. */
+  /** The container port of a producer's service: its first declared port, from its last synced or deployed manifest. */
   private async servicePort(projectId: string, serviceName: string): Promise<number | null> {
     try {
-      const record = await this.manifests.findLatestByProject(projectId);
+      const record = await this.manifests.findLatestSyncedByProject(projectId);
       const ports = (yaml.parse(record?.manifest_yaml ?? '') as { services?: Record<string, { ports?: unknown[] }> } | null)
         ?.services?.[serviceName]?.ports;
       const first = Array.isArray(ports) ? ports[0] : undefined;
@@ -611,6 +742,10 @@ export class EgressPolicies {
       return null;
     }
   }
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  return [...a].sort().join('\n') === [...b].sort().join('\n');
 }
 
 function merge(into: { applied: string[]; removed: string[] }, from: { applied: string[]; removed: string[] }): void {

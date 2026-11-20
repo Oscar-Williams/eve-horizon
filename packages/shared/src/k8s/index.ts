@@ -6,3 +6,4 @@ export * from './egress-hosts.js';
 export * from './fqdn-policies.js';
 export * from './managed-namespaces.js';
 export * from './ingress-policies.js';
+export * from './egress-host-addresses.js';
