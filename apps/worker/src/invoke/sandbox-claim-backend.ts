@@ -2,15 +2,22 @@
  * Runner pods through kubernetes-sigs/agent-sandbox: a SandboxClaim on the
  * job class's warm pool, in the runner namespace. The worker needs only
  * create, get, watch and delete on sandboxclaims there, get and list on
- * templates and pools, and get on the claimed pod; nothing on sandboxes.
+ * templates and pools, and get and list on pods; nothing on sandboxes.
+ *
+ * The claimed pod is found by the attempt label the claim puts on it, at the
+ * IP the claim reports, never by the sandbox's name: agent-sandbox may name a
+ * pod apart from its sandbox (the Sandbox's `agents.x-k8s.io/pod-name`
+ * annotation), and v1.0.11 labels a warm pod just after the claim is Ready.
  */
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
+  RUNNER_LABELS,
   SANDBOX_API_GROUP,
   SANDBOX_CLAIM_RESOURCE,
   buildRunnerSandboxClaim,
+  runnerJobLabels,
   runnerTemplateName,
   type RunnerClass,
 } from '@eve/shared';
@@ -97,6 +104,8 @@ export function resetSandboxDiscovery(): void {
   namespaceSeen = null;
 }
 
+type PodList = { items?: Array<{ metadata?: { name?: string }; status?: { podIP?: string; podIPs?: Array<{ ip?: string }> } }> };
+
 type ClaimStatus = {
   status?: {
     conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>;
@@ -118,7 +127,17 @@ export function createSandboxClaimBackend(opts: {
   onPodCreated?: (meta: { runtime: string; backend: string; pod_name: string; namespace: string; claim: string }) => Promise<void>;
 }): RunnerPodBackend & { claimName: string } {
   const claimName = sandboxClaimName(opts.submit.attempt_id);
+  const attemptLabel = runnerJobLabels({ projectId: opts.submit.project_id, attemptId: opts.submit.attempt_id, jobClass: opts.jobClass })[RUNNER_LABELS.attemptId];
   let podName: string | null = null;
+
+  /** The pod carrying this attempt's label at the claim's IP, once the claim has labelled it. */
+  async function claimedPodName(ip: string, signal?: AbortSignal): Promise<string | null> {
+    const result = await execKubectl(['get', 'pods', '-l', `${RUNNER_LABELS.attemptId}=${attemptLabel}`, `--namespace=${opts.namespace}`, '-o', 'json'], undefined, signal);
+    if (result.exitCode !== 0) return null;
+    const pod = ((JSON.parse(result.stdout || '{}') as PodList).items ?? [])
+      .find((item) => item.status?.podIP === ip || item.status?.podIPs?.some((entry) => entry.ip === ip));
+    return pod?.metadata?.name ?? null;
+  }
   const claimTimeoutMs = parseDurationMs(process.env.EVE_SANDBOX_CLAIM_TIMEOUT ?? '10s', 'EVE_SANDBOX_CLAIM_TIMEOUT');
   const pollMs = parseInt(process.env.EVE_SANDBOX_CLAIM_POLL_MS ?? '250', 10);
 
@@ -148,15 +167,16 @@ export function createSandboxClaimBackend(opts: {
             throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} failed: ${ready.reason}${ready.message ? ` (${ready.message})` : ''}`);
           }
           const ip = status?.sandbox?.podIPs?.[0];
-          if (ready?.status === 'True' && ip) {
-            podName = status?.sandbox?.name ?? null;
-            await opts.onPodCreated?.({ runtime: 'k8s', backend: 'sandbox', pod_name: podName ?? claimName, namespace: opts.namespace, claim: claimName });
-            return { ip, podName: podName ?? claimName, namespace: opts.namespace };
+          const name = ready?.status === 'True' && ip ? await claimedPodName(ip, signal) : null;
+          if (ip && name) {
+            podName = name;
+            await opts.onPodCreated?.({ runtime: 'k8s', backend: 'sandbox', pod_name: name, namespace: opts.namespace, claim: claimName });
+            return { ip, podName: name, namespace: opts.namespace };
           }
         }
         await delay(pollMs, undefined, { signal });
       }
-      throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} was not Ready within ${claimTimeoutMs}ms`);
+      throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} was not Ready with its labelled pod within ${claimTimeoutMs}ms`);
     },
 
     async podEnded() {

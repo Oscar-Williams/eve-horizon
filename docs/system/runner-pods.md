@@ -200,7 +200,9 @@ Runner pods live in their own namespace, `EVE_RUNNER_NAMESPACE` (base:
   extension CRDs are served (`extensions.agents.x-k8s.io/v1beta1`, found by
   API discovery) and the job class's warm pool exists with a size above 0, the worker creates a
   `SandboxClaim` on that pool and reaches the pod at
-  `status.sandbox.podIPs`. The claim carries the pod labels below through
+  `status.sandbox.podIPs`. It follows the pod (for liveness) by the
+  `eve.horizon/attempt-id` label the claim puts on it, at that IP, never by
+  the sandbox's name, and submits only once the label is there. The claim carries the pod labels below through
   `additionalPodMetadata`, no env, and `lifecycle.shutdownTime` (the job's
   timeout plus 15 min) with `shutdownPolicy: Delete`, a safety net if the
   worker dies mid-job. The worker deletes the claim when the job ends.
