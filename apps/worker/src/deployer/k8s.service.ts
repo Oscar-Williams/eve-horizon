@@ -850,6 +850,95 @@ export class K8sService {
     }
   }
 
+  /** A Secret's values (decoded), metadata and resourceVersion; null when it is absent. */
+  async readSecret(namespace: string, name: string): Promise<{
+    data: Record<string, string>;
+    resourceVersion: string;
+    labels: Record<string, string>;
+    annotations: Record<string, string>;
+  } | null> {
+    this.ensureAvailable();
+    try {
+      const secret = (await this.coreApi!.readNamespacedSecret(name, namespace)).body;
+      return {
+        data: Object.fromEntries(
+          Object.entries(secret.data ?? {}).map(([key, value]) => [key, Buffer.from(value ?? '', 'base64').toString('utf8')]),
+        ),
+        resourceVersion: secret.metadata?.resourceVersion ?? '',
+        labels: secret.metadata?.labels ?? {},
+        annotations: secret.metadata?.annotations ?? {},
+      };
+    } catch (err) {
+      if (isK8sNotFound(err)) return null;
+      throw wrapK8sError(err, 'read', { kind: 'Secret', name, namespace });
+    }
+  }
+
+  /**
+   * Set the given keys (and annotations) of a Secret, leaving the others,
+   * only while it is still at `resourceVersion` (a merge patch carrying it).
+   * False when it was written since it was read, or is gone.
+   */
+  async patchSecretData(
+    namespace: string,
+    name: string,
+    data: Record<string, string>,
+    resourceVersion: string,
+    annotations?: Record<string, string>,
+  ): Promise<boolean> {
+    this.ensureAvailable();
+    try {
+      await this.coreApi!.patchNamespacedSecret(
+        name,
+        namespace,
+        {
+          metadata: { resourceVersion, ...(annotations ? { annotations } : {}) },
+          data: Object.fromEntries(
+            Object.entries(data).map(([key, value]) => [key, Buffer.from(value, 'utf8').toString('base64')]),
+          ),
+        },
+        undefined, undefined, undefined, undefined, undefined,
+        { headers: { 'Content-Type': 'application/merge-patch+json' } },
+      );
+      return true;
+    } catch (err) {
+      if (isK8sConflict(err) || isK8sNotFound(err)) return false;
+      throw wrapK8sError(err, 'patch', { kind: 'Secret', name, namespace });
+    }
+  }
+
+  /** A Deployment's pod-template annotations; null when it is absent. */
+  async getDeploymentTemplateAnnotations(namespace: string, name: string): Promise<Record<string, string> | null> {
+    this.ensureAvailable();
+    try {
+      const deployment = (await this.appsApi!.readNamespacedDeployment(name, namespace)).body;
+      return deployment.spec?.template?.metadata?.annotations ?? {};
+    } catch (err) {
+      if (isK8sNotFound(err)) return null;
+      throw wrapK8sError(err, 'read', { kind: 'Deployment', name, namespace });
+    }
+  }
+
+  /** Merge annotations into a Deployment's pod template (a merge patch): its pods roll. */
+  async patchDeploymentTemplateAnnotations(
+    namespace: string,
+    name: string,
+    annotations: Record<string, string>,
+  ): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.appsApi!.patchNamespacedDeployment(
+        name,
+        namespace,
+        { spec: { template: { metadata: { annotations } } } },
+        undefined, undefined, undefined, undefined, undefined,
+        { headers: { 'Content-Type': 'application/merge-patch+json' } },
+      );
+    } catch (err) {
+      throw wrapK8sError(err, 'patch', { kind: 'Deployment', name, namespace });
+    }
+  }
+
   async deleteSecret(namespace: string, name: string): Promise<void> {
     this.ensureAvailable();
     try {

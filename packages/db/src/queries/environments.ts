@@ -30,6 +30,18 @@ export interface Environment {
   updated_at: Date;
 }
 
+/** A deployed environment whose services' Eve tokens the worker renews. */
+export interface ServiceTokenRenewalTarget {
+  id: string;
+  project_id: string;
+  org_id: string;
+  name: string;
+  namespace: string;
+  /** The release applied last: the one whose service Secrets the cluster holds. */
+  release_id: string;
+  service_tokens_not_before: Date | null;
+}
+
 export interface ListEnvironmentsOptions {
   project_id?: string;
   name?: string;
@@ -420,6 +432,25 @@ export function environmentQueries(db: Db) {
         RETURNING *
       `;
       return row ?? null;
+    },
+
+    /**
+     * Deployed environments, for service-token renewal: those with a current
+     * release and a namespace, in a project not deleted. With `envId`, that
+     * environment only.
+     */
+    async listForServiceTokenRenewal(envId?: string): Promise<ServiceTokenRenewalTarget[]> {
+      return db<ServiceTokenRenewalTarget[]>`
+        SELECT e.id, e.project_id, p.org_id, e.name, e.namespace,
+               COALESCE(e.last_applied_release_id, e.current_release_id) AS release_id,
+               e.service_tokens_not_before
+        FROM environments e
+        JOIN projects p ON p.id = e.project_id AND p.deleted_at IS NULL
+        WHERE e.current_release_id IS NOT NULL
+          AND e.namespace IS NOT NULL
+          ${envId ? db`AND e.id = ${envId}` : db``}
+        ORDER BY e.id
+      `;
     },
 
     async resume(id: string): Promise<Environment | null> {

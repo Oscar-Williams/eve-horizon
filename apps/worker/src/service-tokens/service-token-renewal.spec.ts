@@ -173,6 +173,7 @@ class Cluster {
       if (!secret) throw k8sError(404);
       if (body.metadata?.resourceVersion !== secret.metadata.resourceVersion) throw k8sError(409);
       Object.assign(secret.data, body.data);
+      Object.assign(secret.metadata.annotations, body.metadata.annotations ?? {});
       secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
       return { body: secret };
     }),
@@ -266,7 +267,7 @@ describe('service token renewal', () => {
     expect(cluster.coreApi.patchNamespacedSecret).toHaveBeenCalledWith(
       'prod-api-eve-secrets',
       NS,
-      { metadata: { resourceVersion: '1' }, data: { EVE_SERVICE_TOKEN: b64(renewed) } },
+      { metadata: expect.objectContaining({ resourceVersion: '1' }), data: { EVE_SERVICE_TOKEN: b64(renewed) } },
       undefined, undefined, undefined, undefined, undefined,
       expect.objectContaining({ headers: { 'Content-Type': 'application/merge-patch+json' } }),
     );
@@ -390,6 +391,23 @@ describe('service token renewal', () => {
     const renewed = cluster.value('api', 'EVE_SERVICE_TOKEN');
     expect(renewed).not.toBe(old);
     expect(cluster.hash('api')).toBe(secretsHash({ EVE_SERVICE_TOKEN: renewed, DATABASE_URL: 'postgres://shop-v2' }));
+  });
+
+  it('finishes a roll that failed on the next run, and rolls only once', async () => {
+    cluster.addService('api', { EVE_SERVICE_TOKEN: serviceToken({ days: 20 }) });
+    const hashBefore = cluster.hash('api');
+    cluster.appsApi.patchNamespacedDeployment.mockRejectedValueOnce(k8sError(500));
+
+    await renewal.renewAll();
+    expect(cluster.hash('api')).toBe(hashBefore);
+
+    await renewal.renewAll();
+    const renewed = cluster.value('api', 'EVE_SERVICE_TOKEN');
+    expect(cluster.hash('api')).toBe(secretsHash({ EVE_SERVICE_TOKEN: renewed }));
+    expect(issuer.mintServiceToken).toHaveBeenCalledTimes(1);
+
+    await renewal.renewAll();
+    expect(cluster.appsApi.patchNamespacedDeployment).toHaveBeenCalledTimes(2);
   });
 
   it('leaves the Secret of a service no longer in the applied release alone', async () => {

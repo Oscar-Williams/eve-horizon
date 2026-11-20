@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   Body,
   HttpCode,
@@ -324,6 +325,14 @@ export class AuthInternalController {
     }
     const service = parsed?.services?.[serviceName];
     return service && typeof service === 'object' ? getServicePermissions(service as Service) : [];
+  }
+
+  /** The key the API signs tokens with now, for the worker's service-token renewal. */
+  @Public()
+  @Get('signing-key')
+  @ApiOperation({ summary: 'The key the API signs tokens with now (internal only)' })
+  signingKey(): { kid: string; public_key: Record<string, unknown> } {
+    return this.authService.getSigningKey();
   }
 
   @Public()
