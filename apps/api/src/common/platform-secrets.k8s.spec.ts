@@ -48,6 +48,7 @@ const NEW_KEYS = [
   'EVE_INTERNAL_CORE_KEY',
   'EVE_INTERNAL_GATEWAY_KEY',
   'EVE_INTERNAL_SSO_KEY',
+  'EVE_INTERNAL_DELIVER_KEY',
   'EVE_INTERNAL_CALLER_HASHES',
   'EVE_REGISTRY_CREDENTIAL_KEY',
 ];
@@ -74,13 +75,17 @@ describe('k8s/base platform secrets', () => {
     expect(holdersOf('EVE_INTERNAL_CALLER_HASHES')).toEqual(expect.arrayContaining(['eve-api', 'eve-gateway']));
   });
 
+  it('the deliver key reaches the API only, the one service that delivers to the gateway', () => {
+    expect(holdersOf('EVE_INTERNAL_DELIVER_KEY')).toEqual(['eve-api']);
+  });
+
   it('the registry credential key reaches the API and the worker only', () => {
     expect(holdersOf('EVE_REGISTRY_CREDENTIAL_KEY')).toEqual(['eve-api', 'eve-worker']);
   });
 
   it('the gateway holds no database URL, master key or core key', () => {
     const gateway = envOf('eve-gateway');
-    for (const key of ['DATABASE_URL', 'EVE_SECRETS_MASTER_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_REGISTRY_CREDENTIAL_KEY']) {
+    for (const key of ['DATABASE_URL', 'EVE_SECRETS_MASTER_KEY', 'EVE_INTERNAL_CORE_KEY', 'EVE_INTERNAL_DELIVER_KEY', 'EVE_REGISTRY_CREDENTIAL_KEY']) {
       expect(gateway.has(key), key).toBe(false);
     }
   });

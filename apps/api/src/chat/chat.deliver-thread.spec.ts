@@ -86,4 +86,19 @@ describe('ChatService.deliverChatResult thread ownership', () => {
     expect(mocks.messages.createOutbound).toHaveBeenCalledWith(expect.objectContaining({ thread_id: 'thr_own' }));
     expect(fetchMock).toHaveBeenCalledWith('http://gateway.test/internal/deliver', expect.anything());
   });
+
+  it('sends the gateway the deliver key and the legacy key, never the core key', async () => {
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key-0123');
+    vi.stubEnv('EVE_INTERNAL_DELIVER_KEY', 'deliver-key-0123');
+    try {
+      await service.deliverChatResult({ projectId: 'proj_a', job_id: 'alpha-1', thread_id: 'thr_own', text: 'result text' });
+
+      const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
+      expect(init.headers['x-eve-service-key']).toBe('deliver.deliver-key-0123');
+      expect(init.headers['x-eve-internal-token']).toBe('internal-key');
+      expect(JSON.stringify(init.headers)).not.toContain('core-key-0123');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

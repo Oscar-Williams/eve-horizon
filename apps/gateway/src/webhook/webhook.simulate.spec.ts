@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
@@ -84,6 +85,21 @@ describe('WebhookController simulate endpoint', () => {
         externalEmail: 'member@example.com',
       }),
     );
+  });
+
+  it('takes the deliver key and refuses the core key', async () => {
+    const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+    vi.stubEnv('EVE_INTERNAL_CALLER_HASHES', `core:${sha('core-key-0123')},deliver:${sha('deliver-key-0123')}`);
+
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'core.core-key-0123', 'x-eve-internal-token': INTERNAL_KEY })),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(resolveAndRoute).not.toHaveBeenCalled();
+
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'deliver.deliver-key-0123' })),
+    ).resolves.toEqual({ immediate_reply: null, duplicate: false, route: null });
   });
 });
 
