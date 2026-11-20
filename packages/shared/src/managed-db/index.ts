@@ -161,6 +161,20 @@ export function getManagedDbLimits(className: string): ManagedDbLimits | undefin
   return MANAGED_DB_LIMITS[className];
 }
 
+/**
+ * Connections a tenant database keeps for Eve itself, above its class's
+ * `maxConnections`: the database-wide limit counts every login, and Eve's
+ * platform login is not a superuser on Cloud SQL, so the reconciler, `eve db`,
+ * migrations and the pre-delete `pg_dump` would otherwise be refused once the
+ * tenant's own logins fill it.
+ */
+export const MANAGED_DB_PLATFORM_CONNECTION_RESERVE = 5;
+
+/** A tenant database's connection limit: its class maximum plus the platform reserve. */
+export function managedDbDatabaseConnectionLimit(limits: Pick<ManagedDbLimits, 'maxConnections'>): number {
+  return limits.maxConnections + MANAGED_DB_PLATFORM_CONNECTION_RESERVE;
+}
+
 // ---------------------------------------------------------------------------
 // Backup config defaults (class-based)
 // ---------------------------------------------------------------------------
