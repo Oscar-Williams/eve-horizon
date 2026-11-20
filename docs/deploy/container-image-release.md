@@ -35,12 +35,19 @@ that prefix. Deployment owners roll out digests from their instance repos.
    agent-runtime images and pulls the declared versioned Python/browser images
    from `release-version.txt`, resolving their registry digests before the
    launch. `prepublish` rejects any existing service version tag. Publishers
-   load, verify and push exactly their archived images. No `latest`, `staging`,
-   or SHA alias is part of release qualification.
+   wait for approval in the `release` environment, then load, verify and push
+   exactly their archived images, and sign and attest each pushed digest. No
+   `latest`, `staging`, or SHA alias is part of release qualification. The
+   tagged commit must be on `main` or a `hotfix/*` branch; see
+   [Release protections](../system/ci-cd.md#release-protections) for the
+   ancestry rule, the hotfix route and the one-time `release` environment
+   setup.
 6. Make all seven packages public, anonymously pull each `@sha256:` digest,
    and inspect source/revision labels and linux/amd64 platform. Record both
    manifest and config digests; the publisher verifies config identity against
-   the local image ID.
+   the local image ID. `cosign verify` each digest against the
+   `publish-images.yml` identity
+   ([Verifying an image](../system/ci-cd.md#verifying-an-image)).
 7. The deployment instance owner pins those service and toolchain **digests**,
    reviews their instance Terraform/manifests, performs the rollout there, and
    records deployment revision, actual pulled imageIDs, job IDs, browser
