@@ -540,7 +540,8 @@ export class ManifestService {
    * wait for a person; Eve does not enforce it (EVE-056). Rule
    * manifest.approval_unenforced (project): `strict` refuses the sync (400),
    * `audit` syncs with the warning and records what strict would refuse,
-   * `legacy` gives the warning only.
+   * `legacy` gives the warning only. `none` (any case) and an empty value ask
+   * for no gate, so they pass.
    */
   private async checkEnvironmentApprovalGates(
     projectId: string,
@@ -548,7 +549,7 @@ export class ManifestService {
     caller?: AuthUser,
   ): Promise<string[]> {
     const gated = Object.entries(manifest.environments ?? {})
-      .filter(([, environment]) => environment?.approval !== undefined && environment?.approval !== null)
+      .filter(([, environment]) => asksForApprovalGate(environment?.approval))
       .map(([name]) => name);
     if (gated.length === 0) return [];
     const messages = gated.map(
@@ -1406,4 +1407,12 @@ export class ManifestService {
     }
     return serviceNames;
   }
+}
+
+/** Whether an environment's `approval` value asks for a gate: anything but none, `none` (any case) or blank. */
+function asksForApprovalGate(approval: unknown): boolean {
+  if (approval === undefined || approval === null) return false;
+  if (typeof approval !== 'string') return true;
+  const value = approval.trim().toLowerCase();
+  return value !== '' && value !== 'none';
 }
