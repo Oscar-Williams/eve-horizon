@@ -249,7 +249,7 @@ export class ManagedDbService {
     id: string;
     org_id: string;
     project_id: string;
-    env_id: string;
+    env_id: string | null;
     service_name: string;
     instance_id: string;
     db_name: string;

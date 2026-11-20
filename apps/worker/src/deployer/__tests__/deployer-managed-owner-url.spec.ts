@@ -103,7 +103,7 @@ describe('managed_db.owner_url', () => {
       governing: 'project',
       actorType: 'deployer',
       actorId: 'prod/web',
-      detail: expect.objectContaining({ service: 'web', references: ['managed.db.url'] }),
+      detail: expect.objectContaining({ service: 'web', references: 'managed.db.url' }),
     })]);
   });
 

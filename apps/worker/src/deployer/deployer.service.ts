@@ -1834,7 +1834,7 @@ export class DeployerService {
       governing: 'project',
       actorType: 'deployer',
       actorId: `${scope.envName}/${serviceName}`,
-      detail: { env: scope.envName, service: serviceName, references },
+      detail: { env: scope.envName, service: serviceName, references: references.join(', ') },
     });
     if (profile === 'strict') {
       const roleForms = [...new Set(references.map((r) => r.split('.')[1]))]

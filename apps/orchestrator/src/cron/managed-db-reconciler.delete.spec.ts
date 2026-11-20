@@ -19,7 +19,7 @@ function createFakeSql(failOn?: RegExp): FakeSql {
     statements.push(strings.join('?').replace(/\s+/g, ' ').trim());
     void values;
     return Promise.resolve([]);
-  }) as FakeSql;
+  }) as unknown as FakeSql;
   sql.unsafe = (text: string) => {
     statements.push(text);
     if (failOn?.test(text)) return Promise.reject(new Error('database is being accessed by other users'));
