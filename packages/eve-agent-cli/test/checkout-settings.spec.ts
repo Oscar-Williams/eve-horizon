@@ -167,18 +167,17 @@ describe('Codex under strict', () => {
     expect(args).toContain('model_provider="openai"');
   });
 
-  it('refuses a shell_environment_policy that widens what shell commands inherit, and keeps one that narrows it', () => {
+  it('keeps a shell_environment_policy that sets no routing name', () => {
     for (const policy of [
       'inherit = "all"',
       'ignore_default_excludes = true',
       'include_only = ["*"]',
       'set = { SHOP_KEY = "${OPENAI_API_KEY}" }',
+      'inherit = "core"\ninclude_only = ["PATH", "HOME"]',
     ]) {
       const ws = dir({ '.codex/config.toml': `[shell_environment_policy]\n${policy}\n` });
-      expect(() => build(context('codex', ws, { OPENAI_API_KEY: 'sk-test', CODEX_HOME: dir() })), policy).toThrow(/harness\.checkout_settings/);
+      expect(build(context('codex', ws, { OPENAI_API_KEY: 'sk-test', CODEX_HOME: dir() })).args, policy).toContain('model_provider="openai"');
     }
-    const narrow = dir({ '.codex/config.toml': '[shell_environment_policy]\ninherit = "core"\ninclude_only = ["PATH", "HOME"]\n' });
-    expect(build(context('codex', narrow, { OPENAI_API_KEY: 'sk-test', CODEX_HOME: dir() })).args).toContain('model_provider="openai"');
   });
 
   it('refuses a checkout MCP server that takes a credential by name', () => {

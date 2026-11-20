@@ -337,10 +337,11 @@ function claudeRoutingSettings(value: unknown): string[] {
  * each `model_providers` entry, any key ending `base_url`, and any env
  * override (an upper-case key with a value, such as
  * `shell_environment_policy.set.OPENAI_BASE_URL` or an MCP server's `env`)
- * that sets a routing name, a `shell_environment_policy` that widens what
- * shell commands inherit (`codexShellWidening`); then the MCP servers it
- * hands a credential (`codexMcpHandoffs`). A file it cannot read is
- * `(unreadable)`.
+ * that sets a routing name; then the MCP servers it hands a credential
+ * (`codexMcpHandoffs`). A file it cannot read is `(unreadable)`. What
+ * `shell_environment_policy` lets shell commands inherit is not judged:
+ * Codex already passes its whole environment by default, and a credential
+ * sent out by job code is closed by egress allow lists.
  */
 function codexRoutingSettings(text: string | null, harness: string): string[] {
   if (!text) return [];
@@ -359,9 +360,6 @@ function codexRoutingSettings(text: string | null, harness: string): string[] {
         const entries = isTable(value) ? Object.keys(value) : [];
         for (const entry of entries.length > 0 ? entries : ['']) settings.add(entry ? `${name}.${entry}` : name);
         continue;
-      }
-      if (key === 'shell_environment_policy' && isTable(value)) {
-        for (const setting of codexShellWidening(value, harness)) settings.add(`${name}.${setting}`);
       }
       if ((path.length === 1 && key === 'profile') || key === 'model_provider' || /base_url$/i.test(key)) {
         settings.add(name);
@@ -409,42 +407,6 @@ function codexMcpHandoffs(doc: TomlTable, harness: string): string[] {
     }
   }
   return found;
-}
-
-/**
- * `shell_environment_policy` keys that widen what Codex's shell commands
- * inherit: `inherit = "all"`, `ignore_default_excludes = true`, an
- * `include_only` pattern or `filters` include that keeps a credential, and a
- * `set` entry that names or references one.
- */
-function codexShellWidening(policy: TomlTable, harness: string): string[] {
-  const found: string[] = [];
-  if (policy.inherit === 'all') found.push('inherit=all');
-  if (policy.ignore_default_excludes === true) found.push('ignore_default_excludes');
-  const includes = Array.isArray(policy.include_only) ? policy.include_only : [];
-  if (includes.some((pattern) => typeof pattern === 'string' && keepsCredential(pattern, harness))) found.push('include_only');
-  const filters = isTable(policy.filters) ? Object.entries(policy.filters) : [];
-  if (filters.some(([pattern, filter]) => filter === 'include' && keepsCredential(pattern, harness))) found.push('filters');
-  for (const [key, value] of Object.entries(isTable(policy.set) ? policy.set : {})) {
-    if (isCheckoutCredentialEnvKey(key, harness)) found.push(`set.${key}`);
-    for (const [, name] of typeof value === 'string' ? value.matchAll(ENV_REFERENCE) : []) {
-      if (namesHarnessSecret(name, harness)) found.push(`set.${key}=$${name}`);
-    }
-  }
-  return found;
-}
-
-/** Credential names a wildcard include pattern is tried against. */
-const CREDENTIAL_PROBES = [
-  ...CLAUDE_AUTH_ENV_KEYS, 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_AUTH_JSON', 'CODEX_AUTH_JSON_B64', 'CODEX_OAUTH_ACCESS_TOKEN',
-  'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'Z_AI_API_KEY', 'ZAI_API_KEY', 'EVE_JOB_TOKEN', 'EVE_APP_LINK_APP_TOKEN', 'EVE_INTERNAL_API_KEY',
-];
-
-/** Whether a Codex env pattern (`*` and `?` wildcards, any case) keeps a credential of this run. */
-function keepsCredential(pattern: string, harness: string): boolean {
-  if (!/[*?]/.test(pattern)) return isCheckoutCredentialEnvKey(pattern, harness);
-  const glob = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
-  return CREDENTIAL_PROBES.some((name) => glob.test(name) && isCheckoutCredentialEnvKey(name, harness));
 }
 
 /** Whether a checkout MCP server may not be handed this env name: a credential or a routing name. */

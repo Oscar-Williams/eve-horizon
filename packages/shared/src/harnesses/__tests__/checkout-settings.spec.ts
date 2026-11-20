@@ -186,44 +186,24 @@ describe('findCheckoutRouting', () => {
     ]);
   });
 
-  it('names shell_environment_policy keys that widen what Codex shell commands inherit', () => {
+  it('leaves shell_environment_policy to egress allow lists, and reads any pattern in linear time', () => {
+    // Codex already passes its whole environment to shell commands by
+    // default, so a policy can only match or narrow that; what shell
+    // commands do with a credential is exfiltration, closed by
+    // egress.allow_hosts. Only routing names it sets are findings (above).
     const ws = workspace({
       '.codex/config.toml': [
         '[shell_environment_policy]',
         'inherit = "all"',
         'ignore_default_excludes = true',
-        'include_only = ["PATH", "*_API_KEY"]',
+        `include_only = ["PATH", "*_API_KEY", "${'*'.repeat(10)}!"]`,
         'set = { SHOP_KEY = "$OPENAI_API_KEY", CODEX_API_KEY = "x", SHOP_MODE = "test" }',
       ].join('\n'),
-      '.agent/harnesses/codex/config.toml': '[shell_environment_policy]\nfilters = { "EVE_*" = "include", "AWS_*" = "exclude" }\n',
+      '.agent/harnesses/codex/config.toml': `[shell_environment_policy]\nfilters = { "EVE_*" = "include", "${'*'.repeat(10)}!" = "include" }\n`,
     });
-    expect(findCheckoutRouting({ workspace: ws, harness: 'codex', configDir: path.join(ws, '.agent/harnesses/codex') })).toEqual([
-      {
-        file: '.codex/config.toml',
-        settings: [
-          'shell_environment_policy.inherit=all',
-          'shell_environment_policy.ignore_default_excludes',
-          'shell_environment_policy.include_only',
-          'shell_environment_policy.set.SHOP_KEY=$OPENAI_API_KEY',
-          'shell_environment_policy.set.CODEX_API_KEY',
-        ],
-      },
-      { file: '.agent/harnesses/codex/config.toml', settings: ['shell_environment_policy.filters'] },
-    ]);
-  });
-
-  it('finds nothing in a shell_environment_policy that only narrows what shell commands inherit', () => {
-    const ws = workspace({
-      '.codex/config.toml': [
-        '[shell_environment_policy]',
-        'inherit = "core"',
-        'ignore_default_excludes = false',
-        'exclude = ["AWS_*"]',
-        'include_only = ["PATH", "HOME", "SHOP_*"]',
-        'set = { CI = "1" }',
-      ].join('\n'),
-    });
-    expect(findCheckoutRouting({ workspace: ws, harness: 'codex' })).toEqual([]);
+    const started = Date.now();
+    expect(findCheckoutRouting({ workspace: ws, harness: 'codex', configDir: path.join(ws, '.agent/harnesses/codex') })).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(250);
   });
 
   it('names Codex MCP servers that take a credential or routing variable by name, whatever the header case', () => {
