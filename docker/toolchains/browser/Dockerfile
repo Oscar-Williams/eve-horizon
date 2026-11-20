@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim AS build
+# debian:bookworm-slim
+FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 
 ARG PLAYWRIGHT_VERSION=1.63.0
 ENV PLAYWRIGHT_BROWSERS_PATH=/toolchain/browsers
@@ -33,5 +34,6 @@ RUN chmod 755 /toolchain/bin/eve-browser-python \
     && chmod -R a+rX /toolchain \
     && printf '%s\n' 'export PATH="/opt/eve/toolchains/browser/bin:${PATH}"' > /toolchain/env.sh
 
-FROM busybox:stable
+# busybox:stable
+FROM busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
 COPY --from=build /toolchain /toolchain

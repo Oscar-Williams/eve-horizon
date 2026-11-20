@@ -1,4 +1,5 @@
-FROM node:22-alpine AS build
+# node:22-alpine
+FROM node@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS build
 
 WORKDIR /app
 RUN corepack enable
@@ -14,7 +15,8 @@ COPY packages/shared ./packages/shared
 
 RUN pnpm --filter @eve/shared build && pnpm --filter @eve/sso build
 
-FROM node:22-alpine AS production
+# node:22-alpine
+FROM node@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS production
 WORKDIR /app
 RUN corepack enable
 

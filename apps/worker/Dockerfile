@@ -25,10 +25,13 @@
 #
 # =============================================================================
 
-ARG NODE_BASE_IMAGE=node:22-slim
+# node:22-slim
+ARG NODE_BASE_IMAGE=node@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
-FROM gcr.io/kaniko-project/executor:v1.20.1 AS kaniko
-FROM moby/buildkit:v0.12.5 AS buildkit
+# gcr.io/kaniko-project/executor:v1.20.1
+FROM gcr.io/kaniko-project/executor@sha256:c71116ee36be17b14026f853103f7fb695042a9b6a4b4ad9b70de0e65c5c94a1 AS kaniko
+# moby/buildkit:v0.12.5
+FROM moby/buildkit@sha256:449188623c7a8a3bd4f161c5d0ddf5cabbfb828f7eaadf9ed8111864b911a308 AS buildkit
 
 # =============================================================================
 # Stage: node-image

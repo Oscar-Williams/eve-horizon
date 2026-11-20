@@ -1,4 +1,5 @@
-ARG NODE_BASE_IMAGE=node:22-slim
+# node:22-slim
+ARG NODE_BASE_IMAGE=node@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 FROM ${NODE_BASE_IMAGE} AS base
 RUN corepack enable
 WORKDIR /app
