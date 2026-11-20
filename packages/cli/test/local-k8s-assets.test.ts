@@ -83,8 +83,10 @@ describe('local k8s platform secrets', () => {
     expect(offenders.map((w) => w.metadata.name)).toEqual([]);
   });
 
-  it('every eve-app key a workload reads is in the Secret or written by eve local up', async () => {
-    const available = new Set([...Object.keys(appSecret?.stringData ?? {}), ...Object.keys(await writtenByLocalUp())]);
+  it('every eve-app key a workload reads is in the Secret or written by eve local up, unless a local stack may lack it', async () => {
+    // Optional settings a local stack runs without, as an install may.
+    const mayLack = ['EVE_REGISTRY_SIGNING_KEY', 'EVE_ORG_FS_LINK_TOKEN_SECRET', 'EVE_GITHUB_TOKEN'];
+    const available = new Set([...Object.keys(appSecret?.stringData ?? {}), ...Object.keys(await writtenByLocalUp()), ...mayLack]);
     const missing = workloads.flatMap((w) =>
       containersOf(w).flatMap((c) => c.env ?? [])
         .map((e) => e.valueFrom?.secretKeyRef)

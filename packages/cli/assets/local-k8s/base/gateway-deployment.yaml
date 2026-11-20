@@ -27,10 +27,28 @@ spec:
           ports:
             - name: http
               containerPort: 4820
-          envFrom:
-            - secretRef:
-                name: eve-app
           env:
+            # Platform secrets: the gateway's own key, and the hashes of the keys it
+            # accepts (the deliver key, for deliveries), as in k8s/base. No database
+            # URL and no core key. Each is optional, as with envFrom.
+            - name: EVE_INTERNAL_GATEWAY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_GATEWAY_KEY
+                  optional: true
+            - name: EVE_INTERNAL_CALLER_HASHES
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CALLER_HASHES
+                  optional: true
+            - name: EVE_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_API_KEY
+                  optional: true
             - name: GATEWAY_PORT
               value: "4820"
             - name: EVE_API_URL

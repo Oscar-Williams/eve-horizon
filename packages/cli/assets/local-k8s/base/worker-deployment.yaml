@@ -30,11 +30,36 @@ spec:
             allowPrivilegeEscalation: false
           image: eve-horizon/worker:local
           imagePullPolicy: IfNotPresent
-          envFrom:
-            # Mount all secrets from eve-app (auth tokens, etc.)
-            - secretRef:
-                name: eve-app
           env:
+            # Platform secrets: only the eve-app keys this service reads (no envFrom,
+            # so a key added to eve-app reaches no service that does not name it),
+            # as in k8s/base. Each is optional, as with envFrom, except the
+            # registry credential key, which the API and the worker must share.
+            - name: EVE_INTERNAL_CORE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_CORE_KEY
+                  optional: true
+            - name: EVE_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_API_KEY
+                  optional: true
+            # Required: the API and the worker must read the same key (it may be
+            # empty: both then sign with the internal key).
+            - name: EVE_REGISTRY_CREDENTIAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_REGISTRY_CREDENTIAL_KEY
+            - name: EVE_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_GITHUB_TOKEN
+                  optional: true
             - name: EVE_RUNTIME
               value: k8s
             - name: EVE_K8S_NAMESPACE

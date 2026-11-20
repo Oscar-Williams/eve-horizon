@@ -1095,20 +1095,38 @@ function generateAuthSecrets(runtimeOptions: UpRuntimeOptions): void {
   const kubectl = requireToolPath('kubectl', "Run 'eve local up' again to auto-install managed tools.");
 
   printProgress(runtimeOptions, 'Generating auth secrets...');
-  const existingJwtSecret = readSecretValue(kubectl, 'SUPABASE_JWT_SECRET');
-  const existingAdminPassword = readSecretValue(kubectl, 'EVE_AUTH_ADMIN_PASSWORD');
-  const existingAuthPrivateKey = readSecretValue(kubectl, 'EVE_AUTH_PRIVATE_KEY');
-  const existingAuthPublicKey = readSecretValue(kubectl, 'EVE_AUTH_PUBLIC_KEY');
-  const existingInternalApiKey = readSecretValue(kubectl, 'EVE_INTERNAL_API_KEY');
-  const existingSecretsMasterKey = readSecretValue(kubectl, 'EVE_SECRETS_MASTER_KEY');
-  const existingBootstrapToken = readSecretValue(kubectl, 'EVE_BOOTSTRAP_TOKEN');
+  const stringData = localPlatformSecrets((key) => readSecretValue(kubectl, key));
 
-  const jwtSecret = existingJwtSecret || randomBytes(32).toString('hex');
-  const adminPassword = existingAdminPassword || randomBytes(24).toString('base64url').slice(0, 32);
+  const patchPayload = JSON.stringify({ stringData });
+  run(
+    kubectl,
+    ['--context', DEFAULT_KUBE_CONTEXT, '-n', 'eve', 'patch', 'secret', 'eve-app', '--type', 'merge', '-p', patchPayload],
+    { stdio: runtimeOptions.verbose && !runtimeOptions.quiet ? 'inherit' : 'pipe' },
+  );
+}
+
+/**
+ * The packaged stack's own Postgres (`postgres-secret.yaml`). Its fixed
+ * password is for this local stack only; k8s/base names none.
+ */
+const LOCAL_DATABASE_URL = 'postgres://eve:eve@postgres.eve.svc.cluster.local:5432/eve';
+
+/**
+ * What `eve local up` writes into the `eve-app` Secret: each value kept from
+ * an earlier run (`existing`), else generated. Services take the keys they
+ * read by `secretKeyRef`, as in k8s/base, so every key a packaged manifest
+ * reads is written here or declared in `app-secret.yaml`.
+ */
+export function localPlatformSecrets(
+  existing: (key: string) => string,
+  env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const jwtSecret = existing('SUPABASE_JWT_SECRET') || randomBytes(32).toString('hex');
+  const adminPassword = existing('EVE_AUTH_ADMIN_PASSWORD') || randomBytes(24).toString('base64url').slice(0, 32);
   const dbUrl = `postgres://eve_auth_admin:${adminPassword}@postgres.eve.svc.cluster.local:5432/eve?sslmode=disable`;
 
-  let authPrivateKey = existingAuthPrivateKey;
-  let authPublicKey = existingAuthPublicKey;
+  let authPrivateKey = existing('EVE_AUTH_PRIVATE_KEY');
+  let authPublicKey = existing('EVE_AUTH_PUBLIC_KEY');
   if (!authPrivateKey || !authPublicKey) {
     const keyPair = generateKeyPairSync('rsa', {
       modulusLength: 2048,
@@ -1128,23 +1146,26 @@ function generateAuthSecrets(runtimeOptions: UpRuntimeOptions): void {
   // runtime), the gateway's and the SSO's own, the deliver key the API sends
   // the gateway, and the hashes callees check them against. Kept across
   // runs, like the other keys.
-  const coreKey = readSecretValue(kubectl, 'EVE_INTERNAL_CORE_KEY') || randomBytes(32).toString('hex');
-  const gatewayKey = readSecretValue(kubectl, 'EVE_INTERNAL_GATEWAY_KEY') || randomBytes(32).toString('hex');
-  const ssoKey = readSecretValue(kubectl, 'EVE_INTERNAL_SSO_KEY') || randomBytes(32).toString('hex');
-  const deliverKey = readSecretValue(kubectl, 'EVE_INTERNAL_DELIVER_KEY') || randomBytes(32).toString('hex');
+  const coreKey = existing('EVE_INTERNAL_CORE_KEY') || randomBytes(32).toString('hex');
+  const gatewayKey = existing('EVE_INTERNAL_GATEWAY_KEY') || randomBytes(32).toString('hex');
+  const ssoKey = existing('EVE_INTERNAL_SSO_KEY') || randomBytes(32).toString('hex');
+  const deliverKey = existing('EVE_INTERNAL_DELIVER_KEY') || randomBytes(32).toString('hex');
   const keyHash = (key: string) => createHash('sha256').update(key, 'utf8').digest('hex');
 
   const stringData: Record<string, string> = {
+    // Read from the Secret, as in k8s/base, by the services that open the
+    // database (the agent runtime's manifest is the same as k8s/base's).
+    DATABASE_URL: existing('DATABASE_URL') || LOCAL_DATABASE_URL,
     EVE_INTERNAL_CORE_KEY: coreKey,
     EVE_INTERNAL_GATEWAY_KEY: gatewayKey,
     EVE_INTERNAL_SSO_KEY: ssoKey,
     EVE_INTERNAL_DELIVER_KEY: deliverKey,
     EVE_INTERNAL_CALLER_HASHES:
       `core:${keyHash(coreKey)},gateway:${keyHash(gatewayKey)},sso:${keyHash(ssoKey)},deliver:${keyHash(deliverKey)}`,
-    EVE_REGISTRY_CREDENTIAL_KEY: readSecretValue(kubectl, 'EVE_REGISTRY_CREDENTIAL_KEY') || randomBytes(32).toString('hex'),
-    EVE_INTERNAL_API_KEY: existingInternalApiKey || randomBytes(24).toString('hex'),
-    EVE_SECRETS_MASTER_KEY: existingSecretsMasterKey || randomBytes(32).toString('hex'),
-    EVE_BOOTSTRAP_TOKEN: existingBootstrapToken || randomBytes(24).toString('hex'),
+    EVE_REGISTRY_CREDENTIAL_KEY: existing('EVE_REGISTRY_CREDENTIAL_KEY') || randomBytes(32).toString('hex'),
+    EVE_INTERNAL_API_KEY: existing('EVE_INTERNAL_API_KEY') || randomBytes(24).toString('hex'),
+    EVE_SECRETS_MASTER_KEY: existing('EVE_SECRETS_MASTER_KEY') || randomBytes(32).toString('hex'),
+    EVE_BOOTSTRAP_TOKEN: existing('EVE_BOOTSTRAP_TOKEN') || randomBytes(24).toString('hex'),
     SUPABASE_JWT_SECRET: jwtSecret,
     EVE_AUTH_ADMIN_PASSWORD: adminPassword,
     SUPABASE_AUTH_DATABASE_URL: dbUrl,
@@ -1160,18 +1181,13 @@ function generateAuthSecrets(runtimeOptions: UpRuntimeOptions): void {
   ];
 
   for (const key of optionalKeys) {
-    const value = process.env[key];
+    const value = env[key];
     if (typeof value === 'string' && value.length > 0) {
       stringData[key] = value;
     }
   }
 
-  const patchPayload = JSON.stringify({ stringData });
-  run(
-    kubectl,
-    ['--context', DEFAULT_KUBE_CONTEXT, '-n', 'eve', 'patch', 'secret', 'eve-app', '--type', 'merge', '-p', patchPayload],
-    { stdio: runtimeOptions.verbose && !runtimeOptions.quiet ? 'inherit' : 'pipe' },
-  );
+  return stringData;
 }
 
 function readSecretValue(kubectl: string, key: string): string {
