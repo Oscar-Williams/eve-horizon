@@ -1301,6 +1301,8 @@ export class DeployerService {
         },
       });
 
+      await this.decideManagedOwnerCredential(service, name, params);
+
       // Build interpolation context for this component
       const interpolationContext = {
         envName: params.envName,
@@ -1794,6 +1796,39 @@ export class DeployerService {
       detail: plan.detail,
     });
     return plan;
+  }
+
+  /**
+   * Rule managed_db.owner_url: a long-running service that reads the managed
+   * database owner's credential (`${managed.<db>.url}` or `.password`) is
+   * recorded under `audit` and refused under `strict`, where only job
+   * services (migrations) receive it. Declared roles are unaffected.
+   */
+  private async decideManagedOwnerCredential(
+    service: Service,
+    serviceName: string,
+    scope: { envName: string; orgId: string; projectId: string },
+  ): Promise<void> {
+    const references = managedOwnerCredentialReferences(service);
+    if (references.length === 0) return;
+    const profile = await decideSecurityRule(this.db, MANAGED_OWNER_URL_RULE, {
+      orgId: scope.orgId,
+      projectId: scope.projectId,
+      governing: 'project',
+      actorType: 'deployer',
+      actorId: `${scope.envName}/${serviceName}`,
+      detail: { env: scope.envName, service: serviceName, references },
+    });
+    if (profile === 'strict') {
+      const roleForms = [...new Set(references.map((r) => r.split('.')[1]))]
+        .map((db) => `\${managed.${db}.roles.<role>.url}`)
+        .join(', ');
+      throw new Error(
+        `Service ${serviceName} reads the managed database owner credential (${references.map((r) => `\${${r}}`).join(', ')}). ` +
+        `Only job services (migrations) receive it: declare a role under x-eve.managed.roles and use ${roleForms} ` +
+        '(rule managed_db.owner_url).',
+      );
+    }
   }
 
   /**
@@ -3779,4 +3814,25 @@ export class DeployerService {
       default: return undefined;
     }
   }
+}
+
+const MANAGED_OWNER_URL_RULE = 'managed_db.owner_url';
+
+/**
+ * The owner-credential references (`managed.<db>.url`, `managed.<db>.password`)
+ * a service's environment, command or args contain, sorted and unique.
+ * Declared roles (`managed.<db>.roles.<role>.*`) and the non-secret parts
+ * (host, port, database, username) are not owner credentials.
+ */
+export function managedOwnerCredentialReferences(service: Service): string[] {
+  const text = JSON.stringify([
+    (service as { environment?: unknown }).environment ?? null,
+    (service as { command?: unknown }).command ?? null,
+    (service as { entrypoint?: unknown }).entrypoint ?? null,
+  ]);
+  const found = new Set<string>();
+  for (const match of text.matchAll(/\$\{managed\.([a-zA-Z0-9_-]+)\.(url|password)\}/g)) {
+    found.add(`managed.${match[1]}.${match[2]}`);
+  }
+  return [...found].sort();
 }
