@@ -222,4 +222,33 @@ describe('DeployerService managed value interpolation', () => {
       .toBe('user=acme-shop-test-u-1a2b3c-app_ro pass=rolepw');
     expect(interpolate('${managed.db.roles.missing.url}')).toBe('${managed.db.roles.missing.url}');
   });
+
+  // Rule managed_db.owner_url reads the manifest, so a value put in for one
+  // placeholder must never be read again as another placeholder.
+  it('replaces each placeholder once and never expands the text it put in', () => {
+    const deployer = new DeployerService(null as any, null as any);
+    const context = {
+      envName: 'test',
+      projectId: 'proj_123',
+      orgId: 'org_456',
+      orgSlug: 'acme',
+      componentName: 'api',
+      secrets: new Map<string, string>([
+        ['DB_ALIAS', '${managed.db.url}'],
+        ['NOTE', 'a $& b ${ENV_NAME} ${secret.DB_ALIAS}'],
+      ]),
+      managedValues: new Map<string, string>([
+        ['db.url', tenantUrl],
+        ['db.host', 'db.internal'],
+        ['db.note', '${secret.NOTE}'],
+      ]),
+    };
+
+    const interpolate = (value: string) => (deployer as any).interpolateValue(value, context);
+
+    expect(interpolate('${secret.DB_ALIAS}')).toBe('${managed.db.url}');
+    expect(interpolate('${managed.db.host}/${secret.NOTE}')).toBe('db.internal/a $& b ${ENV_NAME} ${secret.DB_ALIAS}');
+    expect(interpolate('${managed.db.note}:${ENV_NAME}')).toBe('${secret.NOTE}:test');
+    expect(interpolate('${secret.MISSING}-${managed.db.host}')).toBe('${secret.MISSING}-db.internal');
+  });
 });

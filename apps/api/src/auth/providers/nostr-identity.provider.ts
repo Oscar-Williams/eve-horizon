@@ -159,17 +159,6 @@ export class NostrIdentityProvider implements IdentityProvider {
       originFromHeaders?: boolean;
     };
 
-    // 0. Without EVE_PUBLIC_API_URL the host came from the request's headers.
-    if (originFromHeaders) {
-      const profile = await decideSecurityRule(this.db, NIP98_PUBLIC_URL_RULE, {
-        governing: 'instance',
-        actorType: 'nostr',
-        actorId: typeof event?.pubkey === 'string' ? event.pubkey.toLowerCase() : 'unknown',
-        detail: { url },
-      });
-      if (profile === 'strict') return null;
-    }
-
     // 1. Verify event ID + Schnorr signature
     if (!verifyNostrEvent(event)) return null;
 
@@ -195,7 +184,20 @@ export class NostrIdentityProvider implements IdentityProvider {
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(event.created_at - now) > 60) return null;
 
-    // 7. Replay protection (TTL = 120s, double the +-60s window)
+    // 7. Without EVE_PUBLIC_API_URL the host came from the request's headers.
+    // Decided only for a request that passed every check above, so a forged
+    // or stale one records no finding.
+    if (originFromHeaders) {
+      const profile = await decideSecurityRule(this.db, NIP98_PUBLIC_URL_RULE, {
+        governing: 'instance',
+        actorType: 'nostr',
+        actorId: event.pubkey.toLowerCase(),
+        detail: { url },
+      });
+      if (profile === 'strict') return null;
+    }
+
+    // 8. Replay protection (TTL = 120s, double the +-60s window)
     try {
       await this.replayStore.assertNotReplayed('nostr', event.id, 120);
     } catch {

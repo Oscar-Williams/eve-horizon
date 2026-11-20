@@ -123,4 +123,53 @@ describe('managedDbQueries lifecycle', () => {
 
     await expect(managedDb.createTenant(tenantInput())).rejects.toThrow(/still being deleted/);
   });
+
+  it('refuses to bring a tenant deleted mid-operation back to ready, and queues it for drop', async () => {
+    const tenant = await managedDb.createTenant(tenantInput());
+    const token = 'op-provision';
+    expect(await managedDb.acquireOperationLock(tenant.id, token)).not.toBeNull();
+    // The environment is deleted while the reconciler is still provisioning.
+    await managedDb.softDeleteTenant(tenant.id);
+
+    const moved = await managedDb.transitionStatus(tenant.id, token, 'ready', {
+      providerTenantId: 'local:acme-shop-test-1a2b3c',
+      setReady: true,
+    });
+
+    expect(moved).toBeNull();
+    const [after] = await db<Array<{ status: string; deleted_at: Date | null }>>`
+      SELECT status, deleted_at FROM managed_db_tenants WHERE id = ${tenant.id}
+    `;
+    expect(after.status).toBe('deleting');
+    expect(after.deleted_at).not.toBeNull();
+    expect(await managedDb.releaseOperationLock(tenant.id, token)).toBe(true);
+    expect((await managedDb.listTenantsNeedingReconciliation()).map((t) => t.id)).toContain(tenant.id);
+  });
+
+  it('still moves a deleted tenant to deleting, deleted or failed', async () => {
+    for (const status of ['deleting', 'failed', 'deleted']) {
+      const tenant = await managedDb.createTenant(tenantInput(generateManagedDbTenantId(), `acme-shop-test-${status}`));
+      await managedDb.softDeleteTenant(tenant.id);
+      const token = `op-${status}`;
+      expect(await managedDb.acquireOperationLock(tenant.id, token)).not.toBeNull();
+
+      const moved = await managedDb.transitionStatus(tenant.id, token, status);
+
+      expect(moved?.status).toBe(status);
+      await db`DELETE FROM managed_db_tenants WHERE id = ${tenant.id}`;
+    }
+  });
+
+  it('queues for drop a deleted tenant left in any status but deleted or failed', async () => {
+    const ready = await managedDb.createTenant(tenantInput());
+    const parked = await managedDb.createTenant({ ...tenantInput(generateManagedDbTenantId(), 'acme-shop-test-2b3c4d'), service_name: 'cache' });
+    // Rows an earlier release could leave: deleted, yet ready (or failed).
+    await db`UPDATE managed_db_tenants SET status = 'ready', deleted_at = NOW() WHERE id = ${ready.id}`;
+    await db`UPDATE managed_db_tenants SET status = 'failed', deleted_at = NOW() WHERE id = ${parked.id}`;
+
+    const queued = (await managedDb.listTenantsNeedingReconciliation()).map((t) => t.id);
+
+    expect(queued).toContain(ready.id);
+    expect(queued).not.toContain(parked.id);
+  });
 });

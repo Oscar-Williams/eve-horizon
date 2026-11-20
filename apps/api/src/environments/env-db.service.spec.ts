@@ -336,3 +336,22 @@ describe('EnvDbService database target', () => {
     });
   });
 });
+
+describe('EnvDbService secret interpolation', () => {
+  // Each ${secret.KEY} in the configured value is replaced once, in place,
+  // with the secret's exact text: a value is never read again as a
+  // placeholder or as a replacement pattern.
+  it('puts each secret in its own place, verbatim', async () => {
+    const values: Record<string, string> = { FIRST: '${secret.SECOND}', SECOND: 'p$&w$1' };
+    const secrets = { resolveProjectSecretValue: vi.fn(async (_projectId: string, key: string) => values[key] ?? null) };
+    const service = new EnvDbService({} as never, secrets as unknown as SecretsService);
+
+    const result = await (service as any).interpolateSecrets(
+      'postgres://app:${secret.SECOND}@db.internal:5432/${secret.FIRST}?x=${secret.MISSING}',
+      'proj_1',
+    );
+
+    expect(result).toBe('postgres://app:p$&w$1@db.internal:5432/${secret.SECOND}?x=${secret.MISSING}');
+    expect(secrets.resolveProjectSecretValue).toHaveBeenCalledTimes(3);
+  });
+});

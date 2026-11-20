@@ -702,11 +702,11 @@ All harness output is logged to the `execution_logs` table:
 The worker container entrypoint (`docker/worker/entrypoint.sh`) runs before the worker process:
 
 1. **Create workspace directory** with proper permissions
-2. **Install missing cc-mirror variants** (mclaude, zai) **in the background**. The
-   worker image bakes both variants in (and falls back to a `mclaude` shim that
-   runs `claude` if the variant build fails), so this only does work for custom
-   images or for `zai` once `Z_AI_API_KEY` is set. It never delays the worker
-   process, its probes or a runner pod's start.
+2. **Report missing cc-mirror variants** (mclaude, zai). The worker image
+   builds both in, and a failed variant build fails the image build (an image
+   built without cc-mirror gets a `mclaude` shim that runs `claude`). The
+   entrypoint installs nothing: a variant missing from a custom image is
+   logged, and that harness is unavailable.
 3. **Report Claude auth availability** from env/file fallback (job credentials are materialized per attempt)
 4. **Write Codex credentials** to harness config dir (local dev only)
 5. **Set environment aliases** (Z_AI_API_KEY from ZAI_API_KEY)

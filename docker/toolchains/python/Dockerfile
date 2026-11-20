@@ -2,7 +2,7 @@
 FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv curl ca-certificates \
-    && pip3 install --break-system-packages uv \
+    && pip3 install --break-system-packages uv==0.13.7 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /toolchain/bin /toolchain/lib /toolchain/share \

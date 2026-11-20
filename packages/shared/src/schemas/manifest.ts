@@ -15,6 +15,7 @@ import {
 } from '../managed-db/extensions.js';
 import {
   MANAGED_DB_ROLE_GRANTS,
+  MANAGED_DB_MAX_ROLES,
   MANAGED_DB_ROLE_NAME_PATTERN,
 } from '../managed-db/roles.js';
 import { IngressByteSizeSchema, IngressDurationSchema } from './ingress-units.js';
@@ -180,6 +181,12 @@ export type ManagedDbRole = z.infer<typeof ManagedDbRoleSchema>;
 export const ManagedDbRolesSchema = z.array(ManagedDbRoleSchema)
   .default([])
   .superRefine((roles, ctx) => {
+    if (roles.length > MANAGED_DB_MAX_ROLES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `A managed database declares at most ${MANAGED_DB_MAX_ROLES} roles (found ${roles.length})`,
+      });
+    }
     const seen = new Set<string>();
     for (const [index, role] of roles.entries()) {
       if (seen.has(role.name)) {

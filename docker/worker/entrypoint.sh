@@ -90,76 +90,19 @@ ensure_env_aliases() {
   fi
 }
 
-ensure_variant() {
-  local name="$1"
-  local provider="$2"
-  local api_key="$3"
-
-  # Existence check only (nothing is executed), so the job PATH is fine here.
-  if PATH="$SERVICE_JOB_PATH" command -v "$name" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if [[ "$provider" == "zai" && -z "$api_key" ]]; then
-    echo "Z_AI_API_KEY not set; skipping zai variant install" >&2
-    return 0
-  fi
-
-  echo "Installing cc-mirror variant: $name ($provider)" >&2
-  local command_prefix=()
-  if command -v cc-mirror >/dev/null 2>&1; then
-    command_prefix=(cc-mirror)
-  else
-    command_prefix=(npx --yes cc-mirror)
-  fi
-
-  local timeout_prefix=()
-  if command -v timeout >/dev/null 2>&1; then
-    timeout_prefix=(timeout "${EVE_CC_MIRROR_SETUP_TIMEOUT:-20s}")
-  fi
-
-  if [[ -n "$api_key" ]]; then
-    "${timeout_prefix[@]}" "${command_prefix[@]}" quick --provider "$provider" --name "$name" --api-key "$api_key" --yes --no-tui || {
-      echo "WARNING: Failed to install cc-mirror variant $name — continuing without it" >&2
-      return 0
-    }
-  else
-    "${timeout_prefix[@]}" "${command_prefix[@]}" quick --provider "$provider" --name "$name" --yes --no-tui || {
-      echo "WARNING: Failed to install cc-mirror variant $name — continuing without it" >&2
-      return 0
-    }
-  fi
-  echo "Installed cc-mirror variant: $name" >&2
-}
-
-# The image bakes the harness variants in. Anything still missing (a custom
-# image, or zai once Z_AI_API_KEY is provided) is installed in the background:
-# a network install must not hold up the service, its probes or a runner pod.
-# The double fork hands the installer to tini (PID 1), which reaps it.
-#
-# The installer then keeps running next to jobs as an ordinary (dumpable)
-# process with the worker's UID, so job code could read its
-# /proc/<pid>/environ. Like the orphan reaper, it starts under `env -i`: this
-# script's trusted PATH (SERVICE_JOB_PATH only for the existence check), HOME,
-# locale, proxy and CA settings, npm config, the setup timeout and the zai key.
-# Never DATABASE_URL, the internal key or other worker secrets.
-install_missing_variants_in_background() {
+# The harness variants (mclaude, zai) are built into the image, and a failed
+# build fails the image. Nothing is installed here: this script holds every
+# worker secret, so it never fetches code over the network. A variant missing
+# from the image (a custom image built without cc-mirror) is reported, and
+# that harness is unavailable.
+report_missing_variants() {
   local name
-  local passthrough=()
-  for name in $(compgen -e); do
-    case "$name" in
-      LANG|LC_ALL|TMPDIR|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy|\
-      NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SSL_CERT_DIR|\
-      EVE_CC_MIRROR_SETUP_TIMEOUT|Z_AI_API_KEY|NPM_CONFIG_*|npm_config_*)
-        passthrough+=("$name=${!name}")
-        ;;
-    esac
+  for name in mclaude zai; do
+    # Existence check only (nothing is executed), so the job PATH is fine here.
+    if ! PATH="$SERVICE_JOB_PATH" command -v "$name" >/dev/null 2>&1; then
+      echo "WARNING: $name is not in this image; the $name harness is unavailable" >&2
+    fi
   done
-  # shellcheck disable=SC2016 # the installer shell expands its own variables
-  ( env -i PATH="$PATH" HOME="$HOME" SERVICE_JOB_PATH="$SERVICE_JOB_PATH" "${passthrough[@]}" \
-      "$BASH" -c "$(declare -f ensure_variant)"'
-        ensure_variant "mclaude" "mirror" ""
-        ensure_variant "zai" "zai" "${Z_AI_API_KEY:-}"' & )
 }
 
 # docker/worker/entrypoint.test.sh sources this file for its functions only.
@@ -174,7 +117,7 @@ fi
 
 preflight_check
 ensure_env_aliases
-install_missing_variants_in_background
+report_missing_variants
 write_claude_credentials
 write_codex_credentials
 

@@ -202,7 +202,11 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     enabled_extensions: string[];
     desired_roles: ManagedDbRoleDeclaration[];
     deleted_at?: Date | string | null;
+    updated_at?: Date | string | null;
+    last_error_code?: string | null;
   }): Promise<void> {
+    if ((tenant.status === 'deleting' || tenant.deleted_at) && !dropAttemptDue(tenant)) return;
+
     const token = crypto.randomUUID();
     const locked = await this.managedDb.acquireOperationLock(tenant.id, token);
     if (!locked) {
@@ -210,7 +214,15 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       return;
     }
 
+    // A deleted tenant is dropped whatever its status: an operation that was
+    // running when the delete landed can leave it in another one.
+    const dropping = tenant.status === 'deleting' || !!tenant.deleted_at;
+
     try {
+      if (dropping) {
+        await this.handleDeleting(tenant, token);
+        return;
+      }
       switch (tenant.status) {
         case 'provisioning':
           await this.handleProvisioning(tenant, token);
@@ -220,9 +232,6 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           break;
         case 'rotating':
           await this.handleRotating(tenant, token);
-          break;
-        case 'deleting':
-          await this.handleDeleting(tenant, token);
           break;
         default:
           // Release lock for unknown states
@@ -238,14 +247,47 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       // A drop that fails stays queued (lock released, error recorded) for
       // a day, so a busy database or a passing outage does not strand it.
       // Anything else, or a drop failing for longer, parks at failed.
-      if (tenant.status === 'deleting' && withinDropRetryWindow(tenant.deleted_at)) {
+      if (dropping && withinDropRetryWindow(tenant.deleted_at)) {
         this.logger.warn(`[managed-db-reconciler] Drop of tenant ${tenant.id} failed; will retry: ${error.message}`);
+        await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
+        return;
+      }
+      // An operation that failed after the tenant was deleted leaves it
+      // queued for its drop, not parked at failed with the database kept.
+      if (!dropping && (await this.wasDeletedMeanwhile(tenant.id))) {
+        this.logger.warn(`[managed-db-reconciler] Tenant ${tenant.id} was deleted during a failed operation; queued for drop: ${error.message}`);
         await this.managedDb.transitionStatus(tenant.id, token, 'deleting', { error });
         return;
       }
       await this.managedDb.transitionStatus(tenant.id, token, 'failed', {
         error,
       });
+    }
+  }
+
+  /** True when the tenant was soft-deleted (or removed) since it was listed. */
+  private async wasDeletedMeanwhile(tenantId: string): Promise<boolean> {
+    try {
+      return !(await this.managedDb.findTenantById(tenantId));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Moves a tenant on at the end of an operation. A tenant deleted meanwhile
+   * cannot move (transitionStatus refuses); its lock is released so the next
+   * pass drops it.
+   */
+  private async completeOperation(
+    tenantId: string,
+    token: string,
+    status: string,
+    opts?: Parameters<ReturnType<typeof managedDbQueries>['transitionStatus']>[3],
+  ): Promise<void> {
+    const moved = await this.managedDb.transitionStatus(tenantId, token, status, opts);
+    if (!moved && (await this.managedDb.releaseOperationLock(tenantId, token))) {
+      this.logger.log(`[managed-db-reconciler] Tenant ${tenantId} was deleted during the operation; it will be dropped`);
     }
   }
 
@@ -289,7 +331,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         );
       }
       await this.applyLocalTenantRoleChanges(instance, tenant, await this.planTenantRoleChanges(tenant));
-      await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+      await this.completeOperation(tenant.id, token, 'ready', {
         providerTenantId: `local:${tenant.db_name}`,
         credentialSecretRef: connectionUrl,
         setReady: true,
@@ -365,10 +407,17 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       await this.applyLocalTenantRoleChanges(instance, tenant, rolePlan);
     }
 
+    // Isolation is applied again on every change (idempotent), so a tenant
+    // that changed after the start-up pass is not left without it.
+    const instance = await this.managedDb.findInstanceById(tenant.instance_id);
+    if (instance?.provider === 'local') {
+      await this.isolateTenant(instance, tenant);
+    }
+
     if (tenant.desired_class) {
       this.logger.log(`[managed-db-reconciler] Scaling tenant ${tenant.id} to ${tenant.desired_class}`);
     }
-    await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+    await this.completeOperation(tenant.id, token, 'ready', {
       desiredClass: null,
     });
   }
@@ -388,7 +437,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           await adminSql.unsafe(`ALTER ROLE "${tenant.db_user}" WITH PASSWORD '${newPassword}'`);
           const connectionUrl = this.buildTenantConnectionUrl(instance, tenant, newPassword);
           await this.rotateLocalTenantRoles(adminSql, instance, tenant);
-          await this.managedDb.transitionStatus(tenant.id, token, 'ready', {
+          await this.completeOperation(tenant.id, token, 'ready', {
             credentialSecretRef: connectionUrl,
           });
           this.logger.log(`[managed-db-reconciler] Rotated credentials for local tenant ${tenant.id}`);
@@ -399,7 +448,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       }
     }
 
-    await this.managedDb.transitionStatus(tenant.id, token, 'ready');
+    await this.completeOperation(tenant.id, token, 'ready');
   }
 
   private async handleDeleting(
@@ -449,11 +498,11 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       }
     }
 
-    if (tenant.provider_tenant_id?.startsWith('local:')) {
-      const instance = await this.managedDb.findInstanceById(tenant.instance_id);
-      if (instance) {
-        await this.deleteLocalDb(instance, tenant);
-      }
+    // On a local instance the drop does not wait for a provider id: a tenant
+    // deleted while it was being provisioned has a database but none yet.
+    const instance = await this.managedDb.findInstanceById(tenant.instance_id);
+    if (instance && (instance.provider === 'local' || tenant.provider_tenant_id?.startsWith('local:'))) {
+      await this.deleteLocalDb(instance, tenant);
     }
 
     await this.managedDb.markTenantDeleted(tenant.id);
@@ -919,9 +968,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
   /**
    * A tenant database accepts only its own logins: the owner (by ownership)
-   * and declared roles (granted CONNECT explicitly). Each login also gets its
-   * class's connection limit, unless one is already set, so an operator's
-   * own limit is never changed. Idempotent.
+   * and declared roles (granted CONNECT explicitly). Each login gets its
+   * class's per-login limit, and the database its class's maximum across all
+   * logins, unless one is already set, so an operator's own limit is never
+   * changed. Idempotent.
    */
   private async isolateLocalTenantDb(
     adminSql: Db,
@@ -929,11 +979,22 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     roleUsers: string[],
   ): Promise<void> {
     await adminSql.unsafe(`REVOKE CONNECT ON DATABASE ${quotePostgresIdentifier(tenant.db_name)} FROM PUBLIC`);
-    const limit = connectionLimitFor(tenant.class);
-    if (!limit) return;
+    const limits = getManagedDbLimits(tenant.class);
+    if (!limits) return;
+    await this.applyDatabaseConnectionLimit(adminSql, tenant.db_name, limits.maxConnections);
     for (const login of [tenant.db_user, ...roleUsers]) {
-      await this.applyConnectionLimit(adminSql, login, limit);
+      await this.applyConnectionLimit(adminSql, login, limits.connectionLimitSql);
     }
+  }
+
+  /** Sets a database's connection limit only when it has none (-1). */
+  private async applyDatabaseConnectionLimit(adminSql: Db, dbName: string, limit: number): Promise<void> {
+    const [row] = await adminSql`
+      SELECT datconnlimit FROM pg_database WHERE datname = ${dbName}
+    `;
+    if (!row || Number((row as { datconnlimit: unknown }).datconnlimit) !== -1) return;
+    await adminSql.unsafe(`ALTER DATABASE ${quotePostgresIdentifier(dbName)} CONNECTION LIMIT ${limit}`);
+    this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on database ${dbName}`);
   }
 
   /** Sets a login's connection limit only when it has none (-1). */
@@ -944,6 +1005,20 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     if (!row || Number((row as { rolconnlimit: unknown }).rolconnlimit) !== -1) return;
     await adminSql.unsafe(`ALTER ROLE ${quotePostgresIdentifier(login)} CONNECTION LIMIT ${limit}`);
     this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on ${login}`);
+  }
+
+  /** Isolates one tenant (with its declared roles) on a local instance. */
+  private async isolateTenant(
+    instance: { host: string; port: number },
+    tenant: { id: string; db_name: string; db_user: string; class: string },
+  ): Promise<void> {
+    const adminSql = this.connectToInstance(instance);
+    try {
+      const roles = await this.managedDb.listTenantRoles(tenant.id);
+      await this.isolateLocalTenantDb(adminSql, tenant, roles.map((role) => role.db_user));
+    } finally {
+      await adminSql.end();
+    }
   }
 
   /** One pass over every ready tenant on a local instance (start-up). */
@@ -1110,6 +1185,28 @@ function connectionLimitFor(dbClass: string): number | null {
 
 /** How long a failing drop is retried before the tenant parks at failed. */
 const DROP_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DROP_RETRY_MIN_WAIT_MS = 60 * 1000;
+const DROP_RETRY_MAX_WAIT_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a deleted tenant is due a drop attempt. After a failed one (its
+ * error recorded, `updated_at` the time of the try) the next waits for a time
+ * that doubles with the time since the delete: 1 minute in the first 2, then
+ * 2, 4, 8... minutes, at most an hour. So a failing drop, and the snapshot it
+ * may repeat, runs about 30 times in its day rather than every 30 seconds.
+ */
+function dropAttemptDue(
+  tenant: { deleted_at?: Date | string | null; updated_at?: Date | string | null; last_error_code?: string | null },
+  now = Date.now(),
+): boolean {
+  if (!tenant.last_error_code || !tenant.deleted_at || !tenant.updated_at) return true;
+  const sinceDelete = now - new Date(tenant.deleted_at).getTime();
+  const sinceTry = now - new Date(tenant.updated_at).getTime();
+  if (!Number.isFinite(sinceDelete) || !Number.isFinite(sinceTry)) return true;
+  let wait = DROP_RETRY_MIN_WAIT_MS;
+  while (wait < DROP_RETRY_MAX_WAIT_MS && wait * 2 <= sinceDelete) wait *= 2;
+  return sinceTry >= Math.min(wait, DROP_RETRY_MAX_WAIT_MS);
+}
 
 function withinDropRetryWindow(deletedAt: Date | string | null | undefined): boolean {
   if (!deletedAt) return false;

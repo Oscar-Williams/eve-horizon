@@ -192,10 +192,12 @@ RoleBinding to `eve-worker-tenant`), and the template's admission policy
 holds its writes there (see [deployment](deployment.md#worker-rights));
 each managed database accepts
 only its own logins (`CONNECT` is revoked from `PUBLIC`; the owner keeps it
-by ownership and declared roles by grant), and every login without a
-connection limit gets its class's limit (25, 100 or 200), applied at
-provisioning and once to existing tenants when the orchestrator starts. A
-limit an operator set is never changed. `eve db reset` and `wipe` reinstall
+by ownership and declared roles by grant), every login without a
+connection limit gets its class's limit (25, 100 or 200), and so does the
+database as a whole across all its logins, applied at provisioning, when a
+change to the tenant finishes and once to existing tenants when the
+orchestrator starts. A limit an operator set is never changed. A managed
+database declares at most 8 roles. `eve db reset` and `wipe` reinstall
 the extensions that lived in `public` and the declared roles' grants, in the
 same transaction as the drop. `eve db sql` reports an error in the tenant's
 own SQL as 400 with the Postgres code and message. Deleting an environment
@@ -203,8 +205,10 @@ queues its managed databases for drop instead of failing on them or
 removing their rows (a forced delete no longer leaves the database behind),
 new managed databases carry the environment id in their name, a destroyed
 database is provisioned afresh on the next deploy, a failed drop is retried
-for a day, and a pre-delete snapshot that was asked for and fails keeps the
-database. Only the local provider provisions; any other fails with
+for a day (after a wait that doubles with the time since the delete, from 1
+minute to at most an hour), a database deleted while it was being provisioned
+or changed is still dropped, and a pre-delete snapshot that was asked for and
+fails keeps the database. Only the local provider provisions; any other fails with
 `provider_unsupported`.
 
 ### Internal service keys

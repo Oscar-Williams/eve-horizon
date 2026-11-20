@@ -65,9 +65,11 @@ If the harness CLI is not provided by the base image, add it explicitly:
 
 - **Entrypoint**: `docker/worker/entrypoint.sh`
   - If the CLI needs runtime configuration (tokens, profiles, variants), add it here.
-  - Do not make startup wait on a network install: bake the CLI into the image.
-    Example: the `mclaude`/`zai` `cc-mirror` variants are baked into the worker
-    image; the entrypoint only fills in a missing one, in the background.
+  - Never install at startup: bake the CLI into the image. The entrypoint
+    holds every worker secret, so it fetches no code over the network.
+    Example: the `mclaude`/`zai` `cc-mirror` variants are built into the worker
+    image (a failed build fails the image); the entrypoint only reports one
+    that is missing, and that harness is then unavailable.
 
 **PATH assumptions**
 - The runtime images set `PATH=/root/.local/bin:$PATH`.

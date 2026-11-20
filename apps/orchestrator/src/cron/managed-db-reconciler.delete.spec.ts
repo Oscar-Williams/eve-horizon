@@ -58,7 +58,7 @@ function deletingTenant(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createService(tenant: ReturnType<typeof deletingTenant>) {
+function createService(tenant: ReturnType<typeof deletingTenant>, overrides: Record<string, unknown> = {}) {
   const mockDb = Object.assign(() => Promise.resolve([]), { json: vi.fn(), end: vi.fn() }) as unknown as import('@eve/db').Db;
   const service = new ManagedDbReconcilerService(mockDb);
   const managedDb = {
@@ -72,6 +72,8 @@ function createService(tenant: ReturnType<typeof deletingTenant>) {
     markTenantDeleted: vi.fn().mockResolvedValue(true),
     listTenantRoles: vi.fn().mockResolvedValue([]),
     deleteTenantRoles: vi.fn().mockResolvedValue(0),
+    findTenantById: vi.fn().mockResolvedValue(tenant),
+    ...overrides,
   };
   const environments = { findById: vi.fn().mockResolvedValue(null) };
   const orgs = { findById: vi.fn().mockResolvedValue({ slug: 'acme' }) };
@@ -140,5 +142,121 @@ describe('ManagedDbReconcilerService tenant drop', () => {
     expect(adminSql.statements).toContain(`DROP DATABASE IF EXISTS "${DB}"`);
     expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
     expect(environments.findById).not.toHaveBeenCalledWith(null);
+  });
+
+  // An environment deleted while its tenant is being provisioned (or
+  // changed) must still end with the database dropped.
+  describe('a tenant deleted while an operation runs', () => {
+    beforeEach(() => {
+      vi.stubEnv('DATABASE_URL', 'postgres://eve:eve@localhost:5432/eve?sslmode=disable');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('releases its lock when the tenant can no longer become ready', async () => {
+      const adminSql = createFakeSql();
+      const tenant = deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
+      const { service, managedDb } = createService(tenant, { transitionStatus: vi.fn().mockResolvedValue(null) });
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      const token = managedDb.acquireOperationLock.mock.calls[0][1];
+      expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', token, 'ready', expect.anything());
+      expect(managedDb.releaseOperationLock).toHaveBeenCalledWith('mdbt_1', token);
+    });
+
+    it('drops a deleted tenant left in another status, even with no provider id yet', async () => {
+      const adminSql = createFakeSql();
+      const tenant = deletingTenant({ status: 'ready', provider_tenant_id: null });
+      const { service, managedDb } = createService(tenant);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      expect(adminSql.statements).toContain(`DROP DATABASE IF EXISTS "${DB}"`);
+      expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
+    });
+
+    it('queues the tenant for drop, not failed, when its operation fails after the delete', async () => {
+      const adminSql = createFakeSql(/^CREATE DATABASE/);
+      const tenant = deletingTenant({ status: 'provisioning', deleted_at: null, provider_tenant_id: null, credential_secret_ref: null });
+      const { service, managedDb } = createService(tenant, { findTenantById: vi.fn().mockResolvedValue(null) });
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+
+      await service.reconcile();
+
+      expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'deleting', expect.objectContaining({
+        error: expect.objectContaining({ code: 'reconcile_error' }),
+      }));
+      expect(managedDb.transitionStatus).not.toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', expect.anything());
+    });
+  });
+
+  // A failed drop (its error recorded, updated_at its last try) is retried
+  // after a wait that doubles with the time since the delete, from 1 minute
+  // to at most an hour, so a failing drop or snapshot is not repeated every
+  // 30 seconds for a day.
+  describe('retry backoff', () => {
+    const MINUTE = 60 * 1000;
+    const ago = (ms: number) => new Date(Date.now() - ms);
+
+    function failedDrop(deletedAgo: number, triedAgo: number, overrides: Record<string, unknown> = {}) {
+      return deletingTenant({
+        deleted_at: ago(deletedAgo),
+        updated_at: ago(triedAgo),
+        last_error_code: 'reconcile_error',
+        ...overrides,
+      });
+    }
+
+    async function run(tenant: ReturnType<typeof deletingTenant>) {
+      const adminSql = createFakeSql();
+      const { service, managedDb } = createService(tenant);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+      const snapshot = vi.spyOn(service as any, 'createPreDeleteSnapshot').mockResolvedValue(undefined);
+      await service.reconcile();
+      return { adminSql, managedDb, snapshot };
+    }
+
+    it('waits before retrying a failed drop', async () => {
+      // Deleted 10 minutes ago: the wait is 8 minutes; the last try was 5.
+      const { adminSql, managedDb } = await run(failedDrop(10 * MINUTE, 5 * MINUTE));
+
+      expect(managedDb.acquireOperationLock).not.toHaveBeenCalled();
+      expect(adminSql.statements).toEqual([]);
+    });
+
+    it('retries once the wait has passed', async () => {
+      const { adminSql, managedDb } = await run(failedDrop(10 * MINUTE, 9 * MINUTE));
+
+      expect(adminSql.statements).toContain(`DROP DATABASE IF EXISTS "${DB}"`);
+      expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
+    });
+
+    it('waits at most an hour', async () => {
+      const early = await run(failedDrop(20 * HOUR, 59 * MINUTE));
+      expect(early.managedDb.acquireOperationLock).not.toHaveBeenCalled();
+
+      const due = await run(failedDrop(20 * HOUR, 61 * MINUTE));
+      expect(due.managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
+    });
+
+    it('drops a newly deleted tenant at once', async () => {
+      const { managedDb } = await run(deletingTenant({ deleted_at: ago(5000), updated_at: ago(5000), last_error_code: null }));
+
+      expect(managedDb.markTenantDeleted).toHaveBeenCalledWith('mdbt_1');
+    });
+
+    it('repeats no snapshot before the wait has passed', async () => {
+      const { snapshot, managedDb } = await run(
+        failedDrop(3 * MINUTE, 30 * 1000, { snapshot_on_delete: true, last_error_code: 'snapshot_failed' }),
+      );
+
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(managedDb.acquireOperationLock).not.toHaveBeenCalled();
+    });
   });
 });

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Checks that the worker entrypoint never makes startup wait on a cc-mirror
-# variant install, and that the background installer neither holds the
-# worker's secrets nor runs programs a job could have planted.
+# Checks that the worker entrypoint installs nothing at start. The harness
+# variants (mclaude, zai) are built into the image; one that is missing is
+# reported and that harness is unavailable. Nothing is fetched over the
+# network into a container that holds the worker's secrets, and no program a
+# job could have planted is run.
 # Run: bash docker/worker/entrypoint.test.sh
 set -euo pipefail
 
@@ -15,69 +17,49 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# $tmp/trusted stands in for the image's root-owned /usr/local/bin.
+# $tmp/trusted stands in for the image's root-owned /usr/local/bin. Each
+# installer there only records that it ran.
 mkdir -p "$tmp/trusted" "$tmp/home/.local/bin"
-# Stub cc-mirror: slow, then writes the variant wrapper and records the call
-# and the environment it was given.
-cat > "$tmp/trusted/cc-mirror" <<STUB
-#!/usr/bin/env bash
-echo "\$*" >> "$tmp/calls"
-env > "$tmp/installer-env"
-sleep 2
-name=""
-while [[ \$# -gt 0 ]]; do [[ "\$1" == "--name" ]] && name="\$2"; shift; done
-printf '#!/bin/sh\nexit 0\n' > "$tmp/home/.local/bin/\$name"
-chmod +x "$tmp/home/.local/bin/\$name"
-STUB
-chmod +x "$tmp/trusted/cc-mirror"
-# A cc-mirror a job planted in its writable ~/.local/bin, first on the job PATH.
-printf '#!/bin/sh\ntouch "%s/planted-ran"\n' "$tmp" > "$tmp/home/.local/bin/cc-mirror"
-chmod +x "$tmp/home/.local/bin/cc-mirror"
+for tool in cc-mirror npx npm; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\n' "$tool" "$tmp" > "$tmp/trusted/$tool"
+  chmod +x "$tmp/trusted/$tool"
+done
 
 export HOME="$tmp/home"
 # The job PATH the container starts with. Only system tools besides the test
 # dirs: a cc-mirror or npx installed on the host must not count.
 export PATH="$tmp/home/.local/bin:/usr/bin:/bin"
-unset Z_AI_API_KEY
-# Worker secrets the installer must not inherit: it runs alongside jobs as an
-# ordinary process with the worker's UID, so its environment is readable.
-export DATABASE_URL="postgres://eve:db-secret@db/eve"
-export EVE_INTERNAL_API_KEY="internal-key-secret"
-export HTTPS_PROXY="http://proxy.internal:3128"
+export Z_AI_API_KEY="zai-key"
 # shellcheck disable=SC1091
 EVE_ENTRYPOINT_FUNCTIONS_ONLY=1 source "$here/entrypoint.sh"
+[[ "$SERVICE_JOB_PATH" == "$tmp/home/.local/bin:/usr/bin:/bin" ]] || { echo "FAIL: job PATH not kept" >&2; exit 1; }
 # The entrypoint switched its own PATH to root-owned directories; point that
 # at the stand-in so no host installer can run.
-[[ "$SERVICE_JOB_PATH" == "$tmp/home/.local/bin:/usr/bin:/bin" ]] || { echo "FAIL: job PATH not kept" >&2; exit 1; }
 PATH="$tmp/trusted:/usr/bin:/bin"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-wait_for() { for _ in $(seq 1 50); do [[ -x "$1" ]] && return 0; sleep 0.1; done; return 1; }
 
-# 1. A missing variant is installed in the background: the call returns at once.
-start=$SECONDS
-install_missing_variants_in_background 2>/dev/null
-(( SECONDS - start <= 1 )) || fail "install blocked startup for $((SECONDS - start))s"
-[[ ! -x "$HOME/.local/bin/mclaude" ]] || fail "install finished synchronously"
-wait_for "$HOME/.local/bin/mclaude" || fail "background install never produced mclaude"
-grep -q -- "--name mclaude" "$tmp/calls" || fail "cc-mirror was not asked for mclaude"
-grep -q -- "--name zai" "$tmp/calls" && fail "zai installed without Z_AI_API_KEY"
-grep -q "secret" "$tmp/installer-env" && fail "installer inherited worker secrets: $(grep secret "$tmp/installer-env")"
-grep -qx "HOME=$HOME" "$tmp/installer-env" || fail "installer lost HOME"
-grep -qx "HTTPS_PROXY=http://proxy.internal:3128" "$tmp/installer-env" || fail "installer lost the proxy setting"
-grep -qx "PATH=$tmp/trusted:/usr/bin:/bin" "$tmp/installer-env" || fail "installer did not run on the trusted PATH: $(grep ^PATH= "$tmp/installer-env")"
-[[ ! -e "$tmp/planted-ran" ]] || fail "installer ran a cc-mirror planted in ~/.local/bin"
-
-# 2. A variant already in the image is left alone.
-: > "$tmp/calls"
-install_missing_variants_in_background 2>/dev/null
+# 1. Both variants missing: each is reported, and nothing is installed.
+declare -F report_missing_variants >/dev/null || fail "the entrypoint has no report_missing_variants"
+report_missing_variants 2> "$tmp/log"
 sleep 0.5
-[[ ! -s "$tmp/calls" ]] || fail "cc-mirror ran although mclaude was present: $(cat "$tmp/calls")"
+grep -q "mclaude is not in this image; the mclaude harness is unavailable" "$tmp/log" \
+  || fail "missing mclaude not reported: $(cat "$tmp/log")"
+grep -q "zai is not in this image; the zai harness is unavailable" "$tmp/log" \
+  || fail "missing zai not reported: $(cat "$tmp/log")"
+[[ ! -e "$tmp/calls" ]] || fail "an installer ran at start: $(cat "$tmp/calls")"
 
-# 3. zai is installed once a key is provided, and gets that key.
-Z_AI_API_KEY="zai-key" install_missing_variants_in_background 2>/dev/null
-wait_for "$HOME/.local/bin/zai" || fail "background install never produced zai"
-grep -q -- "--name zai --api-key zai-key" "$tmp/calls" || fail "zai was not installed with its key: $(cat "$tmp/calls")"
-grep -q "secret" "$tmp/installer-env" && fail "zai installer inherited worker secrets"
+# 2. A variant in the image is not reported.
+printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/mclaude"
+chmod +x "$HOME/.local/bin/mclaude"
+report_missing_variants 2> "$tmp/log"
+grep -q "mclaude" "$tmp/log" && fail "mclaude reported although it is in the image"
+grep -q "zai is not in this image" "$tmp/log" || fail "missing zai no longer reported"
+[[ ! -e "$tmp/calls" ]] || fail "an installer ran at start: $(cat "$tmp/calls")"
 
-echo "PASS: entrypoint variant install never blocks startup, sees worker secrets or runs planted programs"
+# 3. No install path is left in the entrypoint.
+if grep -nE '(^|[^[:alnum:]_-])npx([^[:alnum:]_-]|$)|cc-mirror +quick|npm +(install|i) ' "$here/entrypoint.sh"; then
+  fail "the entrypoint can still install a package at start"
+fi
+
+echo "PASS: entrypoint installs nothing at start and reports a missing variant"

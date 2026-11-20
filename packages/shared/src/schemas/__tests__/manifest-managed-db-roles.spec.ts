@@ -80,4 +80,22 @@ describe('managed DB roles manifest schema', () => {
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes('Duplicate managed DB role'))).toBe(true);
   });
+
+  it('accepts up to 8 roles', () => {
+    const roles = Array.from({ length: 8 }, (_, i) => ({ name: `role${i}`, grants: 'readonly' }));
+    const parsed = parseManifest(roles);
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('refuses more than 8 roles, each login holding its own connections', () => {
+    const roles = Array.from({ length: 9 }, (_, i) => ({ name: `role${i}`, grants: 'readonly' }));
+    const parsed = parseManifest(roles);
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.message)).toContain(
+      'A managed database declares at most 8 roles (found 9)',
+    );
+  });
 });

@@ -830,20 +830,20 @@ export class EnvDbService {
     return `postgres://${encodeURIComponent(user)}${passwordPart}@${host}:${port}/${database}`;
   }
 
+  /**
+   * Replaces each `${secret.KEY}` in the value once, in place, with the
+   * secret's exact text; the text put in is never read again. A secret that
+   * does not resolve leaves its placeholder.
+   */
   private async interpolateSecrets(value: string, projectId: string): Promise<string> {
     const secretPattern = /\$\{secret\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
-    const matches = value.matchAll(secretPattern);
-    let result = value;
-
-    for (const match of matches) {
-      const secretKey = match[1];
-      const secretValue = await this.secretsService.resolveProjectSecretValue(projectId, secretKey);
-      if (secretValue !== null) {
-        result = result.replace(match[0], secretValue);
+    const resolved = new Map<string, string | null>();
+    for (const [, secretKey] of value.matchAll(secretPattern)) {
+      if (!resolved.has(secretKey)) {
+        resolved.set(secretKey, await this.secretsService.resolveProjectSecretValue(projectId, secretKey));
       }
     }
-
-    return result;
+    return value.replace(secretPattern, (match, secretKey: string) => resolved.get(secretKey) ?? match);
   }
 
   private resolveK8sServiceHost(
