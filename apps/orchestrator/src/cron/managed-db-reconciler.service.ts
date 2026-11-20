@@ -973,8 +973,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    * and declared roles (granted CONNECT explicitly). Each login gets its
    * class's per-login limit unless one is already set. The database's limit
    * counts every login, Eve's own included, so it is the class maximum plus
-   * the platform reserve (managedDbDatabaseConnectionLimit): set when there
-   * is none, raised when below, never lowered. Idempotent.
+   * the platform reserve (managedDbDatabaseConnectionLimit), set only when
+   * there is none: a limit an operator set is theirs. Idempotent.
    */
   private async isolateLocalTenantDb(
     adminSql: Db,
@@ -990,14 +990,14 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  /** Sets a database's connection limit when it has none (-1) or a lower one; never lowers it. */
+  /** Sets a database's connection limit only when it has none (-1); a limit already set is the operator's. */
   private async applyDatabaseConnectionLimit(adminSql: Db, dbName: string, limit: number): Promise<void> {
     const [row] = await adminSql`
       SELECT datconnlimit FROM pg_database WHERE datname = ${dbName}
     `;
     if (!row) return;
     const current = Number((row as { datconnlimit: unknown }).datconnlimit);
-    if (current !== -1 && current >= limit) return;
+    if (current !== -1) return;
     await adminSql.unsafe(`ALTER DATABASE ${quotePostgresIdentifier(dbName)} CONNECTION LIMIT ${limit}`);
     this.logger.log(`[managed-db-reconciler] Set connection limit ${limit} on database ${dbName}`);
   }

@@ -158,8 +158,9 @@ database as a whole gets its class maximum plus a platform reserve of 5
 limit counts every login, Eve's own included, and Eve's platform login is not
 a superuser on Cloud SQL, so without the reserve a tenant whose logins fill
 the database would lock out the reconciler, `eve db`, migrations and the
-pre-delete `pg_dump`. A database limit is set when there is none and raised
-when it is lower; it is never lowered, so one an operator set higher stays.
+pre-delete `pg_dump`. A database limit is set only when there is none: one
+an operator set, lower or higher, stays as it is (and then the reserve is
+theirs to allow for).
 The limits are applied at provisioning, when a change to the tenant
 finishes, and once to every ready tenant when the orchestrator starts.
 

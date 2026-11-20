@@ -195,8 +195,8 @@ only its own logins (`CONNECT` is revoked from `PUBLIC`; the owner keeps it
 by ownership and declared roles by grant), every login without a
 connection limit gets its class's limit (25, 100 or 200), and the database
 as a whole across all its logins gets its class maximum plus a platform
-reserve of 5 for Eve's own connections (30, 105 or 205; set when there is
-none, raised when lower, never lowered), applied at provisioning, when a
+reserve of 5 for Eve's own connections (30, 105 or 205; set only when there
+is none, so an operator's limit stays), applied at provisioning, when a
 change to the tenant finishes and once to existing tenants when the
 orchestrator starts (run the pre-check in
 [connection limits](db.md#connection-limits) before the deploy). A login
