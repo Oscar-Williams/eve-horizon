@@ -18,7 +18,7 @@ jobs:
     outputs:
       value: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: version
         shell: bash
         run: |
@@ -41,11 +41,14 @@ jobs:
       matrix:
         name: [python, media, rust, java, kotlin, browser]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build one AMD64 image and archive its exact identity
-        run: bash scripts/release/image.sh build toolchain '${{ matrix.name }}' '${{ needs.version.outputs.value }}' 'release-artifact/${{ matrix.name }}'
-      - uses: actions/upload-artifact@v4
+        env:
+          NAME: ${{ matrix.name }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: bash scripts/release/image.sh build toolchain "$NAME" "$VERSION" "release-artifact/$NAME"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: toolchain-${{ matrix.name }}
           path: release-artifact/${{ matrix.name }}/
@@ -58,22 +61,24 @@ jobs:
     runs-on: ubuntu-24.04
     permissions: { contents: read }
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: toolchain-python
           path: release-artifact/python
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: toolchain-browser
           path: release-artifact/browser
       - name: Build both source runtime bases and launch bundled browser natively
-        run: bash scripts/release/gate.sh toolchain '${{ needs.version.outputs.value }}' release-artifact
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: bash scripts/release/gate.sh toolchain "$VERSION" release-artifact
 
       - name: Preserve native gate logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-browser-gate-${{ github.run_id }}
           path: /tmp/eve-browser-release-evidence/*.log
@@ -88,17 +93,19 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Reject any existing version before the first push
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
         run: |
           bash scripts/release/validate-tag.sh toolchain
-          bash scripts/release/prepublish.sh toolchain '${{ needs.version.outputs.value }}'
+          bash scripts/release/prepublish.sh toolchain "$VERSION"
 
   publish:
     if: github.event_name == 'push'
@@ -113,18 +120,21 @@ jobs:
       matrix:
         name: [python, media, rust, java, kotlin, browser]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: toolchain-${{ matrix.name }}
           path: release-artifact/${{ matrix.name }}
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push the frozen archive once, after all builds and the native gate
+        env:
+          NAME: ${{ matrix.name }}
+          VERSION: ${{ needs.version.outputs.value }}
         run: |
           bash scripts/release/validate-tag.sh toolchain
-          bash scripts/release/image.sh publish toolchain '${{ matrix.name }}' '${{ needs.version.outputs.value }}' 'release-artifact/${{ matrix.name }}'
+          bash scripts/release/image.sh publish toolchain "$NAME" "$VERSION" "release-artifact/$NAME"

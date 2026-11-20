@@ -19,7 +19,7 @@ files.each do |kind, file|
   abort "#{file}: publisher lacks packages write" unless jobs['publish']['permissions']['packages'] == 'write'
   publisher = jobs['publish']['steps'].to_s
   abort "#{file}: publisher rebuilds" if publisher.include?('buildx build') || publisher.include?('build-push-action')
-  abort "#{file}: publisher did not load frozen artifact" unless publisher.include?('actions/download-artifact@v4') && publisher.include?('image.sh publish')
+  abort "#{file}: publisher did not load frozen artifact" unless publisher.include?('actions/download-artifact@') &&publisher.include?('image.sh publish')
   abort "#{file}: native gate lacks exact-image script" unless jobs['native-gate']['steps'].to_s.include?('gate.sh')
   abort "#{file}: global absent-version check missing" unless jobs['prepublish']['steps'].to_s.include?('prepublish.sh')
   source = File.read(file)
