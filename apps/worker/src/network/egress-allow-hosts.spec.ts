@@ -19,6 +19,10 @@ const db = vi.hoisted(() => ({
   /** The manifest of each project's last explicit sync or deploy (the drift check never sets it). */
   syncedManifests: new Map<string, string>(),
   releaseManifests: new Map<string, string>(),
+  /** The agents config's x-eve per project (harness profiles live there). */
+  agentConfigs: new Map<string, string>(),
+  /** Secret names per `scope:id` (project, org, system). */
+  secretKeys: new Map<string, string[]>(),
 }));
 
 const profileOf = (projectId: string, rule: string) => db.profiles.get(projectId)?.[rule] ?? 'legacy';
@@ -54,6 +58,13 @@ vi.mock('@eve/db', async (importOriginal) => ({
       const id = hash.replace(/^hash-/, '');
       return db.releaseManifests.has(id) ? { manifest_yaml: db.releaseManifests.get(id) } : null;
     },
+  }),
+  agentConfigQueries: () => ({
+    findLatestByProject: async (projectId: string) =>
+      (db.agentConfigs.has(projectId) ? { x_eve_yaml: db.agentConfigs.get(projectId) } : null),
+  }),
+  secretQueries: () => ({
+    listKeysByScope: async (scopeType: string, scopeId: string) => db.secretKeys.get(`${scopeType}:${scopeId}`) ?? [],
   }),
   securityQueries: () => ({
     listProjectProfiles: async (scope: { projectId?: string }) =>
@@ -152,6 +163,8 @@ beforeEach(() => {
   db.manifests = new Map([[SHOP, MANIFEST]]);
   db.syncedManifests = new Map([[SHOP, MANIFEST]]);
   db.releaseManifests = new Map([['rel_1', MANIFEST]]);
+  db.agentConfigs = new Map([[SHOP, 'agents:\n  profiles:\n    primary:\n      - harness: claude\n']]);
+  db.secretKeys = new Map();
 });
 
 const strict = () => db.profiles.set(SHOP, { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'strict' });
@@ -282,8 +295,10 @@ describe('provider gke', () => {
     expect(cluster.fqdnHosts(NS)).toEqual(['hooks.example.com:443']);
   });
 
-  it('writes runner policies from the project list, every harness host and the git host, selecting the project label', async () => {
+  it('writes runner policies from the project list, the hosts of the harnesses its profiles name and the git host, selecting the project label', async () => {
     strict();
+    // A fallback target counts too.
+    db.agentConfigs.set(SHOP, 'agents:\n  profiles:\n    primary:\n      - harness: claude\n      - harness: codex\n');
     const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
     await egressFor(cluster).applyRunners(SHOP);
 
@@ -293,12 +308,58 @@ describe('provider gke', () => {
         'api.example.com:443', '*.cdn.example.com:443', 'github.com:443', 'api.anthropic.com:443', 'api.openai.com:443',
       ]));
       expect(listed).not.toContain('smtp.example.com:587');
+      // Harnesses the project cannot run add nothing: each allowed model API
+      // can carry data out under a key the job code brings.
+      expect(listed).not.toContain('generativelanguage.googleapis.com:443');
+      expect(listed).not.toContain('api.z.ai:443');
       for (const selector of Object.values(cluster.fqdnSelectors(namespace))) {
         expect(selector).toEqual({ matchLabels: { 'eve.horizon/runner': 'true', 'eve.horizon/project-id': SHOP } });
       }
     }
     const runnerPolicy = [...cluster.nps.values()].find((p) => p.metadata.namespace === 'eve-runners')!;
     expect(hasInternet(runnerPolicy)).toBe(false);
+  });
+
+  it("takes the harness profiles from the synced manifest when the agents config declares none", async () => {
+    strict();
+    db.agentConfigs.delete(SHOP);
+    db.syncedManifests.set(SHOP, [
+      'x-eve:',
+      '  egress:',
+      '    hosts: [api.example.com]',
+      '  agents:',
+      '    profiles:',
+      '      default:',
+      '        - harness: gemini',
+      '',
+    ].join('\n'));
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    await egressFor(cluster).applyRunners(SHOP);
+    const listed = cluster.fqdnHosts('eve-runners');
+    expect(listed).toContain('generativelanguage.googleapis.com:443');
+    expect(listed).not.toContain('api.anthropic.com:443');
+    expect(listed).not.toContain('api.openai.com:443');
+  });
+
+  it('with no harness profile, takes the harnesses the project, org and instance secrets are credentials for', async () => {
+    strict();
+    db.agentConfigs.delete(SHOP);
+    db.secretKeys.set(`project:${SHOP}`, ['OPENAI_API_KEY', 'STRIPE_KEY']);
+    db.secretKeys.set('org:org_acme', ['Z_AI_API_KEY']);
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    let listed = cluster.fqdnHosts('eve-runners');
+    expect(listed).toEqual(expect.arrayContaining(['api.openai.com:443', 'auth.openai.com:443', 'api.z.ai:443', 'github.com:443']));
+    // pi (any provider key) is not counted: its hosts are its providers', which their own harnesses list.
+    expect(listed).not.toContain('api.anthropic.com:443');
+    expect(listed).not.toContain('generativelanguage.googleapis.com:443');
+
+    // With no credential either, no model API at all.
+    db.secretKeys = new Map();
+    await egress.applyRunners(SHOP);
+    listed = cluster.fqdnHosts('eve-runners');
+    expect(listed.sort()).toEqual(['*.cdn.example.com:443', 'api.example.com:443', 'github.com:443']);
   });
 
   it('takes runner hosts from the last explicit sync or deploy, not a manifest the drift check stored from a built ref', async () => {
