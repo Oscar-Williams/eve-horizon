@@ -117,3 +117,74 @@ describe('deployed-service token permissions', () => {
     }
   });
 });
+
+/**
+ * Another API replica, or the database, may stand a little ahead of this
+ * replica's clock. A token minted for an environment whose floor (its
+ * creation or service_tokens_not_before) is ahead of now is issued at the
+ * floor, so it is not refused as revoked, and its life runs from there.
+ */
+describe('tokens minted for an environment with a floor ahead of the clock', () => {
+  let authService: AuthService;
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = 'postgres://eve:eve@localhost:5432/eve';
+    process.env.EVE_AUTH_ENABLED = 'true';
+    process.env.EVE_AUTH_PRIVATE_KEY = privatePem;
+    authService = buildAuthService();
+  });
+
+  it('issue a service token at the floor, and run its life from there', () => {
+    const floor = Math.floor(Date.now() / 1000) + 5;
+
+    const claims = decodePayload(authService.mintServiceToken({
+      projectId: 'proj_a',
+      orgId: 'org_a',
+      envName: 'staging',
+      serviceName: 'web',
+      permissions: [],
+      ttlSeconds: 3600,
+      notBefore: floor,
+    }));
+
+    expect(claims.iat).toBe(floor);
+    expect(claims.exp).toBe(floor + 3600);
+  });
+
+  it('issue an app-link token at the floor, and run its life from there', () => {
+    const floor = Math.floor(Date.now() / 1000) + 5;
+
+    const claims = decodePayload(authService.mintAppLinkToken({
+      subscriptionId: 'als_1',
+      consumerProjectId: 'proj_a',
+      consumerOrgId: 'org_a',
+      consumerPrincipal: 'service:web',
+      consumerEnv: 'staging',
+      producerProjectId: 'proj_b',
+      producerEnv: 'staging',
+      apiName: 'orders',
+      scopes: ['read'],
+      ttlSeconds: 3600,
+      notBefore: floor,
+    }));
+
+    expect(claims.iat).toBe(floor);
+    expect(claims.exp).toBe(floor + 3600);
+  });
+
+  it('issue at now when the floor is behind it', () => {
+    const before = Math.floor(Date.now() / 1000);
+
+    const claims = decodePayload(authService.mintServiceToken({
+      projectId: 'proj_a',
+      orgId: 'org_a',
+      envName: 'staging',
+      serviceName: 'web',
+      permissions: [],
+      notBefore: before - 600,
+    }));
+
+    expect(claims.iat).toBeGreaterThanOrEqual(before);
+    expect(claims.iat).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+});

@@ -32,7 +32,13 @@ describe('mint-service-token', () => {
     return `h.${payload}.s`;
   });
   let controller: AuthInternalController;
-  let env: { id: string; current_release_id: string | null; last_applied_release_id: string | null } | null;
+  let env: {
+    id: string;
+    current_release_id: string | null;
+    last_applied_release_id: string | null;
+    created_at?: Date;
+    service_tokens_not_before?: Date | null;
+  } | null;
 
   beforeEach(() => {
     mintServiceToken.mockClear();
@@ -111,5 +117,22 @@ describe('mint-service-token', () => {
     await expect(controller.mintServiceToken(body({ org_id: 'org_other' }))).rejects.toThrow(NotFoundException);
     await expect(controller.mintServiceToken(body({ project_id: 'proj_missing' }))).rejects.toThrow(NotFoundException);
     expect(mintServiceToken).not.toHaveBeenCalled();
+  });
+
+  it('mints no earlier than the environment\'s floor: its service_tokens_not_before, or its creation', async () => {
+    const ahead = Math.floor(Date.now() / 1000) + 5;
+    env = {
+      id: 'env_test',
+      current_release_id: 'rel_v1',
+      last_applied_release_id: 'rel_v1',
+      created_at: new Date((ahead - 60) * 1000),
+      service_tokens_not_before: new Date(ahead * 1000 + 400),
+    };
+    await controller.mintServiceToken(body());
+    expect(mintServiceToken.mock.calls.at(-1)![0]).toEqual(expect.objectContaining({ notBefore: ahead }));
+
+    env = { ...env, created_at: new Date(ahead * 1000), service_tokens_not_before: null };
+    await controller.mintServiceToken(body());
+    expect(mintServiceToken.mock.calls.at(-1)![0]).toEqual(expect.objectContaining({ notBefore: ahead }));
   });
 });
