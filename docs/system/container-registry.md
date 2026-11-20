@@ -147,6 +147,15 @@ It reports what it re-signed and what failed; a failed environment stays
 stale. `eve doctor security` shows the current version and how many
 environments are stale.
 
+The worker writes a pull secret only with the key the API verifies with.
+Reconcile sends the API's key version (`registryCredentialKey()`: the
+credential key's, or `internal`), and a worker signing with another refuses
+with 409 before touching any environment. A deploy asks the API
+(`GET /internal/registry/key-version`, core key only) and fails, naming both
+versions, rather than write a pull secret the API would refuse. Both read the
+key from the same `eve-app` entry, which k8s/base requires (it may be empty),
+so they differ only while a change is rolling out.
+
 The token endpoint verifies a credential under the credential key first, then
 under the internal key. The internal key itself as a password, and credentials
 it signed, follow `registry.internal_key`: accepted under `legacy`, accepted
@@ -155,13 +164,15 @@ only once no environment is stale (409 otherwise, unless `--force`), and the
 legacy `EVE_INTERNAL_API_KEY` must stay until then: removing it stops every
 credential it signed from verifying.
 
-Upgrading: set `EVE_REGISTRY_CREDENTIAL_KEY` on the API and the worker (new
-credentials are signed with it at once; old ones keep working), then run
-`eve system security reconcile`.
+Upgrading: set `EVE_REGISTRY_CREDENTIAL_KEY` in `eve-app` (read by the API
+and the worker; the entry must exist before the upgrade, empty or not), then
+restart both: new credentials are signed with it at once, and old ones keep
+working. Then run `eve system security reconcile`.
 
 Rolling back to a release that knows only the internal key (0.1.326 and
-earlier): it cannot verify credentials the credential key signed. First unset
-`EVE_REGISTRY_CREDENTIAL_KEY` on the API and the worker and run
+earlier): it cannot verify credentials the credential key signed. First set
+`EVE_REGISTRY_CREDENTIAL_KEY` in `eve-app` to an empty value, restart the API
+and the worker, and run
 `eve system security reconcile`, which then re-signs every pull secret with
 the internal key (version `internal`); then roll back. Keep
 `EVE_INTERNAL_API_KEY` set on every service until no rollback below 0.1.327 is

@@ -525,7 +525,9 @@ Each platform service takes only the `eve-app` keys it reads, by
 `secretKeyRef` (base `k8s/base/*-deployment.yaml`), never the whole Secret by
 `envFrom`; the gateway and the SSO get no database URL and no core key. The
 refs are optional, as `envFrom` was, so a key missing from the Secret leaves
-the variable unset rather than stopping the pod.
+the variable unset rather than stopping the pod; except
+`EVE_REGISTRY_CREDENTIAL_KEY`, which the API and the worker require (it may be
+empty), so they never start on different registry keys.
 
 Orchestrator:
 - `ORCH_LOOP_INTERVAL_MS`
