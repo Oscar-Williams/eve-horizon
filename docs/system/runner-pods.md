@@ -198,7 +198,7 @@ Runner pods live in their own namespace, `EVE_RUNNER_NAMESPACE` (base:
 
 - **agent-sandbox** (`kubernetes-sigs/agent-sandbox`, v1.0.11): when the
   extension CRDs are served (`extensions.agents.x-k8s.io/v1beta1`, found by
-  API discovery) and the job class's warm pool exists, the worker creates a
+  API discovery) and the job class's warm pool exists with a size above 0, the worker creates a
   `SandboxClaim` on that pool and reaches the pod at
   `status.sandbox.podIPs`. The claim carries the pod labels below through
   `additionalPodMetadata`, no env, and `lifecycle.shutdownTime` (the job's
@@ -219,7 +219,13 @@ Runner pods live in their own namespace, `EVE_RUNNER_NAMESPACE` (base:
 |---|---|---|---|---|
 | `chat` | jobs labelled `chat` | `eve-runner-chat` (100m/512Mi, limits 1 CPU/2Gi) | `emptyDir` | `runner.warm_pool.chat` |
 | `job` | everything else | `eve-runner-job` (`EVE_K8S_RUNNER_*` defaults) | `emptyDir` | `runner.warm_pool.job` |
-| `heavy` | a resource-class override, toolchains or app CLIs, or `hints.runner_class: heavy` | `eve-runner-heavy` (500m/2Gi, limits 4 CPU/8Gi) | a 20Gi claim (`volumeClaimTemplates`) | always 0 (cold) |
+| `heavy` | a resource class with Kubernetes sizing (job hints or manifest defaults), toolchains or app CLIs | `eve-runner-heavy` (500m/2Gi, limits 4 CPU/8Gi) | a claim of `EVE_K8S_WORKSPACE_SIZE` (default 20Gi; `volumeClaimTemplates`) | always 0 (cold) |
+
+`hints.runner_class` may name a lighter class than the job's (chat, job,
+heavy, lightest first), never a heavier one. A class whose warm pool is
+sized 0 (heavy always, chat and job by default) is not claimed: the worker
+creates its pod directly, rather than wait `EVE_SANDBOX_CLAIM_TIMEOUT` for a
+cold claim and then fall back.
 
 The worker renders one `SandboxTemplate` and one `SandboxWarmPool` per class
 from its own `EVE_RUNNER_IMAGE` and the instance settings, and applies them in

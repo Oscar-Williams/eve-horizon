@@ -68,6 +68,8 @@ export class RunnerTemplatesService implements OnApplicationBootstrap {
 
     const objects = renderRunnerTemplates({
       namespace, image, runtimeClass, runtimeOptOut: optOut, warmPools, isolation: resolveRunnerPodIsolation(),
+      // The heavy class's workspace claim, as a heavy plain pod's.
+      heavyWorkspaceSize: process.env.EVE_K8S_WORKSPACE_SIZE || undefined,
     });
     const applied = await execKubectl(['apply', '-f', '-'], JSON.stringify({ apiVersion: 'v1', kind: 'List', items: objects }));
     if (applied.exitCode !== 0) throw new Error(`Runner templates were not applied: ${applied.stderr || applied.stdout}`);

@@ -33,7 +33,7 @@ const TERMINAL_CLAIM_REASONS = new Set([
   'VolumeClaimTemplatesError', 'ClaimExpired', 'SandboxExpired', 'InvalidConfiguration', 'PodFailed',
 ]);
 let crdCache: { present: boolean; at: number } | null = null;
-const poolCache = new Map<string, { present: boolean; at: number }>();
+const poolCache = new Map<string, { size: number | null; at: number }>();
 
 /** Whether the agent-sandbox extension CRDs are served (API discovery; needs no RBAC). */
 export async function sandboxCrdsPresent(): Promise<boolean> {
@@ -50,16 +50,29 @@ export async function sandboxCrdsPresent(): Promise<boolean> {
   return present;
 }
 
-/** Whether the class's warm pool has been rendered in the runner namespace. */
-export async function sandboxPoolPresent(namespace: string, jobClass: RunnerClass): Promise<boolean> {
+/**
+ * The size of the class's warm pool in the runner namespace, or null when it
+ * has not been rendered. A pool of 0 holds no warm pod, so a claim on it
+ * would only wait for a cold one: the dispatcher creates the pod directly.
+ */
+export async function sandboxPoolSize(namespace: string, jobClass: RunnerClass): Promise<number | null> {
   const key = `${namespace}/${jobClass}`;
   const cached = poolCache.get(key);
-  if (cached && Date.now() - cached.at < CRD_CACHE_MS) return cached.present;
-  const result = await execKubectl(['get', 'sandboxwarmpool', runnerTemplateName(jobClass), `--namespace=${namespace}`, '-o', 'name'])
+  if (cached && Date.now() - cached.at < CRD_CACHE_MS) return cached.size;
+  const result = await execKubectl(['get', 'sandboxwarmpool', runnerTemplateName(jobClass), `--namespace=${namespace}`, '-o', 'json'])
     .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
-  const present = result.exitCode === 0;
-  poolCache.set(key, { present, at: Date.now() });
-  return present;
+  let size: number | null = null;
+  if (result.exitCode === 0) {
+    try {
+      const replicas = (JSON.parse(result.stdout) as { spec?: { replicas?: unknown } }).spec?.replicas;
+      // The CRD defaults replicas to 1.
+      size = typeof replicas === 'number' ? replicas : 1;
+    } catch {
+      size = null;
+    }
+  }
+  poolCache.set(key, { size, at: Date.now() });
+  return size;
 }
 
 /** Forget cached discovery (tests, and after a reconcile). */

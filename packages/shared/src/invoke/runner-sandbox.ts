@@ -59,9 +59,13 @@ export function runnerTemplateName(cls: RunnerClass): string {
 
 /**
  * A job's class: `chat` for chat jobs, `heavy` for a job that needs more
- * than the standard pod (a resource-class override, toolchains or app CLIs
- * copied in by init containers), `job` for the rest. A job may name its class
- * with `hints.runner_class`; it can only move up (chat to job or heavy).
+ * than the standard pod (a resource class with Kubernetes sizing, from the
+ * job's hints or the manifest's defaults, or toolchains or app CLIs copied
+ * in by init containers), `job` for the rest. Heavy comes only from those
+ * inputs, which the manifest and the instance's resource classes govern (and
+ * budgets charge). `hints.runner_class` may name a lighter class (classes run
+ * chat, job, heavy, lightest first), never a heavier one: asking for it
+ * gains no resources or workspace volume.
  */
 export function selectRunnerClass(job: {
   labels?: string[] | null;
@@ -72,7 +76,8 @@ export function selectRunnerClass(job: {
 }): RunnerClass {
   let cls: RunnerClass = job.labels?.includes('chat') ? 'chat' : 'job';
   if (job.resourceOverride || (job.toolchains?.length ?? 0) > 0 || (job.appClis?.length ?? 0) > 0) cls = 'heavy';
-  if (job.hint === 'heavy' || (job.hint === 'job' && cls === 'chat')) cls = job.hint;
+  const hint = RUNNER_CLASSES.indexOf(job.hint as RunnerClass);
+  if (hint >= 0 && hint < RUNNER_CLASSES.indexOf(cls)) cls = RUNNER_CLASSES[hint];
   return cls;
 }
 

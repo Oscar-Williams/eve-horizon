@@ -28,7 +28,7 @@ import {
   type RunnerSubmit,
 } from '@eve/shared';
 import { createPlainPodBackend, type PodCreatedMeta, type RunnerPodPlan } from './k8s-runner.js';
-import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolPresent } from './sandbox-claim-backend.js';
+import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolSize } from './sandbox-claim-backend.js';
 import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
@@ -174,9 +174,10 @@ export interface DispatchToRunnerPodOptions {
  * in the platform namespace, where the org filesystem claim lives (only under
  * legacy and audit: strict mounts none). Every other job runs in the runner
  * namespace: through a SandboxClaim on its class's warm pool when the
- * agent-sandbox CRDs and that pool are present, else as the identical pod
- * created directly. A job with init containers (toolchains, app CLIs) or its
- * own resource class always gets a plain pod: a claim cannot vary the pod.
+ * agent-sandbox CRDs are present and that pool holds warm pods, else as the
+ * identical pod created directly (a pool sized 0 would only make the claim
+ * wait for a cold pod). A job with init containers (toolchains, app CLIs) or
+ * its own resource class always gets a plain pod: a claim cannot vary the pod.
  */
 async function runnerBackendFor(
   submit: RunnerSubmit,
@@ -208,7 +209,7 @@ async function runnerBackendFor(
     onPodCreated: opts.onPodCreated && ((meta) => opts.onPodCreated!({ ...meta, ...(fallback ? { fallback } : {}) })),
   });
   const varies = (plan.toolchains?.length ?? 0) > 0 || (plan.appClis?.length ?? 0) > 0 || Boolean(plan.resources);
-  if (varies || !(await sandboxCrdsPresent()) || !(await sandboxPoolPresent(namespace, jobClass))) return plain();
+  if (varies || !(await sandboxCrdsPresent()) || !(await sandboxPoolSize(namespace, jobClass))) return plain();
 
   const claim = createSandboxClaimBackend({
     namespace,
