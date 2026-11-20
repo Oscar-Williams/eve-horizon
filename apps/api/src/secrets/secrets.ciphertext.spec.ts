@@ -170,6 +170,33 @@ vi.mock('@eve/db', async (importOriginal) => {
         if (row) row.client_secret = clientSecret;
         return !!row;
       }),
+      updateSigningSecret: vi.fn(async (id: string, signingSecret: string) => {
+        const row = store.oauthConfigs.find((r) => r.id === id);
+        if (row) row.config_json = { ...row.config_json, signing_secret: signingSecret };
+        return !!row;
+      }),
+      countSigningSecretFormats: vi.fn(async () => {
+        const values = store.oauthConfigs.map((r) => r.config_json?.signing_secret)
+          .filter((v): v is string => typeof v === 'string' && v.length > 0);
+        return {
+          plain: values.filter((v) => !sealedPattern.test(v)).length,
+          sealed: values.filter((v) => sealedPattern.test(v)).length,
+        };
+      }),
+      listPlainSigningSecrets: vi.fn(async (afterId: string, limit: number) =>
+        store.oauthConfigs
+          .filter((r) => typeof r.config_json?.signing_secret === 'string' && r.config_json.signing_secret !== ''
+            && !sealedPattern.test(r.config_json.signing_secret as string) && r.id > afterId)
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .slice(0, limit)
+          .map((r) => ({ id: r.id, signing_secret: r.config_json.signing_secret as string }))),
+      swapSigningSecret: vi.fn(async (id: string, from: string, to: string) => {
+        await store.beforeSwap?.(id);
+        const row = store.oauthConfigs.find((r) => r.id === id);
+        if (!row || row.config_json?.signing_secret !== from) return false;
+        row.config_json = { ...row.config_json, signing_secret: to };
+        return true;
+      }),
     })),
   };
 });
@@ -359,6 +386,83 @@ describe('integration tokens and OAuth client secrets at rest', () => {
     await after.upsertOAuthAppConfig('org_acme', 'slack', { client_id: 'client-1', client_secret: 'rotated-secret' } as never);
     expect(store.oauthConfigs[0].client_secret).toMatch(/^v2:/);
     expect((await after.getOAuthAppConfig('org_acme', 'slack'))?.client_secret).toBe('rotated-secret');
+  });
+});
+
+describe('the Slack signing secret at rest', () => {
+  beforeEach(() => {
+    store.integrations.push({
+      id: 'int_slack', org_id: 'org_acme', provider: 'slack', account_id: 'T1',
+      tokens_json: { access_token: 'xoxb-secret-token', team_id: 'T1' },
+      settings_json: {}, status: 'active', created_at: new Date(), updated_at: new Date(),
+    });
+    store.oauthConfigs.push({
+      id: 'oac_slack', org_id: 'org_acme', provider: 'slack', client_id: 'client-1',
+      client_secret: 'plain-client-secret', config_json: { signing_secret: 'plain-signing-secret' },
+      label: null, status: 'active', created_by: null, created_at: new Date(), updated_at: new Date(),
+    });
+  });
+
+  const storedSigningSecret = () => store.oauthConfigs[0].config_json.signing_secret as string;
+
+  it('is counted while plain, and left for re-encryption', async () => {
+    const report = await secrets().svc.reencrypt({ actor: ADMIN, dryRun: true });
+    expect(report.before).toMatchObject({ oauth_signing_secrets: { plain: 1, sealed: 0 } });
+    // The integration token, the client secret and the signing secret.
+    expect(report.remaining).toBe(3);
+    expect(storedSigningSecret()).toBe('plain-signing-secret');
+  });
+
+  it('is sealed by the command, bound to its row, and the gateway listing still reads it', async () => {
+    const report = await secrets().svc.reencrypt({ actor: ADMIN });
+
+    expect(storedSigningSecret()).toMatch(/^v2:/);
+    expect(storedSigningSecret()).not.toContain('plain-signing');
+    expect(report.reencrypted).toMatchObject({ oauth_signing_secrets: 1 });
+    expect(report.after).toMatchObject({ oauth_signing_secrets: { plain: 0, sealed: 1 } });
+    expect(report.remaining).toBe(0);
+    const [row] = await integrations().listActiveIntegrations();
+    expect(row.settings_json.signing_secret).toBe('plain-signing-secret');
+
+    // Copied to another org's config, the envelope does not open: no secret reaches the gateway.
+    store.oauthConfigs.push({ ...store.oauthConfigs[0], id: 'oac_other', org_id: 'org_other' });
+    store.integrations.push({ ...store.integrations[0], id: 'int_other', org_id: 'org_other', account_id: 'T2' });
+    const other = (await integrations().listActiveIntegrations()).find((r) => r.id === 'int_other');
+    expect(other?.settings_json.signing_secret).toBeUndefined();
+  });
+
+  it('keeps one changed during re-encryption, and takes it in the next pass', async () => {
+    const { svc } = secrets();
+    let swaps = 0;
+    store.beforeSwap = async (id) => {
+      // The client secret's swap comes first; the signing secret's second.
+      if (id !== 'oac_slack' || ++swaps !== 2) return;
+      store.beforeSwap = null;
+      store.oauthConfigs[0].config_json = { signing_secret: 'rotated-signing-secret' };
+    };
+    const first = await svc.reencrypt({ actor: ADMIN });
+    expect(first.skipped.changed).toBe(1);
+    expect(storedSigningSecret()).toBe('rotated-signing-secret');
+
+    const second = await svc.reencrypt({ actor: ADMIN });
+    expect(second.reencrypted).toMatchObject({ oauth_signing_secrets: 1 });
+    expect(storedSigningSecret()).toMatch(/^v2:/);
+    expect((await integrations().listActiveIntegrations())[0].settings_json.signing_secret).toBe('rotated-signing-secret');
+  });
+
+  it('is written plain before the command and sealed after it', async () => {
+    await integrations().upsertOAuthAppConfig('org_acme', 'slack', {
+      client_id: 'client-1', client_secret: 'client-secret', config: { signing_secret: 'first-signing-secret' },
+    } as never);
+    expect(storedSigningSecret()).toBe('first-signing-secret');
+
+    store.settings.set('secrets.ciphertext_format', 'v2');
+    const after = integrations();
+    await after.upsertOAuthAppConfig('org_acme', 'slack', {
+      client_id: 'client-1', client_secret: 'client-secret', config: { signing_secret: 'second-signing-secret' },
+    } as never);
+    expect(storedSigningSecret()).toMatch(/^v2:/);
+    expect((await after.listActiveIntegrations())[0].settings_json.signing_secret).toBe('second-signing-secret');
   });
 });
 

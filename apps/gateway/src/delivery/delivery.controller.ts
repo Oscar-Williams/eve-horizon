@@ -5,11 +5,11 @@ import {
   HttpCode,
   HttpStatus,
   Post,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { formatAgentReply } from '../providers/slack/slack-format.js';
-import { createJsonLogger, judgeInternalCall } from '@eve/shared';
+import { createJsonLogger } from '@eve/shared';
+import { assertDeliverCaller, gatewayLegacyKeyJudge } from '../internal-auth.js';
 
 const logger = createJsonLogger('gateway');
 
@@ -23,6 +23,8 @@ interface DeliveryRequest {
 
 @Controller('internal')
 export class DeliveryController {
+  private readonly legacyKeyAllowed = gatewayLegacyKeyJudge();
+
   constructor(private readonly registry: GatewayProviderRegistry) {}
 
   @Post('deliver')
@@ -31,12 +33,9 @@ export class DeliveryController {
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() body: DeliveryRequest,
   ) {
-    // Only core services deliver: the core key (the gateway holds its hash),
-    // or the legacy key while the gateway still holds it.
-    const call = judgeInternalCall(headers);
-    if (!call || (call.kind === 'service' && call.service !== 'core')) {
-      throw new UnauthorizedException('Missing or invalid internal token');
-    }
+    // Only the services that deliver: the deliver key, or the legacy key
+    // under internal.service_key.
+    await assertDeliverCaller(headers, '/internal/deliver', this.legacyKeyAllowed);
 
     if (!body.provider || !body.account_id || !body.channel_id || !body.text) {
       return { delivered: false, reason: 'missing_fields' };

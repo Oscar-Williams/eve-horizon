@@ -66,6 +66,8 @@ describe('DeployerService - Eve registry app pod composition', () => {
     deployer = new DeployerService(null as any, { applyManifest } as any);
     (deployer as any).logger = { warn: vi.fn(), log: vi.fn(), error: vi.fn(), debug: vi.fn() };
     (deployer as any).environments = { bumpRegistryPullEpoch: vi.fn().mockResolvedValue(3), recordRegistryKeyVersion: vi.fn() };
+    // The API verifies with the internal key, as the worker signs here.
+    (deployer as any).apiRegistryKeyVersion = vi.fn(async () => 'internal');
     const bucketProvisioner = {
       isConfigured: true,
       backend: 'gcs',

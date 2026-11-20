@@ -217,7 +217,9 @@ export class ChatService {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          ...internalAuthHeaders(),
+          // The deliver key (and the legacy key while it is set), never the
+          // core key: the gateway accepts nothing else.
+          ...internalAuthHeaders({ service: 'deliver' }),
         },
         body: JSON.stringify({
           provider,

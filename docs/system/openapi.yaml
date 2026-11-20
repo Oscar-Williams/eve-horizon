@@ -65,6 +65,16 @@ paths:
       summary: Bring every environment in line with the security profiles
         (system_admin only)
       tags: *a2
+  /internal/security/legacy-key-calls:
+    post:
+      operationId: SecurityInternalController_legacyKeyCall
+      parameters: []
+      responses:
+        "200":
+          description: ""
+      summary: Decide and record a legacy-key call the gateway received (internal only)
+      tags:
+        - internal
   /auth/me:
     get:
       operationId: AuthController_me
@@ -4592,11 +4602,10 @@ paths:
                   type: string
                 actor_type:
                   type: string
-                  enum:
-                    - agent
-                    - system
+                  description: "Ignored: the message is posted as the job's own agent"
                 actor_id:
                   type: string
+                  description: "Ignored: the job's assignee, else the job id"
                 id:
                   type: string
                 chat_progress:
@@ -4605,7 +4614,6 @@ paths:
               required:
                 - thread_id
                 - body
-                - actor_type
       responses:
         "204":
           description: ""
@@ -8872,6 +8880,15 @@ paths:
         "200":
           description: ""
       summary: Docker v2 token auth (GET with Basic auth)
+      tags: *a91
+  /internal/registry/key-version:
+    get:
+      operationId: RegistryTokenController_keyVersion
+      parameters: []
+      responses:
+        "200":
+          description: ""
+      summary: Registry key version the API verifies with (internal only)
       tags: *a91
   /jobs/{job_id}/attachments:
     post:
@@ -15824,10 +15841,22 @@ components:
                 - plain
                 - sealed
               additionalProperties: false
+            oauth_signing_secrets:
+              type: object
+              properties:
+                plain:
+                  type: number
+                sealed:
+                  type: number
+              required:
+                - plain
+                - sealed
+              additionalProperties: false
           required:
             - secrets
             - integration_tokens
             - oauth_client_secrets
+            - oauth_signing_secrets
           additionalProperties: false
         after:
           $ref: "#/definitions/SecretsReencryptResponse/properties/before"
@@ -15840,10 +15869,13 @@ components:
               type: number
             oauth_client_secrets:
               type: number
+            oauth_signing_secrets:
+              type: number
           required:
             - secrets
             - integration_tokens
             - oauth_client_secrets
+            - oauth_signing_secrets
           additionalProperties: false
         skipped:
           type: object

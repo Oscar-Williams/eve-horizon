@@ -11,10 +11,13 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  DEFAULT_EVE_API_APP_URL,
+  DEFAULT_PLATFORM_NAMESPACE,
   DEFAULT_RUNNER_NAMESPACE,
   HEAVY_WORKSPACE_SIZE,
   createRunnerInboundKey,
   getCorrelationHeaders,
+  runnerPoolKey,
   runnerClassLabels,
   runnerClassResources,
   runnerJobLabels,
@@ -28,13 +31,23 @@ import {
   type RunnerSubmit,
 } from '@eve/shared';
 import { createPlainPodBackend, type PodCreatedMeta, type RunnerPodPlan } from './k8s-runner.js';
-import { SandboxClaimUnavailable, createSandboxClaimBackend, sandboxCrdsPresent, sandboxPoolPresent } from './sandbox-claim-backend.js';
+import {
+  SandboxClaimUnavailable,
+  createSandboxClaimBackend,
+  runnerNamespaceExists,
+  sandboxCrdsPresent,
+  sandboxPoolSize,
+} from './sandbox-claim-backend.js';
 import { ensureRunnerEgress } from '../network/runner-egress.js';
 
 /** Where a runner pod comes from: a plain pod, or (phase 2) a SandboxClaim. */
 export interface RunnerPodBackend {
-  /** Create the pod and wait until it is Ready with an IP. */
-  start(signal?: AbortSignal): Promise<{ ip: string; podName: string; namespace: string }>;
+  /**
+   * Create the pod and wait until it is Ready with an IP. `submitKey` is the
+   * key the pod takes a submit with, when it is not the dispatch's own
+   * per-pod key (a claimed pod takes the worker's pool key).
+   */
+  start(signal?: AbortSignal): Promise<{ ip: string; podName: string; namespace: string; submitKey?: string }>;
   /** Whether the pod has terminated (or is gone). */
   podEnded(): Promise<boolean>;
   /** Remove the pod (and anything created with it). Idempotent. */
@@ -93,7 +106,7 @@ export async function runInRunnerPod(submit: RunnerSubmit, deps: RunnerDispatchD
   const graceMs = opts.resultGraceMs ?? 30_000;
   try {
     const pod = await deps.backend.start(signal);
-    await deps.submit(pod.ip, submit, opts.inboundKey, signal);
+    await deps.submit(pod.ip, submit, pod.submitKey ?? opts.inboundKey, signal);
     await opts.onSubmitted?.();
 
     const deadline = now() + timeoutMs;
@@ -174,9 +187,10 @@ export interface DispatchToRunnerPodOptions {
  * in the platform namespace, where the org filesystem claim lives (only under
  * legacy and audit: strict mounts none). Every other job runs in the runner
  * namespace: through a SandboxClaim on its class's warm pool when the
- * agent-sandbox CRDs and that pool are present, else as the identical pod
- * created directly. A job with init containers (toolchains, app CLIs) or its
- * own resource class always gets a plain pod: a claim cannot vary the pod.
+ * agent-sandbox CRDs are present and that pool holds warm pods, else as the
+ * identical pod created directly (a pool sized 0 would only make the claim
+ * wait for a cold pod). A job with init containers (toolchains, app CLIs) or
+ * its own resource class always gets a plain pod: a claim cannot vary the pod.
  */
 async function runnerBackendFor(
   submit: RunnerSubmit,
@@ -208,20 +222,23 @@ async function runnerBackendFor(
     onPodCreated: opts.onPodCreated && ((meta) => opts.onPodCreated!({ ...meta, ...(fallback ? { fallback } : {}) })),
   });
   const varies = (plan.toolchains?.length ?? 0) > 0 || (plan.appClis?.length ?? 0) > 0 || Boolean(plan.resources);
-  if (varies || !(await sandboxCrdsPresent()) || !(await sandboxPoolPresent(namespace, jobClass))) return plain();
+  // A warm pod takes a submit only with the worker's pool key; without one, claim nothing.
+  const poolKey = runnerPoolKey();
+  if (varies || !poolKey || !(await sandboxCrdsPresent()) || !(await sandboxPoolSize(namespace, jobClass))) return plain();
 
   const claim = createSandboxClaimBackend({
     namespace,
     jobClass,
     submit,
     timeoutSeconds: plan.timeoutSeconds ?? Math.ceil(parseInt(process.env.EVE_K8S_POLL_TIMEOUT_MS ?? '1800000', 10) / 1000),
+    poolKeySha256: poolKey.sha256,
     onPodCreated: opts.onPodCreated as never,
   });
   let active: RunnerPodBackend = claim;
   return {
     async start(signal) {
       try {
-        return await claim.start(signal);
+        return { ...(await claim.start(signal)), submitKey: poolKey.key };
       } catch (err) {
         if (signal?.aborted || !(err instanceof SandboxClaimUnavailable)) throw err;
         // A controller outage costs latency, never the job: drop the claim, create the pod directly.
@@ -243,6 +260,14 @@ export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchTo
   // legacy, its allow-all companion) exist before a claim labels a pod with
   // the project or a plain pod starts with it; eve-runner-deny holds until then.
   await ensureRunnerEgress(submit.project_id);
+  if (!opts.pod.orgFs) {
+    const namespace = process.env.EVE_RUNNER_NAMESPACE || DEFAULT_RUNNER_NAMESPACE;
+    if (!(await runnerNamespaceExists(namespace))) {
+      return failure(submit.attempt_id, `The runner namespace ${namespace} does not exist, so no runner pod can start. `
+        + 'Apply the runner pieces of k8s/base (runner-namespace.yaml, runner-serviceaccount.yaml, runner-rbac.yaml and '
+        + 'runner-network-policies.yaml) to the cluster, or set EVE_RUNNER_NAMESPACE on the worker to the namespace that holds them.');
+    }
+  }
   const inbound = createRunnerInboundKey();
   const backend = await runnerBackendFor(submit, opts, inbound.sha256);
   return runInRunnerPod(submit, {
@@ -260,9 +285,22 @@ export async function dispatchToRunnerPod(submit: RunnerSubmit, opts: DispatchTo
   });
 }
 
-/** The API URL a runner reports to: the app-facing URL when the instance sets one. */
+/**
+ * The API URL a runner reports to: EVE_API_APP_URL, the URL apps get (the
+ * API's public port by its cluster name; the same default as the deployer's),
+ * never the worker's own EVE_API_URL, which may be a short name the runner
+ * namespace cannot resolve or the internal port its egress policy blocks. A
+ * single-label host is qualified with the platform namespace, as the
+ * deployer does for apps.
+ */
 export function runnerApiUrl(): string {
-  const url = process.env.EVE_API_APP_URL || process.env.EVE_API_URL;
-  if (!url) throw new Error('EVE_API_URL is required to dispatch a runner pod');
-  return url;
+  const raw = process.env.EVE_API_APP_URL || DEFAULT_EVE_API_APP_URL;
+  try {
+    const url = new URL(raw);
+    if (url.hostname.includes('.') || url.hostname === 'localhost' || /^[0-9.]+$|:/.test(url.hostname)) return raw;
+    url.hostname = `${url.hostname}.${process.env.EVE_K8S_NAMESPACE || DEFAULT_PLATFORM_NAMESPACE}.svc.cluster.local`;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return raw;
+  }
 }

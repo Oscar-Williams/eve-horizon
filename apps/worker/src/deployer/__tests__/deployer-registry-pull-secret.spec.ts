@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'yaml';
-import { REGISTRY_INTERNAL_KEY_VERSION, registryKeyVersion, verifyRegistryPullCredential } from '@eve/shared';
+import {
+  REGISTRY_INTERNAL_KEY_VERSION,
+  registryCredentialKey,
+  registryKeyVersion,
+  verifyRegistryPullCredential,
+} from '@eve/shared';
 import { DeployerService } from '../deployer.service.js';
 
 /**
@@ -11,6 +16,7 @@ describe('DeployerService - Eve registry pull secret', () => {
   const applyManifest = vi.fn();
   const bumpRegistryPullEpoch = vi.fn();
   const recordRegistryKeyVersion = vi.fn();
+  const apiRegistryKeyVersion = vi.fn();
   let deployer: DeployerService;
 
   beforeEach(() => {
@@ -23,6 +29,10 @@ describe('DeployerService - Eve registry pull secret', () => {
     vi.stubEnv('EVE_INTERNAL_API_KEY', 'internal-key');
     deployer = new DeployerService(null as any, { applyManifest } as any);
     (deployer as any).environments = { bumpRegistryPullEpoch, recordRegistryKeyVersion };
+    // The API verifies with the same key as the worker unless a test says otherwise.
+    apiRegistryKeyVersion.mockReset();
+    apiRegistryKeyVersion.mockImplementation(async () => registryCredentialKey()?.version ?? null);
+    (deployer as any).apiRegistryKeyVersion = apiRegistryKeyVersion;
   });
 
   afterEach(() => {
@@ -123,5 +133,32 @@ describe('DeployerService - Eve registry pull secret', () => {
       manifestYaml: 'registry: eve\n',
     })).rejects.toThrow('apply failed');
     expect(recordRegistryKeyVersion).not.toHaveBeenCalled();
+  });
+
+  it('writes no pull secret signed with a key the API does not verify with', async () => {
+    vi.stubEnv('EVE_REGISTRY_CREDENTIAL_KEY', 'registry-credential-key');
+    for (const apiVersion of [registryKeyVersion('another-credential-key'), REGISTRY_INTERNAL_KEY_VERSION, null]) {
+      apiRegistryKeyVersion.mockResolvedValueOnce(apiVersion);
+      await expect((deployer as any).ensureImagePullSecret({
+        namespace: 'eve-acme-shop-test',
+        projectId: 'proj_shop',
+        environmentId: 'env_test',
+        manifestYaml: 'registry: eve\n',
+      })).rejects.toThrow(/registry key version/);
+    }
+    expect(bumpRegistryPullEpoch).not.toHaveBeenCalled();
+    expect(applyManifest).not.toHaveBeenCalled();
+    expect(recordRegistryKeyVersion).not.toHaveBeenCalled();
+  });
+
+  it('asks the API only for the Eve registry', async () => {
+    const name = await (deployer as any).ensureImagePullSecret({
+      namespace: 'eve-acme-shop-test',
+      projectId: 'proj_shop',
+      environmentId: 'env_test',
+      manifestYaml: 'registry: none\n',
+    });
+    expect(name).toBeNull();
+    expect(apiRegistryKeyVersion).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ import { PipelineRunsInternalController } from '../pipelines/pipeline-runs.inter
 import { PlatformNotifyController } from '../platform-notify/platform-notify.controller.js';
 import { RegistryTokenController } from '../registry/registry-token.controller.js';
 import { SecretsInternalController, SecretsWriteBackController } from '../secrets/secrets.internal.controller.js';
+import { SecurityInternalController } from '../security/security.internal.controller.js';
 import { StorageInternalController } from '../storage/storage.internal.controller.js';
 import { WorkflowsInternalController } from '../workflows/workflows.internal.controller.js';
 
@@ -38,6 +39,7 @@ const controllers: Array<new (...args: never[]) => object> = [
   RegistryTokenController,
   SecretsInternalController,
   SecretsWriteBackController,
+  SecurityInternalController,
   StorageInternalController,
   WorkflowsInternalController,
 ];
@@ -100,7 +102,7 @@ function routesFor(path: string): Route[] {
 
 describe('@InternalCallers on the routes the gateway and the SSO call', () => {
   it.each([
-    ['gateway', 10],
+    ['gateway', 11],
     ['sso', 2],
   ])('every API route the %s calls declares it', (caller, atLeast) => {
     const called = internalPathsCalledBy(caller).filter((path) => routesFor(path).length > 0);

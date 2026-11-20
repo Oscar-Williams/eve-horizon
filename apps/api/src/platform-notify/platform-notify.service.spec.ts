@@ -238,6 +238,24 @@ describe('PlatformNotifyService', () => {
       expect(body.text).toContain('Degraded');
     });
 
+    it('sends the gateway the deliver key, never the core key', async () => {
+      vi.stubEnv('EVE_INTERNAL_CORE_KEY', 'core-key-0123');
+      vi.stubEnv('EVE_INTERNAL_DELIVER_KEY', 'deliver-key-0123');
+      try {
+        const { service } = buildReadyService();
+        mockFetch.mockResolvedValue({ ok: true, status: 200 });
+
+        await service.notify(degradedAlert);
+
+        const [, init] = mockFetch.mock.calls[0];
+        expect(init.headers['x-eve-service-key']).toBe('deliver.deliver-key-0123');
+        expect(init.headers['x-eve-internal-token']).toBe('test-internal-key');
+        expect(JSON.stringify(init.headers)).not.toContain('core-key-0123');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
     it('marks the environment as notified after successful delivery', async () => {
       const markNotified = vi.fn().mockResolvedValue(undefined);
       const { service } = buildReadyService({ markNotified });

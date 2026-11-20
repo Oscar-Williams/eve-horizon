@@ -11,13 +11,15 @@
  * - non-root, no privilege escalation, every capability dropped, the runtime
  *   seccomp profile and no service account token;
  * - an org filesystem only when the job asks for one, read-only unless it
- *   writes.
+ *   writes;
+ * - a runner that refuses to start unless its process is non-dumpable, so
+ *   job processes (same UID) cannot read its environment.
  *
  * Pod labels P2-3's egress policies select on are documented in
  * docs/system/job-execution.md ("Runner pod labels").
  */
 
-import { RUNNER_INBOUND_KEY_SHA256_ENV, RUNNER_PORT } from './runner-protocol.js';
+import { RUNNER_INBOUND_KEY_SHA256_ENV, RUNNER_POOL_KEY_SHA256_ENV, RUNNER_PORT } from './runner-protocol.js';
 import { resolveRunnerPodIsolation, type RunnerPodIsolation } from './runner-pod.js';
 
 /** The runner entrypoint, started through the image's tini + entrypoint script (`exec "$@"`). */
@@ -38,6 +40,8 @@ export interface RunnerPodOptions {
   annotations?: Record<string, string>;
   /** SHA-256 of the pod's inbound key; omitted for warm-pool templates. */
   inboundKeySha256?: string;
+  /** SHA-256 of the worker's pool key; warm-pool templates only. */
+  poolKeySha256?: string;
   /** The job's workspace: a claim (plain pods), or a pod-local emptyDir. */
   workspace: { kind: 'pvc'; claimName: string } | { kind: 'emptyDir'; sizeLimit?: string };
   /** The org filesystem claim; null or omitted mounts none. */
@@ -69,7 +73,10 @@ function pullPolicy(opts: RunnerPodOptions): 'Always' | 'IfNotPresent' | 'Never'
 
 /** The pod spec of a runner pod. */
 export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> {
-  const isolation = opts.isolation ?? resolveRunnerPodIsolation();
+  // Pod affinity (EVE_RUNNER_POD_AFFINITY_*) places a pod that mounts the
+  // ReadWriteOnce org filesystem beside the pod holding it, in the platform
+  // namespace; no other runner pod has anything to be co-located with.
+  const { affinity, ...isolation } = opts.isolation ?? resolveRunnerPodIsolation();
   const toolchains = [...new Set(opts.toolchains ?? [])];
   const appClis = opts.appClis ?? [];
   const prefix = opts.toolchainImagePrefix ?? process.env.EVE_TOOLCHAIN_IMAGE_PREFIX ?? 'eve-horizon/toolchain-';
@@ -85,8 +92,10 @@ export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> 
     { name: 'EVE_STATE_ROOT', value: '/opt/eve/state' },
     { name: 'EVE_TOOLCHAIN_ROOT', value: '/opt/eve/toolchains' },
     { name: 'EVE_TOOLCHAIN_INIT_MOUNTED', value: 'true' },
+    { name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' },
   ];
   if (opts.inboundKeySha256) env.push({ name: RUNNER_INBOUND_KEY_SHA256_ENV, value: opts.inboundKeySha256 });
+  if (opts.poolKeySha256) env.push({ name: RUNNER_POOL_KEY_SHA256_ENV, value: opts.poolKeySha256 });
   if (opts.orgFs) env.push({ name: 'EVE_ORG_FS_ROOT', value: '/org' });
   if (toolchains.length > 0) {
     env.push({ name: 'EVE_TOOLCHAIN_PATHS', value: toolchains.map((tc) => `/opt/eve/toolchains/${tc}/bin`).join(':') });
@@ -141,6 +150,7 @@ export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> 
     terminationGracePeriodSeconds: 10,
     // Job code needs no Kubernetes API: no token, no platform service account.
     ...isolation,
+    ...(opts.orgFs && affinity ? { affinity } : {}),
     automountServiceAccountToken: isolation.automountServiceAccountToken === true,
     ...(opts.runtime?.runtimeClassName ? { runtimeClassName: opts.runtime.runtimeClassName } : {}),
     ...(runtimeNodeSelector || isolation.nodeSelector

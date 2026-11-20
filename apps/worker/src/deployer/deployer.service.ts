@@ -67,6 +67,7 @@ import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
 import { K8sService } from './k8s.service';
 import { evePullSecretManifest } from '../registry/eve-pull-secret.js';
+import { fetchApiRegistryKeyVersion, registryKeyMismatch } from '../registry/api-registry-key.js';
 import { DeploymentReadiness } from './deployment-readiness';
 import { ImageResolver } from './image-resolver';
 import {
@@ -295,6 +296,8 @@ export class DeployerService {
   private appLinkSubscriptions: ReturnType<typeof appLinkSubscriptionQueries>;
   private storageBuckets: ReturnType<typeof storageBucketQueries>;
   private readonly registrySecretName = 'eve-registry';
+  /** The registry key version the API verifies with, asked before each Eve pull secret is written. */
+  private readonly apiRegistryKeyVersion: () => Promise<string | null> = fetchApiRegistryKeyVersion;
   private readonly bucketProvisioner = new BucketProvisioner();
   private appCredentialProvisioners: AppCredentialProvisioner[] =
     createAppCredentialProvisioners(this.bucketProvisioner);
@@ -3294,6 +3297,12 @@ export class DeployerService {
       if (!signer) {
         this.logger.warn('Eve registry requested but neither EVE_REGISTRY_CREDENTIAL_KEY nor EVE_INTERNAL_API_KEY is configured');
         return null;
+      }
+      // Only a key the API verifies with: a secret signed with another would
+      // be refused at kubelet's next pull.
+      const mismatch = registryKeyMismatch(signer.version, await this.apiRegistryKeyVersion());
+      if (mismatch) {
+        throw new Error(`Not writing the registry pull secret of environment ${params.environmentId}: ${mismatch}`);
       }
 
       // Store an environment-bound pull credential as the docker password:

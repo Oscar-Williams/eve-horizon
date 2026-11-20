@@ -22,7 +22,7 @@ import {
   createSign,
   type KeyObject,
 } from 'crypto';
-import { loadConfig } from '@eve/shared';
+import { loadConfig, registryCredentialKey } from '@eve/shared';
 import type { Db } from '@eve/db';
 import { environmentQueries, projectQueries } from '@eve/db';
 import { Public } from '../auth/auth.decorator.js';
@@ -160,6 +160,20 @@ export class RegistryTokenController {
   async issueToken(@Body() body: RegistryTokenRequest): Promise<RegistryTokenResponse> {
     const config = loadConfig();
     return this.buildScopedToken(config, { kind: 'internal' }, body.scope, body.service);
+  }
+
+  /**
+   * The registry key version this API verifies credentials with: the
+   * credential key's, `internal` while it has only the legacy internal key,
+   * or null. The worker writes a pull secret only when it signs with the
+   * same (core key only).
+   */
+  @Public()
+  @Get('key-version')
+  @UseGuards(InternalTokenGuard)
+  @ApiOperation({ summary: 'Registry key version the API verifies with (internal only)' })
+  keyVersion(): { key_version: string | null } {
+    return { key_version: registryCredentialKey()?.version ?? null };
   }
 
   /**

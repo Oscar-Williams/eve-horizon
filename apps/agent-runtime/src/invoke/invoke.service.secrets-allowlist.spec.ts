@@ -8,6 +8,12 @@ vi.mock('@eve/shared', async (importOriginal) => ({
   resolveSecrets: vi.fn(async () => resolved.secrets),
 }));
 
+// isolation.runner_mode is decided without a database here: these jobs run inline.
+vi.mock('@eve/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@eve/db')>()),
+  runnerModeFor: vi.fn(async () => ({ profile: 'legacy', podsOnly: false, required: false })),
+}));
+
 import { InvokeService } from './invoke.service.js';
 
 const TOKEN = 'ghs_exampleInstallationToken123';

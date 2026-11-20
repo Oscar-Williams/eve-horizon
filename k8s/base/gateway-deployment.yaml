@@ -26,7 +26,8 @@ spec:
               containerPort: 4820
           env:
             # Platform secrets: the gateway's own key, and the hashes of the keys it
-            # accepts (the core key, for deliveries). No database URL and no core key.
+            # accepts (the deliver key, for deliveries). No database URL, and no
+            # core key: the gateway never accepts it.
             # Each is optional, as with envFrom; the legacy EVE_INTERNAL_API_KEY is
             # the fallback until it is removed.
             - name: EVE_INTERNAL_GATEWAY_KEY

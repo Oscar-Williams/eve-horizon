@@ -242,6 +242,29 @@ describe('runner policies', () => {
     });
   });
 
+  it("allows a job-only project's fixed-env app-link producers, which its jobs resolve with no environment", async () => {
+    const JOBS = 'proj_jobs';
+    db.projects.set(JOBS, { id: JOBS, org_id: 'org_acme', slug: 'jobs' });
+    db.profiles.set(JOBS, 'strict');
+    db.subscriptions = [
+      { id: 'sub_fixed', consumer_project_id: JOBS, local_alias: 'catalog', environment_strategy: 'fixed', producer_env_name: 'prod',
+        api_grant: { producer_project_id: API, service_name: 'web', envs: ['prod'], revoked_at: null } },
+      // A same-env link has no producer env without an environment of its own, so jobs cannot resolve it.
+      { id: 'sub_same', consumer_project_id: JOBS, local_alias: 'mirror', environment_strategy: 'same', producer_env_name: null,
+        api_grant: { producer_project_id: API, service_name: 'web', envs: [], revoked_at: null } },
+    ];
+    const cluster = fakeCluster(['eve-runners']);
+    const { egress } = egressFor(cluster);
+
+    await egress.applyRunners(JOBS);
+    const [name] = cluster.names('eve-runners');
+    const peers = cluster.get('eve-runners', name)!.spec.egress
+      .flatMap((rule: any) => (rule.to ?? []).map((peer: any) => peer.namespaceSelector?.matchLabels?.['kubernetes.io/metadata.name']))
+      .filter(Boolean);
+    expect(peers).toContain('eve-acme-api-prod');
+    expect(peers.filter((ns: string) => ns.startsWith('eve-acme-api-'))).toEqual(['eve-acme-api-prod']);
+  });
+
   it('skips a runner namespace the cluster does not have', async () => {
     const cluster = fakeCluster(['eve']);
     const { egress } = egressFor(cluster);

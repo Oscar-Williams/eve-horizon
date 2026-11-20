@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebhookController } from './webhook.controller.js';
+
+const api = vi.hoisted(() => ({ postJson: vi.fn() }));
+vi.mock('../api-client.js', () => ({ postJson: api.postJson, getJson: vi.fn() }));
 import type { GatewayChatService } from '../chat/gateway-chat.service.js';
 import type { GatewayProviderRegistry } from '../providers/provider-registry.js';
 
@@ -30,6 +34,8 @@ describe('WebhookController simulate endpoint', () => {
   );
 
   beforeEach(() => {
+    api.postJson.mockReset();
+    api.postJson.mockResolvedValue({ profile: 'audit' });
     resolveAndRoute.mockReset();
     resolveAndRoute.mockResolvedValue({});
     vi.stubEnv('EVE_INTERNAL_API_KEY', INTERNAL_KEY);
@@ -84,6 +90,50 @@ describe('WebhookController simulate endpoint', () => {
         externalEmail: 'member@example.com',
       }),
     );
+  });
+
+  it('takes the deliver key and refuses the core key', async () => {
+    const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+    vi.stubEnv('EVE_INTERNAL_CALLER_HASHES', `core:${sha('core-key-0123')},deliver:${sha('deliver-key-0123')}`);
+
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'core.core-key-0123', 'x-eve-internal-token': INTERNAL_KEY })),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(resolveAndRoute).not.toHaveBeenCalled();
+
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-service-key': 'deliver.deliver-key-0123' })),
+    ).resolves.toEqual({ immediate_reply: null, duplicate: false, route: null });
+  });
+});
+
+describe('WebhookController simulate with only the legacy key (internal.service_key)', () => {
+  const resolveAndRoute = vi.fn();
+
+  beforeEach(() => {
+    api.postJson.mockReset();
+    resolveAndRoute.mockReset();
+    resolveAndRoute.mockResolvedValue({});
+    vi.stubEnv('EVE_INTERNAL_API_KEY', INTERNAL_KEY);
+    vi.stubEnv('EVE_SIMULATE_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is refused under strict, as the API decides', async () => {
+    api.postJson.mockResolvedValue({ profile: 'strict' });
+    const controller = new WebhookController(
+      {} as GatewayProviderRegistry,
+      { resolveAndRoute } as unknown as GatewayChatService,
+    );
+    await expect(
+      controller.handleSimulate(simulateRequest({ 'x-eve-internal-token': INTERNAL_KEY })),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(api.postJson).toHaveBeenCalledWith('/internal/security/legacy-key-calls', { route: '/gateway/providers/simulate' });
+    expect(resolveAndRoute).not.toHaveBeenCalled();
   });
 });
 
