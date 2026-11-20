@@ -31,10 +31,12 @@
  *   read; Eve's copy of the config directory is cleaned in place.
  * - **Codex** is refused when a checkout config (the project's
  *   `.codex/config.toml`, or a config home inside the checkout, the default
- *   `CODEX_HOME`, with its `.env`) sets any routing setting or hands an MCP
- *   server a credential, since the file cannot be edited and `-c` cannot
- *   undo a profile the file chooses. Otherwise it gets
- *   `-c model_provider="openai"` (and the same for the variant profile).
+ *   `CODEX_HOME`) sets any routing setting, widens what shell commands
+ *   inherit or hands an MCP server a credential, or when that config home
+ *   has a `.env` at all (Codex expands `${NAME}` in it), since the file
+ *   cannot be edited and `-c` cannot undo a profile the file chooses.
+ *   Otherwise it gets `-c model_provider="openai"` (and the same for the
+ *   variant profile).
  * - **Gemini** gets a per-job, Eve-owned system settings file, which outranks
  *   workspace settings, excluding the routing names from the project `.env`;
  *   routing names in `.gemini/.env`, which Gemini loads whatever the
@@ -170,8 +172,10 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
       // A config home inside the checkout is the checkout's; Eve's own is not.
       if (configDir && isInside(workspace, configDir)) {
         add(configLabel(workspace, harness, configDir, 'config.toml'), codexRoutingSettings(readText(path.join(configDir, 'config.toml')), harness));
-        // Codex loads CODEX_HOME/.env over its own environment; it keeps out only CODEX_ names.
-        add(configLabel(workspace, harness, configDir, '.env'), envFileRoutingNames(readText(path.join(configDir, '.env'))));
+        // Codex loads CODEX_HOME/.env over its own environment (keeping out
+        // only CODEX_ names) and expands ${NAME} in its values, so a harmless
+        // name can carry a credential: the file is a finding whatever it holds.
+        add(configLabel(workspace, harness, configDir, '.env'), envFileNames(readText(path.join(configDir, '.env'))));
       }
       break;
     }
@@ -243,7 +247,7 @@ export function strictCodexArgs(workspace: string, codexHome: string | undefined
   const routed = findCheckoutRouting({ workspace, harness: 'codex', configDir: codexHome })
     .flatMap((finding) => finding.settings.map((setting) => `${finding.file}: ${setting}`));
   if (routed.length > 0) {
-    throw new Error(checkoutSettingsRefusal(`The checkout's Codex config sets ${routed.join(', ')}`));
+    throw new Error(checkoutSettingsRefusal(`The checkout's Codex config is refused: ${routed.join(', ')}`));
   }
   const args = ['-c', 'model_provider="openai"'];
   if (variant) args.push('-c', `profiles.${variant}.model_provider="openai"`);
@@ -328,8 +332,10 @@ function claudeRoutingSettings(value: unknown): string[] {
  * each `model_providers` entry, any key ending `base_url`, and any env
  * override (an upper-case key with a value, such as
  * `shell_environment_policy.set.OPENAI_BASE_URL` or an MCP server's `env`)
- * that sets a routing name; then the MCP servers it hands a credential
- * (`codexMcpHandoffs`). A file it cannot read is `(unreadable)`.
+ * that sets a routing name, a `shell_environment_policy` that widens what
+ * shell commands inherit (`codexShellWidening`); then the MCP servers it
+ * hands a credential (`codexMcpHandoffs`). A file it cannot read is
+ * `(unreadable)`.
  */
 function codexRoutingSettings(text: string | null, harness: string): string[] {
   if (!text) return [];
@@ -348,6 +354,9 @@ function codexRoutingSettings(text: string | null, harness: string): string[] {
         const entries = isTable(value) ? Object.keys(value) : [];
         for (const entry of entries.length > 0 ? entries : ['']) settings.add(entry ? `${name}.${entry}` : name);
         continue;
+      }
+      if (key === 'shell_environment_policy' && isTable(value)) {
+        for (const setting of codexShellWidening(value, harness)) settings.add(`${name}.${setting}`);
       }
       if ((path.length === 1 && key === 'profile') || key === 'model_provider' || /base_url$/i.test(key)) {
         settings.add(name);
@@ -395,6 +404,42 @@ function codexMcpHandoffs(doc: TomlTable, harness: string): string[] {
     }
   }
   return found;
+}
+
+/**
+ * `shell_environment_policy` keys that widen what Codex's shell commands
+ * inherit: `inherit = "all"`, `ignore_default_excludes = true`, an
+ * `include_only` pattern or `filters` include that keeps a credential, and a
+ * `set` entry that names or references one.
+ */
+function codexShellWidening(policy: TomlTable, harness: string): string[] {
+  const found: string[] = [];
+  if (policy.inherit === 'all') found.push('inherit=all');
+  if (policy.ignore_default_excludes === true) found.push('ignore_default_excludes');
+  const includes = Array.isArray(policy.include_only) ? policy.include_only : [];
+  if (includes.some((pattern) => typeof pattern === 'string' && keepsCredential(pattern, harness))) found.push('include_only');
+  const filters = isTable(policy.filters) ? Object.entries(policy.filters) : [];
+  if (filters.some(([pattern, filter]) => filter === 'include' && keepsCredential(pattern, harness))) found.push('filters');
+  for (const [key, value] of Object.entries(isTable(policy.set) ? policy.set : {})) {
+    if (isCheckoutCredentialEnvKey(key, harness)) found.push(`set.${key}`);
+    for (const [, name] of typeof value === 'string' ? value.matchAll(ENV_REFERENCE) : []) {
+      if (namesHarnessSecret(name, harness)) found.push(`set.${key}=$${name}`);
+    }
+  }
+  return found;
+}
+
+/** Credential names a wildcard include pattern is tried against. */
+const CREDENTIAL_PROBES = [
+  ...CLAUDE_AUTH_ENV_KEYS, 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_AUTH_JSON', 'CODEX_AUTH_JSON_B64', 'CODEX_OAUTH_ACCESS_TOKEN',
+  'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'Z_AI_API_KEY', 'ZAI_API_KEY', 'EVE_JOB_TOKEN', 'EVE_APP_LINK_APP_TOKEN', 'EVE_INTERNAL_API_KEY',
+];
+
+/** Whether a Codex env pattern (`*` and `?` wildcards, any case) keeps a credential of this run. */
+function keepsCredential(pattern: string, harness: string): boolean {
+  if (!/[*?]/.test(pattern)) return isCheckoutCredentialEnvKey(pattern, harness);
+  const glob = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
+  return CREDENTIAL_PROBES.some((name) => glob.test(name) && isCheckoutCredentialEnvKey(name, harness));
 }
 
 /** Whether a checkout MCP server may not be handed this env name: a credential or a routing name. */
@@ -459,14 +504,25 @@ function isTable(value: TomlValue | undefined): value is TomlTable {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function envFileRoutingNames(text: string | null): string[] {
-  if (!text) return [];
+/** The variables an env file sets, by name, sorted. */
+function envFileVariables(text: string): string[] {
   const names = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
-    if (match && isCheckoutRoutingEnvKey(match[1])) names.add(match[1]);
+    if (match) names.add(match[1]);
   }
   return [...names].sort();
+}
+
+function envFileRoutingNames(text: string | null): string[] {
+  return text ? envFileVariables(text).filter(isCheckoutRoutingEnvKey) : [];
+}
+
+/** Every variable an env file that exists sets; `(no variables)` when it sets none. */
+function envFileNames(text: string | null): string[] {
+  if (text === null) return [];
+  const names = envFileVariables(text);
+  return names.length > 0 ? names : ['(no variables)'];
 }
 
 /** Claude Code's merge of settings sources: objects merge, lists join, the later scalar wins. */
