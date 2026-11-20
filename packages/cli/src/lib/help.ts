@@ -638,16 +638,18 @@ Jobs default to 'ready' phase, making them immediately schedulable.`,
       },
       approve: {
         description: 'Approve a job in review (recorded as you)',
-        usage: 'eve job approve <job-id> [--comment "..."]',
+        usage: 'eve job approve <job-id> [--comment "..."] [--attempt-id <id>]',
         options: [
           '--comment <text>     Approval comment',
+          '--attempt-id <id>    The attempt you reviewed; refused (409) once the job is in review on a later one',
         ],
       },
       reject: {
         description: 'Reject a job in review (creates new attempt; recorded as you)',
-        usage: 'eve job reject <job-id> --reason "..."',
+        usage: 'eve job reject <job-id> --reason "..." [--attempt-id <id>]',
         options: [
           '--reason <text>      Rejection reason (required)',
+          '--attempt-id <id>    The attempt you reviewed; refused (409) once the job is in review on a later one',
         ],
       },
       result: {

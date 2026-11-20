@@ -2885,8 +2885,8 @@ async function handleSubmit(
 }
 
 /**
- * eve jobs approve <id> [--comment="..."]
- * Approve a job in review
+ * eve jobs approve <id> [--comment="..."] [--attempt-id=<id>]
+ * Approve a job in review (with --attempt-id, only the round of that attempt)
  */
 async function handleApprove(
   positionals: string[],
@@ -2901,12 +2901,16 @@ async function handleApprove(
   }
 
   const comment = getStringFlag(flags, ['comment']);
+  const attemptId = getStringFlag(flags, ['attempt-id']);
 
   // The API records the caller as the reviewer.
   const body: Record<string, unknown> = {};
 
   if (comment) {
     body.comment = comment;
+  }
+  if (attemptId) {
+    body.attempt_id = attemptId;
   }
 
   const response = await requestJson<Job>(context, `/jobs/${jobId}/approve`, {
@@ -2928,8 +2932,8 @@ async function handleApprove(
 }
 
 /**
- * eve jobs reject <id> --reason="..."
- * Reject a job in review
+ * eve jobs reject <id> --reason="..." [--attempt-id=<id>]
+ * Reject a job in review (with --attempt-id, only the round of that attempt)
  */
 async function handleReject(
   positionals: string[],
@@ -2949,8 +2953,10 @@ async function handleReject(
     throw new Error('--reason is required');
   }
 
+  const attemptId = getStringFlag(flags, ['attempt-id']);
+
   // The API records the caller as the reviewer.
-  const body = { reason };
+  const body = { reason, ...(attemptId ? { attempt_id: attemptId } : {}) };
 
   const response = await requestJson<Job>(context, `/jobs/${jobId}/reject`, {
     method: 'POST',

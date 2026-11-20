@@ -10,7 +10,8 @@ import { jobReviewQueries } from './jobs/review.js';
 // Re-export all job types from their new home so `import { X } from './jobs.js'`
 // (and `@eve/db`) consumers are unaffected by the per-concern split.
 export * from './jobs/types.js';
-export { ReviewDecidedError } from './jobs/review.js';
+export { ReviewDecidedError, ReviewRoundChangedError } from './jobs/review.js';
+export type { ReviewDecisionOptions } from './jobs/review.js';
 
 // ============================================================================
 // Factory Function (composition point)
