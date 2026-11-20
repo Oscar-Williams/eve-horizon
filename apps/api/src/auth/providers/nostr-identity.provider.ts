@@ -1,7 +1,7 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import type { Db, Identity } from '@eve/db';
-import { replayStoreQueries } from '@eve/db';
+import { decideSecurityRule, replayStoreQueries } from '@eve/db';
 import {
   verifyNostrEvent,
   canonicalRequestUrl,
@@ -29,6 +29,8 @@ import type {
  *    Server verifies signature, URL, method, body hash, timestamp, and
  *    replay protection.
  */
+const NIP98_PUBLIC_URL_RULE = 'auth.nip98_public_url';
+
 @Injectable()
 export class NostrIdentityProvider implements IdentityProvider {
   readonly name = 'nostr';
@@ -122,18 +124,22 @@ export class NostrIdentityProvider implements IdentityProvider {
       const reqAny = req as Record<string, unknown> & {
         headers: Record<string, string | string[] | undefined>;
       };
+      // The configured public origin, never the client's Host headers
+      // (rule auth.nip98_public_url when it is not configured).
+      const publicOrigin = process.env.EVE_PUBLIC_API_URL?.trim() || undefined;
       const url = canonicalRequestUrl({
         headers: req.headers,
         protocol: reqAny.protocol as string | undefined,
         hostname: reqAny.hostname as string | undefined,
         url: (reqAny.url as string) ?? '/',
-      });
+      }, { publicOrigin });
 
       return {
         providerName: this.name,
         value: base64Event,
         event,
         url,
+        originFromHeaders: !publicOrigin,
         method: ((reqAny.method as string) ?? 'GET').toUpperCase(),
         rawBody: reqAny.rawBody as string | undefined,
       };
@@ -145,12 +151,24 @@ export class NostrIdentityProvider implements IdentityProvider {
   async verifyRequestCredential(
     credential: ExtractedCredential,
   ): Promise<VerifiedIdentity | null> {
-    const { event, url, method, rawBody } = credential as ExtractedCredential & {
+    const { event, url, method, rawBody, originFromHeaders } = credential as ExtractedCredential & {
       event: NostrEvent;
       url: string;
       method: string;
       rawBody?: string;
+      originFromHeaders?: boolean;
     };
+
+    // 0. Without EVE_PUBLIC_API_URL the host came from the request's headers.
+    if (originFromHeaders) {
+      const profile = await decideSecurityRule(this.db, NIP98_PUBLIC_URL_RULE, {
+        governing: 'instance',
+        actorType: 'nostr',
+        actorId: typeof event?.pubkey === 'string' ? event.pubkey.toLowerCase() : 'unknown',
+        detail: { url },
+      });
+      if (profile === 'strict') return null;
+    }
 
     // 1. Verify event ID + Schnorr signature
     if (!verifyNostrEvent(event)) return null;

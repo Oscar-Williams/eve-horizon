@@ -177,6 +177,7 @@ A profile stamped 1 or 2 runs these under `audit` until `strict` is set again.
 
 | Rule | Governs | Under `strict` |
 |---|---|---|
+| `auth.nip98_public_url` | Instance | A Nostr NIP-98 request is refused when the API has no `EVE_PUBLIC_API_URL`. With it, the signed URL is always checked against that origin, never the request's `Host` or `X-Forwarded-*` headers (always on). Under `audit`, each NIP-98 request checked against header-derived host names is recorded. |
 | `managed_db.owner_url` | Project | A long-running service that reads the managed database owner's credential (`${managed.<db>.url}` or `${managed.<db>.password}` in its environment, command or entrypoint) is refused at deploy, naming the declared-role form `${managed.<db>.roles.<role>.url}`. Job services (migrations) still receive it, and the non-secret parts (host, port, database, username) are unaffected. Under `audit`, each such service is recorded at each deploy. |
 
 Always on in 0.1.328, whatever the profile: each managed database accepts

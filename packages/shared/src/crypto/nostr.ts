@@ -72,17 +72,33 @@ export function verifyNostrEvent(event: NostrEvent): boolean {
  * Scheme from x-forwarded-proto or protocol, host from x-forwarded-host or hostname.
  * Query params sorted alphabetically for deterministic comparison.
  */
-export function canonicalRequestUrl(req: {
-  headers: Record<string, string | string[] | undefined>;
-  protocol?: string;
-  hostname?: string;
-  url: string;
-}): string {
-  const proto = req.headers['x-forwarded-proto'];
-  const scheme = (typeof proto === 'string' ? proto : undefined) || req.protocol || 'https';
-  const fwdHost = req.headers['x-forwarded-host'];
-  const host = (typeof fwdHost === 'string' ? fwdHost : undefined) || req.hostname || 'localhost';
-  const url = new URL(req.url, `${scheme}://${host}`);
+export function canonicalRequestUrl(
+  req: {
+    headers: Record<string, string | string[] | undefined>;
+    protocol?: string;
+    hostname?: string;
+    url: string;
+  },
+  opts: {
+    /**
+     * The API's configured public origin. When given, scheme and host come
+     * from it alone: request headers (Host, X-Forwarded-*) are the client's
+     * to set, and an event signed for another host must not match here.
+     */
+    publicOrigin?: string;
+  } = {},
+): string {
+  let base: string;
+  if (opts.publicOrigin) {
+    base = new URL(opts.publicOrigin).origin;
+  } else {
+    const proto = req.headers['x-forwarded-proto'];
+    const scheme = (typeof proto === 'string' ? proto : undefined) || req.protocol || 'https';
+    const fwdHost = req.headers['x-forwarded-host'];
+    const host = (typeof fwdHost === 'string' ? fwdHost : undefined) || req.hostname || 'localhost';
+    base = `${scheme}://${host}`;
+  }
+  const url = new URL(req.url, base);
   url.searchParams.sort();
   let path = url.pathname;
   if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
