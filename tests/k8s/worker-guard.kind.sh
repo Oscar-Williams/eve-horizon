@@ -144,14 +144,17 @@ sleep 5
 "${K[@]}" apply -f - >/dev/null <<<"$(tenant_binding eve-acme-shop-prod)"
 
 failures=0
-# A refusal that must come from one admission policy (its name is in the error).
+# A refusal that must come from one admission policy (its name is in the
+# error; an extended regex). Where two policies refuse a write, the API server
+# reports whichever it runs first, and that order changes as policies do: a
+# case meant for one policy makes a write only that policy refuses.
 guard() { # policy description command...
   local policy="$1" what="$2"; shift 2
   local out
   if out="$("$@" 2>&1)"; then
     printf 'FAIL  deny  %s\n        allowed\n' "$what"
     failures=$((failures + 1))
-  elif grep -q "$policy" <<<"$out"; then
+  elif grep -qE "$policy" <<<"$out"; then
     printf 'PASS  deny  %s\n        %s\n' "$what" "$(echo "$out" | tail -1 | cut -c1-200)"
   else
     printf 'FAIL  deny  %s (not by %s)\n        %s\n' "$what" "$policy" "$(echo "$out" | tail -1 | cut -c1-200)"
@@ -167,7 +170,7 @@ guard_says() { # policy needle description command...
   if out="$("$@" 2>&1)"; then
     printf 'FAIL  deny  %s\n        allowed\n' "$what"
     failures=$((failures + 1))
-  elif grep -q "$policy" <<<"$out" && tail -1 <<<"$out" | grep -q "$needle"; then
+  elif grep -qE "$policy" <<<"$out" && tail -1 <<<"$out" | grep -q "$needle"; then
     printf 'PASS  deny  %s\n        %s\n' "$what" "$(echo "$out" | tail -1 | cut -c1-200)"
   else
     printf 'FAIL  deny  %s (not by %s naming %s)\n        %s\n' "$what" "$policy" "$needle" "$(echo "$out" | tail -1 | cut -c1-200)"
@@ -297,17 +300,19 @@ run deny "read a Secret in the platform namespace" "${W[@]}" auth can-i get secr
 run deny "list Secrets in the platform namespace" "${W[@]}" auth can-i list secrets -n eve
 run deny "write a ConfigMap in the platform namespace" "${W[@]}" auth can-i create configmaps -n eve
 run deny "create a Deployment in the platform namespace" "${W[@]}" auth can-i create deployments -n eve
-guard $WG "run a pod as eve-worker in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-worker"')")"
-guard $WG "label a pod in the platform namespace as a platform workload (eve-api)" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$RUNNER_SPEC" '{"app.kubernetes.io/name":"eve-api","eve.horizon/runner":"true"}')"
-guard $WG "mount eve-app in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"s","secret":{"secretName":"eve-app"}}]')")"
-guard $WG "read eve-app through env in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner"' '{"name":"main","image":"registry.example/app:1","envFrom":[{"secretRef":{"name":"eve-app"}}]}')")"
-guard $WG "mount a platform claim (postgres data) in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"postgres-data-postgres-0"}}]')")"
+guard $WG "run a pod as eve-worker in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-worker"')" "$RUNNER_LABELS")"
+guard $WG "label a pod in the platform namespace as a platform workload (eve-api)" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$RUNNER_SPEC" '{"app.kubernetes.io/name":"eve-api","eve.type":"runner","eve.horizon/runner":"true"}')"
+guard $WG "mount eve-app in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"s","secret":{"secretName":"eve-app"}}]')" "$RUNNER_LABELS")"
+guard $WG "read eve-app through env in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner"' '{"name":"main","image":"registry.example/app:1","envFrom":[{"secretRef":{"name":"eve-app"}}]}')" "$RUNNER_LABELS")"
+guard $WG "mount a platform claim (postgres data) in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"postgres-data-postgres-0"}}]')" "$RUNNER_LABELS")"
 
 echo "== refused: RoleBindings in the static namespaces"
 # RBAC lets the worker bind eve-worker-tenant anywhere; in eve that would win
 # back Secret reads, ConfigMaps and Deployments there.
 for ns in eve eve-runners eve-builds; do
-  guard $NG "bind eve-worker-tenant for the worker in $ns" "${W[@]}" "${DRY[@]}" <<<"$(tenant_binding "$ns")"
+  # In eve the platform guard refuses every RoleBinding too.
+  by=$NG; [[ "$ns" == eve ]] && by="$NG|$PG"
+  guard "$by" "bind eve-worker-tenant for the worker in $ns" "${W[@]}" "${DRY[@]}" <<<"$(tenant_binding "$ns")"
 done
 
 echo "== refused: the platform namespace, by name and shape"
