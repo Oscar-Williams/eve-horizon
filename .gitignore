@@ -86,8 +86,9 @@ temp/
 # Turbo
 .turbo/
 
-# Package manager locks (keep pnpm-lock.yaml)
+# Package manager locks (keep pnpm-lock.yaml, and the harness CLI lock the images install from)
 package-lock.json
+!docker/harness-clis/package-lock.json
 yarn.lock
 
 # Database
