@@ -16,6 +16,8 @@ const db = vi.hoisted(() => ({
   orgs: new Map<string, { id: string; slug: string }>(),
   envs: [] as Array<Record<string, any>>,
   manifests: new Map<string, string>(),
+  /** The manifest of each project's last explicit sync or deploy (the drift check never sets it). */
+  syncedManifests: new Map<string, string>(),
   releaseManifests: new Map<string, string>(),
 }));
 
@@ -46,6 +48,8 @@ vi.mock('@eve/db', async (importOriginal) => ({
   projectManifestQueries: () => ({
     findLatestByProject: async (projectId: string) =>
       (db.manifests.has(projectId) ? { manifest_yaml: db.manifests.get(projectId) } : null),
+    findLatestSyncedByProject: async (projectId: string) =>
+      (db.syncedManifests.has(projectId) ? { manifest_yaml: db.syncedManifests.get(projectId) } : null),
     findByProjectAndHash: async (_projectId: string, hash: string) => {
       const id = hash.replace(/^hash-/, '');
       return db.releaseManifests.has(id) ? { manifest_yaml: db.releaseManifests.get(id) } : null;
@@ -146,6 +150,7 @@ beforeEach(() => {
   db.orgs = new Map([['org_acme', { id: 'org_acme', slug: 'acme' }]]);
   db.envs = [{ id: 'env_prod', project_id: SHOP, name: 'prod', namespace: null, status: 'active', last_applied_release_id: 'rel_1', current_release_id: 'rel_1' }];
   db.manifests = new Map([[SHOP, MANIFEST]]);
+  db.syncedManifests = new Map([[SHOP, MANIFEST]]);
   db.releaseManifests = new Map([['rel_1', MANIFEST]]);
 });
 
@@ -296,6 +301,25 @@ describe('provider gke', () => {
     expect(hasInternet(runnerPolicy)).toBe(false);
   });
 
+  it('takes runner hosts from the last explicit sync or deploy, not a manifest the drift check stored from a built ref', async () => {
+    strict();
+    // Job code controls the repository: a built ref's manifest, stored by
+    // the pipeline's drift check, must not widen the project's runner list.
+    db.manifests.set(SHOP, 'x-eve:\n  egress:\n    hosts: [exfil.example.net]\n');
+    const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
+    const egress = egressFor(cluster);
+    await egress.applyRunners(SHOP);
+    expect(cluster.fqdnHosts('eve-runners')).toContain('api.example.com:443');
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('exfil.example.net:443');
+    await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
+
+    // With no explicit sync at all, no project hosts.
+    db.syncedManifests.delete(SHOP);
+    await egress.applyRunners(SHOP);
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('exfil.example.net:443');
+    expect(cluster.fqdnHosts('eve-runners')).not.toContain('api.example.com:443');
+  });
+
   it('prunes the policy of a host the manifest drops, leaving FQDN policies Eve did not write', async () => {
     strict();
     const cluster = fakeCluster([NS, 'eve-runners', 'eve']);
@@ -361,6 +385,7 @@ describe('provider gke', () => {
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('current');
     db.manifests.set(SHOP, 'x-eve:\n  egress:\n    hosts: [api.example.com, hooks.example.com]\n');
+    db.syncedManifests.set(SHOP, db.manifests.get(SHOP)!);
     await expect(egress.ensureRunnersForDispatch(SHOP)).resolves.toBe('written');
     expect(cluster.fqdnHosts('eve-runners')).toContain('hooks.example.com:443');
     expect(cluster.fqdnHosts('eve-runners')).not.toContain('*.cdn.example.com:443');
