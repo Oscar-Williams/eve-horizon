@@ -298,6 +298,13 @@ them, and they keep doing what they did:
   back; or delete `eve-egress` from their namespaces.
 - **Runner policies** select only `eve.horizon/runner=true`, which pods from
   earlier releases do not carry, so they affect nothing after a rollback.
+- **Ingress isolation (0.1.328):** a release before it ignores
+  `eve-ingress` and `eve-ingress-audit`. Under `audit` the companion keeps
+  everything open. Under `strict` `eve-ingress` keeps applying with the
+  peers it last had, so a new app-link consumer or env is not added: set
+  `strict` projects to `audit` and let the reconcile run before rolling
+  back, or delete `eve-ingress` (`kubectl delete networkpolicy -A -l
+  eve.horizon/ingress=env`).
 - **Host allow lists (0.1.328):** a release before them leaves the FQDN
   policies in place. They only allow, so they block nothing; delete them
   with `kubectl delete fqdnnetworkpolicies -A -l eve.horizon/egress=fqdn`

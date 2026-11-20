@@ -194,14 +194,14 @@ export class EgressPolicies {
       await this.recordAllowHosts(env.projectId, provider, declared, { scope: 'env', env: env.name });
       if (allowHosts === 'strict' && provider === 'none') throw new EgressProviderMissingError();
       if (provider === 'gke') merge(result, await this.syncFqdn(env.namespace, FQDN_SELECTOR, envFqdnPolicies(env.namespace, env.projectId, lists)));
-    } else if (provider === 'gke') {
-      merge(result, await this.syncFqdn(env.namespace, FQDN_SELECTOR, []));
     }
     const open = resolved === 'legacy' && allowHosts !== 'strict';
     const desired = open
       ? []
       : envEgressPolicies(env.namespace, resolved, await this.envExtras(env), await this.settings(), allowHosts);
     merge(result, await this.sync(env.namespace, ENV_SELECTOR, desired));
+    // Back to legacy: the FQDN policies go only once the internet rule is back.
+    if (allowHosts === 'legacy' && provider === 'gke') merge(result, await this.syncFqdn(env.namespace, FQDN_SELECTOR, []));
 
     // network.ingress_isolation: who may connect in.
     const ingress = await this.ingressProfile(env.projectId);
@@ -236,11 +236,12 @@ export class EgressPolicies {
     const result: EgressSync = { profile: resolved, applied: [], removed: [] };
     for (const namespace of await this.runnerNamespaces()) {
       const synced: EgressSync = { profile: resolved, applied: [], removed: [] };
-      if (provider === 'gke') {
-        merge(synced, await this.syncFqdn(namespace, runnerFqdnSelector(projectId), runnerFqdnPolicies(namespace, projectId, hosts)));
-      }
+      // FQDN policies before the NetworkPolicies when they allow, after them when they go.
+      const fqdn = () => this.syncFqdn(namespace, runnerFqdnSelector(projectId), runnerFqdnPolicies(namespace, projectId, hosts));
+      if (provider === 'gke' && hostsProfile !== 'legacy') merge(synced, await fqdn());
       const desired = runnerEgressPolicies(namespace, projectId, resolved, extras, settings, hostsProfile);
       merge(synced, await this.sync(namespace, runnerSelector(projectId), desired));
+      if (provider === 'gke' && hostsProfile === 'legacy') merge(synced, await fqdn());
       result.applied.push(...synced.applied.map((name) => `${namespace}/${name}`));
       result.removed.push(...synced.removed.map((name) => `${namespace}/${name}`));
     }
