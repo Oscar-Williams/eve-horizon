@@ -31,6 +31,7 @@ import {
   RUNNER_RUNTIME_META_KEYS,
   RUNNER_WRITABLE_CREDENTIALS,
   codexAccountIdOf,
+  codexApiKeyOf,
   generateEventId,
   projectThreadId,
   verifiedCodexAccountId,
@@ -270,9 +271,11 @@ export class RunnerAttemptsService {
 
   /**
    * A refreshed Codex auth.json from the job. Accepted only when the account
-   * claim of its issuer-signed id_token names the stored credential's
-   * account. It goes to the secret's own scope, or, under the project's
-   * strict secrets.job_org_write, to project scope only.
+   * claims of its issuer-signed id_token and access_token (unexpired), and
+   * its plain account_id when present, all name the stored credential's
+   * account, and it carries the stored credential's API key (or none, as the
+   * stored one does). It goes to the secret's own scope, or, under the
+   * project's strict secrets.job_org_write, to project scope only.
    */
   async writeBackCredential(token: JobTokenPayload, key: unknown, value: unknown): Promise<void> {
     if (typeof key !== 'string' || !(RUNNER_WRITABLE_CREDENTIALS as readonly string[]).includes(key)) {
@@ -299,6 +302,11 @@ export class RunnerAttemptsService {
     if (!storedAccount || storedAccount !== account) {
       this.logger.warn(`Refused Codex write-back for job ${token.job_id}: its account differs from the stored credential's`);
       throw new ConflictException('The refreshed credential belongs to another account');
+    }
+    // A refresh never changes the API key the file carries.
+    if (codexApiKeyOf(decode(value)) !== codexApiKeyOf(decode(stored.value))) {
+      this.logger.warn(`Refused Codex write-back for job ${token.job_id}: it changes the stored credential's API key`);
+      throw new ConflictException('The refreshed credential changes its API key');
     }
 
     // Rule secrets.job_org_write: an org-scope write-back only outside the
