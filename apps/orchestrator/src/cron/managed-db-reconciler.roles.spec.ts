@@ -93,6 +93,7 @@ function createService(tenant: ReturnType<typeof buildTenant>, managedDbOverride
     releaseOperationLock: vi.fn().mockResolvedValue(true),
     findInstanceById: vi.fn().mockResolvedValue(instance),
     transitionStatus: vi.fn().mockResolvedValue(tenant),
+    failOperation: vi.fn().mockResolvedValue({ ...tenant, status: 'failed' }),
     markTenantExtensionsEnabled: vi.fn().mockResolvedValue(tenant),
     markTenantDeleted: vi.fn().mockResolvedValue(true),
     listTenantRoles: vi.fn().mockResolvedValue([]),
@@ -313,8 +314,6 @@ describe('ManagedDbReconcilerService tenant roles', () => {
 
     await service.reconcile();
 
-    expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', {
-      error: expect.objectContaining({ code: 'provider_unsupported' }),
-    });
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported' }));
   });
 });

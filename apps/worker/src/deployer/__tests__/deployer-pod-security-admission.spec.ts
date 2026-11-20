@@ -175,3 +175,87 @@ describe('deploy: isolation.pod_security_admission', () => {
     expect(mocks.decided.filter((d) => d.rule === 'isolation.pod_security_admission')).toEqual([]);
   });
 });
+
+// A service job (a migration) runs before the deploy that would lower the
+// namespace's enforce: once a strict deploy set enforce=restricted, a job
+// that opts out (run_as_root) would be refused and a migrate-then-deploy
+// pipeline would never reach the deploy. Before it runs, an enforce Eve set
+// that is stricter than the job's level is lowered to it.
+function jobDeployerFor(current: { labels?: Record<string, string>; annotations?: Record<string, string> } = {}) {
+  const order: string[] = [];
+  const k8s = {
+    createNamespace: vi.fn(async () => undefined),
+    getNamespaceMetadata: vi.fn(async () => ({
+      labels: { 'eve.env_id': 'env_prod', ...(current.labels ?? {}) },
+      annotations: { ...(current.annotations ?? {}) },
+    })),
+    patchNamespaceMetadata: vi.fn(async (_ns: string, patch: { labels: Record<string, string | null>; annotations: Record<string, string | null> }) => {
+      order.push(`patch:${JSON.stringify(patch)}`);
+    }),
+    applyManifest: vi.fn(async () => undefined),
+    deleteSecret: vi.fn(),
+    runJob: vi.fn(async () => {
+      order.push('job');
+      return { jobName: 'job', success: true, exitCode: 0, logs: '' };
+    }),
+  };
+  const deployer = new DeployerService(null as any, k8s as any);
+  Object.assign(deployer as any, {
+    logger: { warn: vi.fn(), log: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    egress: {
+      applyEnv: vi.fn(async () => ({ profile: 'legacy', applied: [], removed: [] })),
+      applyRunners: vi.fn(async () => ({ profile: 'legacy', applied: [], removed: [] })),
+    },
+    environments: {
+      findByProjectAndName: vi.fn().mockResolvedValue({ id: 'env_prod', project_id: 'proj_shop', name: 'prod', namespace: null, overrides_json: null }),
+    },
+    projects: { findById: vi.fn().mockResolvedValue({ id: 'proj_shop', org_id: 'org_acme', slug: 'shop', repo_url: null }) },
+    orgs: { findById: vi.fn().mockResolvedValue({ id: 'org_acme', slug: 'acme' }) },
+  });
+  vi.spyOn(deployer as any, 'ensureImagePullSecret').mockResolvedValue(null);
+  vi.spyOn(deployer as any, 'waitForJobDependencies').mockResolvedValue(undefined);
+  const patches = () => k8s.patchNamespaceMetadata.mock.calls.map((call) => call[1]);
+  return { deployer, k8s, order, patches };
+}
+
+function migrateJob(security: Record<string, unknown>) {
+  return {
+    projectId: 'proj_shop',
+    envName: 'prod',
+    manifestYaml: `services:\n  migrate:\n    image: registry.example/migrate:1\n    x-eve:\n      role: job\n      security: ${JSON.stringify(security)}\n`,
+    serviceName: 'migrate',
+    attemptId: 'attempt_12345678',
+  };
+}
+
+describe('service job: isolation.pod_security_admission', () => {
+  const restrictedByEve = { labels: { [ENFORCE]: 'restricted', [`${PSA}/enforce-version`]: 'v1.30' }, annotations: { [MARK]: 'restricted' } };
+
+  it('lowers an enforce Eve set at restricted before a job that needs baseline runs', async () => {
+    mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
+    const { deployer, order, patches } = jobDeployerFor(restrictedByEve);
+    await deployer.runJobService(migrateJob({ run_as_root: true }));
+
+    expect(patches()).toEqual([{ labels: { [ENFORCE]: 'baseline' }, annotations: { [MARK]: 'baseline' } }]);
+    expect(order.findIndex((o) => o.startsWith('patch:'))).toBeLessThan(order.indexOf('job'));
+  });
+
+  it('never raises enforce, and leaves one Eve did not set', async () => {
+    mocks.profiles = { 'isolation.pod_security': 'strict', 'isolation.pod_security_admission': 'strict' };
+    const restricted = jobDeployerFor({ labels: { [ENFORCE]: 'baseline' }, annotations: { [MARK]: 'baseline' } });
+    await restricted.deployer.runJobService(migrateJob({ run_as_user: 1000 }));
+    expect(restricted.k8s.patchNamespaceMetadata).not.toHaveBeenCalled();
+
+    const operators = jobDeployerFor({ labels: { [ENFORCE]: 'restricted' } });
+    await operators.deployer.runJobService(migrateJob({ run_as_root: true }));
+    expect(operators.k8s.patchNamespaceMetadata).not.toHaveBeenCalled();
+  });
+
+  it('reads no namespace labels under legacy', async () => {
+    mocks.profiles = { 'isolation.pod_security': 'strict' };
+    const { deployer, k8s } = jobDeployerFor(restrictedByEve);
+    await deployer.runJobService(migrateJob({ run_as_root: true }));
+    expect(k8s.getNamespaceMetadata).not.toHaveBeenCalled();
+    expect(k8s.patchNamespaceMetadata).not.toHaveBeenCalled();
+  });
+});

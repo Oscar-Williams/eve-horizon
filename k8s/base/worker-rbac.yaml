@@ -32,6 +32,9 @@ metadata:
 # - the runner egress policies of plain runner pods (eve-runner-<project>
 #   NetworkPolicies, and GKE FQDN policies under egress.allow_hosts).
 # No pods/exec (the worker never execs), no ConfigMaps, no Deployments.
+# These verbs are by resource; eve-worker-platform-guard (k8s/admission)
+# holds them to those objects by name and label, so the platform's own
+# Secrets, pods, claims, Jobs and policies stay out of reach.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

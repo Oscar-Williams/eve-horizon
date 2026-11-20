@@ -5,7 +5,10 @@ import { ManagedDbReconcilerService } from './managed-db-reconciler.service.js';
 // A tenant database accepts only its own logins, each login has a connection
 // limit from its class, and so does the database as a whole, so one tenant can
 // neither connect to another's database nor use up the connections the
-// platform shares (however many roles it declares).
+// platform shares (however many roles it declares). The database's limit also
+// counts Eve's own connections (the platform login is not a superuser on Cloud
+// SQL): reconciler work, `eve db`, migrations and the pre-delete pg_dump, so
+// it is the class maximum plus a platform reserve of 5.
 
 type FakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
   unsafe: (text: string) => Promise<unknown[]>;
@@ -95,6 +98,7 @@ function createService(tenants: Array<ReturnType<typeof buildTenant>>, overrides
     listInstances: vi.fn().mockResolvedValue([instance]),
     listTenantsByInstance: vi.fn().mockResolvedValue(tenants),
     transitionStatus: vi.fn().mockResolvedValue(tenants[0]),
+    failOperation: vi.fn().mockResolvedValue({ ...tenants[0], status: 'failed' }),
     markTenantExtensionsEnabled: vi.fn().mockResolvedValue(tenants[0]),
     listTenantRoles: vi.fn().mockResolvedValue([]),
     upsertTenantRole: vi.fn().mockImplementation(async (input: Record<string, unknown>) => ({ id: 'mdbr_new', ...input })),
@@ -194,24 +198,26 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     expect(adminSql.statements.some((s) => s.includes('acme-old-test'))).toBe(false);
   });
 
-  it('limits the database as a whole to the class maximum when it has no limit', async () => {
+  it('limits the database as a whole to the class maximum plus the platform reserve when it has no limit', async () => {
     const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: -1 });
     const { service } = createService([buildTenant({ class: 'db.p2' })]);
     vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
 
     await service.reconcile();
 
-    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 100`);
+    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 105`);
   });
 
-  it('never changes a database limit already set', async () => {
-    const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: 30 });
-    const { service } = createService([buildTenant()]);
-    vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
+  it('leaves any database limit an operator already set, lower or higher', async () => {
+    for (const limit of [10, 25, 30, 40]) {
+      const adminSql = createFakeSql({ [OWNER]: -1 }, { [DB]: limit });
+      const { service } = createService([buildTenant()]);
+      vi.spyOn(service as any, 'connectToInstance').mockReturnValue(adminSql);
 
-    await service.reconcile();
+      await service.reconcile();
 
-    expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE'))).toBe(false);
+      expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE'))).toBe(false);
+    }
   });
 
   it('limits the databases of ready tenants in the start-up pass, keeping limits already set', async () => {
@@ -232,7 +238,7 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     await (service as any).isolationBackfill;
     await service.onModuleDestroy();
 
-    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 25`);
+    expect(adminSql.statements).toContain(`ALTER DATABASE "${DB}" CONNECTION LIMIT 30`);
     expect(adminSql.statements.some((s) => s.startsWith('ALTER DATABASE "acme-lab-test-4d5e6f"'))).toBe(false);
   });
 
@@ -258,7 +264,7 @@ describe('ManagedDbReconcilerService tenant isolation', () => {
     const revoke = `REVOKE CONNECT ON DATABASE "${DB}" FROM PUBLIC`;
     expect(adminSql.statements).toEqual(expect.arrayContaining([
       revoke,
-      `ALTER DATABASE "${DB}" CONNECTION LIMIT 25`,
+      `ALTER DATABASE "${DB}" CONNECTION LIMIT 30`,
       `ALTER ROLE "${OWNER}" CONNECTION LIMIT 25`,
       `ALTER ROLE "${roleUser}" CONNECTION LIMIT 25`,
     ]));

@@ -130,9 +130,14 @@ runner pods and env pods reach. The hosts come from three places:
 Env pods get the manifest lists only (from the release the env runs);
 runner pods get the project list, the harness hosts and the git host. The
 runner list comes from the manifest of the project's last explicit
-`eve project sync` or deploy (`project_manifests.synced_at`), never from a
-manifest the pipeline's drift check stored from a built ref, whose contents
-job code controls.
+`eve project sync` (`project_manifests.synced_at`, set by the API's manifest
+sync alone, after its checks), never from a manifest the pipeline's drift
+check stored from a built ref, whose contents job code controls, even once
+a pipeline run for that ref has built and deployed a release from it. A
+deploy never marks its manifest as synced. A project whose only sync stored
+no branch, `x-eve.defaults` or `x-eve.agents` (the upgrade's backfill cannot
+tell it from a drift row) has no project hosts until its next
+`eve project sync`: run one before flipping `egress.allow_hosts`.
 
 ### Providers
 
@@ -176,7 +181,9 @@ leaves an older, wider NetworkPolicy behind:
   strict profile refuses the job"); until the hosts are written the
   project's pods have no internet at all. A job is refused the same way
   under a strict `egress.default_deny` whenever its runner NetworkPolicies
-  cannot be written.
+  cannot be written. At dispatch the write is tried once more after a
+  second before the job is refused, so a passing API error does not cost
+  the attempt.
 - under `audit` it is logged and recorded (`reason: fqdn_write_failed`),
   and blocks nothing.
 

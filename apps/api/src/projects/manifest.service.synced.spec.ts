@@ -60,7 +60,7 @@ async function sync(manifest: Record<string, unknown>): Promise<void> {
 
 /**
  * Runner egress allow lists are read from the manifest of the project's
- * last explicit sync or deploy (synced_at), never from a row the pipeline's
+ * last explicit sync (synced_at), never from a row the pipeline's
  * drift check stored from a built ref: an explicit sync marks its row.
  */
 describe('ManifestService.syncManifest: the explicit sync mark', () => {

@@ -148,6 +148,42 @@ Notes:
 - The worker owns TLS trust distribution for managed DB clients. For cloud tenants it creates `ConfigMap/eve-db-trust`, mounts `/etc/eve/trust/ca-bundle.pem`, and injects `NODE_EXTRA_CA_CERTS` plus `PGSSLROOTCERT` into Deployments and `x-eve.role: job` pods.
 - App code should use the plain connection string from `DATABASE_URL`. Do not set `ssl: { rejectUnauthorized: false }` in Node `pg`.
 
+### Connection limits
+
+Each managed database accepts only its own logins (`CONNECT` is revoked from
+`PUBLIC`). Each login (owner and declared roles) gets its class's limit
+(25, 100 or 200 for `db.p1`, `db.p2`, `db.p3`) unless it already has one. The
+database as a whole gets its class maximum plus a platform reserve of 5
+(`MANAGED_DB_PLATFORM_CONNECTION_RESERVE`): 30, 105 or 205. The database
+limit counts every login, Eve's own included, and Eve's platform login is not
+a superuser on Cloud SQL, so without the reserve a tenant whose logins fill
+the database would lock out the reconciler, `eve db`, migrations and the
+pre-delete `pg_dump`. A database limit is set only when there is none: one
+an operator set, lower or higher, stays as it is (and then the reserve is
+theirs to allow for).
+The limits are applied at provisioning, when a change to the tenant
+finishes, and once to every ready tenant when the orchestrator starts.
+
+**Rollout (0.1.328).** The orchestrator's start-up pass applies these limits
+as soon as the new release starts, so the pre-check runs **before** the
+deploy, read-only, as the instance's admin login, at a busy time of day
+(repeat it to see a peak):
+
+```sql
+SELECT d.datname, d.datconnlimit,
+       (SELECT count(*) FROM pg_stat_activity a WHERE a.datname = d.datname) AS connections
+FROM pg_database d WHERE NOT d.datistemplate ORDER BY d.datname;
+
+SELECT r.rolname, r.rolconnlimit,
+       (SELECT count(*) FROM pg_stat_activity a WHERE a.usename = r.rolname) AS connections
+FROM pg_roles r WHERE r.rolcanlogin ORDER BY r.rolname;
+```
+
+Compare each tenant database's connections with its class maximum plus 5,
+and each login's with its class limit. Where a tenant is near either, scale
+it to a larger class (`eve db scale`) before the deploy. A database limit set
+by hand below the new one is raised by the start-up pass.
+
 ### Roles
 
 The tenant owner login is always provisioned. `x-eve.managed.roles` declares
@@ -178,8 +214,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
   logins only, never passwords).
 - A managed database declares at most 8 roles; manifest sync refuses more.
   Each login (owner and roles) gets the class's connection limit, and the
-  database as a whole gets the class's maximum (25, 100 or 200) unless an
-  operator already set one.
+  database as a whole the class's maximum plus a platform reserve of 5 (see
+  [connection limits](#connection-limits)).
 - Roles are supported on the local provider; cloud providers reject them with
   `provider_unsupported` until provider support lands.
 

@@ -165,6 +165,12 @@ describe('k8s/base: the worker namespace guard', () => {
     expect(messages.join('\n')).toMatch(/managed/);
     expect(policy()!.spec.validations.length).toBeGreaterThanOrEqual(5);
   });
+
+  it('refuses every RoleBinding in the static namespaces (eve-worker-tenant in eve would give back its Secrets)', () => {
+    const rules = (policy()!.spec.validations as Array<{ expression: string }>)
+      .filter((v) => v.expression.includes('variables.isRoleBinding'));
+    expect(rules.some((v) => v.expression.includes('variables.staticNamespaces'))).toBe(true);
+  });
 });
 
 describe('k8s/admission: the worker workload guard', () => {
@@ -192,6 +198,48 @@ describe('k8s/admission: the worker workload guard', () => {
     ]) {
       expect(text, needle).toContain(needle);
     }
+  });
+
+  it('holds every container, init and ephemeral ones included, to Pod Security baseline', () => {
+    const text = JSON.stringify(policy()!.spec);
+    for (const needle of [
+      'ephemeralContainers', 'seccompProfile', "'RuntimeDefault'", 'appArmorProfile',
+      "'container.apparmor.security.beta.kubernetes.io/'", 'procMount', "'Default'", 'sysctls',
+      "'kernel.shm_rmid_forced'", 'seLinuxOptions', "'container_t'", 'hostProcess',
+    ]) {
+      expect(text, needle).toContain(needle);
+    }
+  });
+});
+
+describe('k8s/admission: the worker platform guard', () => {
+  const policy = () => of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-platform-guard');
+
+  it("fails closed, denies, and matches every write of the worker's in the platform namespace", () => {
+    expect(policy()?.spec.failurePolicy).toBe('Fail');
+    const binding = of('ValidatingAdmissionPolicyBinding').find((m) => m.spec?.policyName === 'eve-worker-platform-guard');
+    expect(binding?.spec.validationActions).toEqual(['Deny']);
+    expect(policy()!.spec.matchConstraints.resourceRules).toEqual([
+      { apiGroups: ['*'], apiVersions: ['*'], operations: ['CREATE', 'UPDATE', 'DELETE'], resources: ['*/*'] },
+    ]);
+    const conditions = JSON.stringify(policy()!.spec.matchConditions);
+    expect(conditions).toContain("'system:serviceaccount:eve:eve-worker'");
+    expect(conditions).toContain("request.namespace == 'eve'");
+  });
+
+  it('holds Secrets, claims, pods, Jobs and policies there to what the worker makes, before and after the change', () => {
+    const text = JSON.stringify(policy()!.spec);
+    for (const needle of [
+      "'kaniko-cfg-'", "'eve-ws-'", "'eve-org-fs-'", 'dataSource', 'dataSourceRef', 'volumeName',
+      "'eve.type'", "'runner'", "'eve.horizon/component'", "'kaniko-build'", "'eve.horizon/egress'", 'oldObject',
+    ]) {
+      expect(text, needle).toContain(needle);
+    }
+  });
+
+  it('is joined by the workload guard refusing ephemeral volumes anywhere', () => {
+    const workload = of('ValidatingAdmissionPolicy').find((m) => m.metadata.name === 'eve-worker-workload-guard')!;
+    expect(JSON.stringify(workload.spec)).toContain('ephemeral');
   });
 });
 

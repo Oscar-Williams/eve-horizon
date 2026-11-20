@@ -440,14 +440,22 @@ The admission policies live in their own kustomization, `k8s/admission`
   has neither that label nor `eve.env_id`; deleting one without the label,
   or a static one; setting Pod Security `enforce: privileged`;
 - a RoleBinding (created or deleted) to any role but `eve-worker-tenant`, or
-  for any subject but the worker;
+  for any subject but the worker, and any RoleBinding in `eve`, `eve-runners`
+  or `eve-builds` (their rights come from the template; `eve-worker-tenant`
+  in `eve` would give back the platform's Secrets);
 - a Secret of type `kubernetes.io/service-account-token`.
 
 `eve-worker-workload-guard` holds every pod and pod template the worker
 writes (Deployments, ReplicaSets, StatefulSets, Jobs, CronJobs,
-SandboxTemplates), in every namespace: no DaemonSet, no privileged
-container, no host namespace (`hostNetwork`, `hostPID`, `hostIPC`), no
-`hostPath`, no `hostPort`, no capability beyond Pod Security baseline, and a
+SandboxTemplates), in every namespace: no DaemonSet, and nothing Pod
+Security baseline refuses, at pod level or in any container (init and
+ephemeral ones included): no privileged container, no host namespace
+(`hostNetwork`, `hostPID`, `hostIPC`), no Windows host process, no
+`hostPath`, no `hostPort`, no capability beyond baseline's, no seccomp or
+AppArmor `Unconfined` (field or `container.apparmor.security.beta.kubernetes.io/*`
+annotation), no `procMount` but `Default`, no sysctl outside baseline's
+safe set, no SELinux type, user or role beyond baseline's. It also refuses
+ephemeral volumes (a claim template could clone another claim), and wants a
 service account of `default`, `eve-runner` or, outside `eve`, an app account
 (`eve-app`, `eve-app-<env>`). In `eve` it also refuses a workload name label
 (`app.kubernetes.io/name`, `app`: they name the platform's own pods to
@@ -455,6 +463,17 @@ network policies), any Secret but `kaniko-cfg-*` (volumes, `env`,
 `envFrom`), and any claim but `eve-ws-*` and `eve-org-fs-*`.
 `x-eve.networking.egress: stable` on EKS runs a host-network pod, which the
 guard refuses: an instance that needs it drops that rule in its overlay.
+
+`eve-worker-platform-guard` holds every write of the worker's in `eve`
+(create, update and delete) to what it makes there, judged by name or label
+on the object before and after the write: Secrets named `kaniko-cfg-*`;
+claims named `eve-ws-*` or `eve-org-fs-*` that clone or bind no volume (no
+`dataSource`, `dataSourceRef`, `volumeName` or `selector`); pods labelled
+`eve.type=runner` or `eve.horizon/component=kaniko-build`, and Jobs with the
+kaniko label; NetworkPolicies and FQDN policies labelled
+`eve.horizon/egress`; nothing else. So the worker can neither replace nor
+remove the platform's Secrets (`eve-app`), pods, claims, Jobs or policies,
+whatever its Role in `eve` allows by verb.
 
 The orchestrator (`k8s/base/orchestrator-rbac.yaml`) reads pods, events,
 Deployments and ReplicaSets, and patches only `deployments/scale` (the env
@@ -516,6 +535,11 @@ upgrade does not tighten running namespaces. Eve marks the namespace
   logged.
 - When a release lowers the level (a new opt-out), an `enforce` Eve set is
   lowered before the workloads, so the new pods are admitted.
+- A service job (a migration) can run before that deploy: before it starts,
+  an `enforce` Eve set that is stricter than the job's level is lowered to
+  it, so a migrate-then-deploy pipeline whose job opts out is not refused.
+  It is never raised there; the next successful deploy sets `enforce` at
+  the namespace's level, which counts service jobs.
 - Under `audit` the namespace carries `warn` and `audit` only. Under `audit`
   and `legacy` an `enforce` Eve set (marked) is removed at the next deploy;
   one Eve did not set stays.
