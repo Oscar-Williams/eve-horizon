@@ -47,6 +47,23 @@ describe('profile stamps', () => {
     expect(SECURITY_CURRENT_RULESET).toBe(Math.max(...Object.values(SECURITY_RULESETS)));
   });
 
+  it('places the P3 rules in rule set 3, which a rule-set-2 strict runs under audit', () => {
+    const p3Rules = [
+      'managed_db.owner_url',
+      'egress.allow_hosts',
+      'network.ingress_isolation',
+      'isolation.pod_security_admission',
+      'builds.isolated',
+      'auth.nip98_public_url',
+    ];
+    for (const rule of p3Rules) {
+      expect(securityRuleSet(rule)).toBe(3);
+      expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 2 }, rule)).toBe('audit');
+      expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 3 }, rule)).toBe('strict');
+    }
+    expect(SECURITY_CURRENT_RULESET).toBe(3);
+  });
+
   it('counts a rule it does not know, or no rule, as rule set 1', () => {
     expect(securityRuleSet('test.rule')).toBe(1);
     expect(securityRuleSet(undefined)).toBe(1);
