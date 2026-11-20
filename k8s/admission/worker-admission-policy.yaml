@@ -45,9 +45,10 @@
 # worker writes there only what it makes there, judged by name or label on
 # the object before the write (update, delete) and after it (create, update):
 # - Secrets named kaniko-cfg-* (a kaniko build's credentials);
-# - claims named eve-ws-* or eve-org-fs-* that clone or bind no existing
+# - claims named eve-ws-* (runner workspaces) that clone or bind no existing
 #   volume (no dataSource, dataSourceRef, volumeName or selector, and a
-#   volumeName never changed);
+#   volumeName never changed); never the org filesystem's (eve-org-fs-*),
+#   which runner pods only mount;
 # - pods labelled eve.type=runner (plain runner pods) or
 #   eve.horizon/component=kaniko-build, and Jobs with that kaniko label;
 # - runner egress policies (NetworkPolicies and GKE FQDN policies), held to
@@ -361,10 +362,8 @@ spec:
       message: "In the platform namespace the Eve worker writes only kaniko build Secrets and Jobs, runner pods and claims, and runner egress policies"
     - expression: "variables.kind != '/secrets' || variables.name.startsWith('kaniko-cfg-')"
       message: "In the platform namespace the Eve worker writes no Secret but kaniko build credentials (kaniko-cfg-*)"
-    - expression: >-
-        variables.kind != '/persistentvolumeclaims' ||
-        variables.name.startsWith('eve-ws-') || variables.name.startsWith('eve-org-fs-')
-      message: "In the platform namespace the Eve worker writes no claim but runner workspaces (eve-ws-*) and the org filesystem (eve-org-fs-*)"
+    - expression: "variables.kind != '/persistentvolumeclaims' || variables.name.startsWith('eve-ws-')"
+      message: "In the platform namespace the Eve worker writes no claim but runner workspaces (eve-ws-*): the org filesystem's (eve-org-fs-*) it only mounts"
     - expression: >-
         variables.kind != '/persistentvolumeclaims' || request.operation != 'CREATE' ||
         (!has(object.spec.dataSource) && !has(object.spec.dataSourceRef) &&

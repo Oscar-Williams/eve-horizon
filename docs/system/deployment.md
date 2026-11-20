@@ -467,8 +467,10 @@ guard refuses: an instance that needs it drops that rule in its overlay.
 `eve-worker-platform-guard` holds every write of the worker's in `eve`
 (create, update and delete) to what it makes there, judged by name or label
 on the object before and after the write: Secrets named `kaniko-cfg-*`;
-claims named `eve-ws-*` or `eve-org-fs-*` that clone or bind no volume (no
-`dataSource`, `dataSourceRef`, `volumeName` or `selector`); pods labelled
+claims named `eve-ws-*` that clone or bind no volume (no `dataSource`,
+`dataSourceRef`, `volumeName` or `selector`), never the org filesystem's
+`eve-org-fs-*` (runner pods mount it; the worker neither resizes nor
+removes it); pods labelled
 `eve.type=runner` or `eve.horizon/component=kaniko-build`, and Jobs with the
 kaniko label; runner egress policies (below); nothing else. So the worker
 can neither replace nor remove the platform's Secrets (`eve-app`), pods,
