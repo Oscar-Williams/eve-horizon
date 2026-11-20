@@ -149,7 +149,7 @@ describe('findCheckoutRouting', () => {
         'env_http_headers = { "X-Api-Key" = "EVE_JOB_TOKEN", "x-shop" = "SHOP_TOKEN" }',
         '[mcp_servers.tools]',
         'command = "tools"',
-        'env_vars = ["CODEX_AUTH_JSON_B64", { name = "ANTHROPIC_API_KEY", source = "local" }, "SHOP_MODE", "HTTPS_PROXY"]',
+        'env_vars = ["CODEX_AUTH_JSON_B64", { name = "CODEX_API_KEY", source = "local" }, "SHOP_MODE", "HTTPS_PROXY"]',
         '[mcp_servers.chat]',
         'url = "https://mcp.eve.example"',
         'auth = "chatgpt"',
@@ -162,7 +162,7 @@ describe('findCheckoutRouting', () => {
           'mcp_servers.docs.bearer_token_env_var=$OPENAI_API_KEY',
           'mcp_servers.docs.env_http_headers.X-Api-Key=$EVE_JOB_TOKEN',
           'mcp_servers.tools.env_vars.0=$CODEX_AUTH_JSON_B64',
-          'mcp_servers.tools.env_vars.1.name=$ANTHROPIC_API_KEY',
+          'mcp_servers.tools.env_vars.1.name=$CODEX_API_KEY',
           'mcp_servers.tools.env_vars.3=$HTTPS_PROXY',
           'mcp_servers.chat.auth',
         ],
@@ -217,6 +217,35 @@ describe('findCheckoutRouting', () => {
     for (const harness of ['claude', 'gemini', 'codex']) {
       expect(findCheckoutRouting({ workspace: ws, harness }), harness).toEqual([]);
     }
+  });
+
+  it("finds nothing in MCP servers handed another harness's key or Eve's plain settings, which are the project's own", () => {
+    const ws = workspace({
+      '.mcp.json': JSON.stringify({ mcpServers: { maps: { command: 'maps', env: { KEY: '${GOOGLE_API_KEY}', API: '${EVE_API_URL}', PROJECT: '$EVE_PROJECT_ID' } } } }),
+      '.gemini/settings.json': JSON.stringify({ mcpServers: { maps: { command: 'maps', env: { KEY: '${OPENAI_API_KEY}', API: '$EVE_API_URL' } } } }),
+      '.codex/config.toml': '[mcp_servers.maps]\ncommand = "maps"\nenv_vars = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "EVE_API_URL", "EVE_JOB_ID"]\n',
+    });
+    for (const harness of ['claude', 'gemini', 'codex']) {
+      expect(findCheckoutRouting({ workspace: ws, harness }), harness).toEqual([]);
+    }
+  });
+
+  it("names the running harness's own credentials and Eve's secret-bearing names", () => {
+    const servers = (refs: string[]) => JSON.stringify({ mcpServers: { tools: { command: 'tools', args: refs.map((name) => `\${${name}}`) } } });
+    const eve = ['EVE_JOB_TOKEN', 'EVE_APP_LINK_SHOP_TOKEN', 'EVE_INTERNAL_API_KEY', 'EVE_SECRETS_MASTER_KEY'];
+    const cases: Array<[string, string[]]> = [
+      ['claude', ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN']],
+      ['zai', ['Z_AI_API_KEY', 'ZAI_API_KEY', 'ANTHROPIC_AUTH_TOKEN']],
+      ['gemini', ['GEMINI_API_KEY', 'GOOGLE_API_KEY']],
+    ];
+    for (const [harness, own] of cases) {
+      const file = harness === 'gemini' ? '.gemini/settings.json' : '.mcp.json';
+      const found = findCheckoutRouting({ workspace: workspace({ [file]: servers([...own, ...eve]) }), harness });
+      expect(found.flatMap((finding) => finding.settings).map((setting) => setting.split('=$')[1]), harness).toEqual([...own, ...eve]);
+    }
+    const codex = workspace({ '.codex/config.toml': `[mcp_servers.tools]\ncommand = "tools"\nenv_vars = ${JSON.stringify(['OPENAI_API_KEY', 'CODEX_API_KEY', ...eve])}\n` });
+    expect(findCheckoutRouting({ workspace: codex, harness: 'codex' })[0].settings.map((setting) => setting.split('=$')[1]))
+      .toEqual(['OPENAI_API_KEY', 'CODEX_API_KEY', ...eve]);
   });
 
   it('finds nothing in a checkout with tool gates and hooks only', () => {

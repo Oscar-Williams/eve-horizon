@@ -87,6 +87,12 @@ describe('Claude Code under strict', () => {
     expect(argAfter(args, '--setting-sources')).toBe('user');
   });
 
+  it("keeps a checkout MCP server handed another harness's key or Eve's plain settings", () => {
+    const mcp = JSON.stringify({ mcpServers: { maps: { command: 'maps', env: { KEY: '${GOOGLE_API_KEY}', API: '${EVE_API_URL}' } } } });
+    const { args } = build(context('claude', dir({ '.mcp.json': mcp }), { CLAUDE_CONFIG_DIR: dir() }));
+    expect(argAfter(args, '--setting-sources')).toBe('user');
+  });
+
   it('changes nothing without the strict flag', () => {
     const ws = dir({ '.claude/settings.json': PROJECT_SETTINGS });
     const { args } = build(context('claude', ws, { EVE_HARNESS_CHECKOUT_SETTINGS: undefined, CLAUDE_CONFIG_DIR: dir() }));
