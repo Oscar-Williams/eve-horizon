@@ -268,3 +268,30 @@ describe('DeployerService - TCP ingress', () => {
     ]);
   });
 });
+
+describe('DeployerService - aws-nlb readiness without rights in kube-system', () => {
+  function k8sError(statusCode: number): Error {
+    return Object.assign(new Error(`HTTP ${statusCode}`), { statusCode, response: { statusCode } });
+  }
+
+  function deployerWith(deploymentExists: ReturnType<typeof vi.fn>) {
+    const deployer = new DeployerService(null as any, { deploymentExists } as any);
+    const warn = vi.fn();
+    (deployer as any).logger = { warn, log: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    return { deployer, warn };
+  }
+
+  it('goes on, with a warning, when the worker may not read kube-system (its rights end at managed namespaces)', async () => {
+    const { wrapK8sError } = await import('../k8s-error.js');
+    const forbidden = wrapK8sError(k8sError(403), 'read', { kind: 'Deployment', name: 'aws-load-balancer-controller', namespace: 'kube-system' });
+    const { deployer, warn } = deployerWith(vi.fn().mockRejectedValue(forbidden));
+    await expect((deployer as any).assertTcpIngressProviderReady('aws-nlb')).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/aws-load-balancer-controller.*could not be checked/));
+  });
+
+  it('still refuses when the controller is known to be missing', async () => {
+    const { deployer } = deployerWith(vi.fn().mockResolvedValue(false));
+    await expect((deployer as any).assertTcpIngressProviderReady('aws-nlb'))
+      .rejects.toThrow('requires deployment/aws-load-balancer-controller in kube-system');
+  });
+});
