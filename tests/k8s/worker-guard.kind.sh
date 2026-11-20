@@ -31,12 +31,14 @@ node -e '
     "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"]);
   const docs = YAML.parseAllDocuments(fs.readFileSync(process.argv[2], "utf8")).map((d) => d.toJSON()).filter((d) => d && keep.has(d.kind));
   fs.writeFileSync(process.argv[3], docs.map((d) => YAML.stringify(d)).join("---\n"));
-' "$ROOT/apps/worker/node_modules/yaml" "$WORK/base.yaml" "$WORK/rbac.yaml"
+  fs.writeFileSync(process.argv[4], docs.filter((d) => d.kind === "ClusterRoleBinding").map((d) => d.metadata.name).join("\n") + "\n");
+' "$ROOT/apps/worker/node_modules/yaml" "$WORK/base.yaml" "$WORK/rbac.yaml" "$WORK/crbs.txt"
 "${K[@]}" apply -f "$WORK/rbac.yaml" >/dev/null
-# Objects an earlier render applied that this one no longer holds (the old
-# all-namespace ClusterRoleBinding) would keep their rights: remove them.
+# ClusterRoleBindings for the worker that an earlier render applied and this
+# one no longer holds (the old all-namespace `eve-worker`) would keep their
+# rights: remove them.
 for crb in $("${K[@]}" get clusterrolebindings -o jsonpath='{range .items[?(@.subjects[0].name=="eve-worker")]}{.metadata.name}{"\n"}{end}'); do
-  grep -q "name: $crb\$" "$WORK/rbac.yaml" || "${K[@]}" delete clusterrolebinding "$crb" >/dev/null
+  grep -qx "$crb" "$WORK/crbs.txt" || "${K[@]}" delete clusterrolebinding "$crb" >/dev/null
 done
 
 # --- Fixtures, as the cluster admin -----------------------------------------
@@ -50,12 +52,6 @@ done
 "${K[@]}" label namespace acme-foreign eve.horizon/managed- >/dev/null 2>&1 || true
 "${K[@]}" -n eve-acme-shop-prod create rolebinding other --clusterrole=view --user=user_alice --dry-run=client -o yaml \
   | "${K[@]}" apply -f - >/dev/null
-
-# The policy takes a moment to reach the admission chain.
-for _ in $(seq 1 30); do
-  if ! "${K[@]}" "${WORKER[@]}" create namespace acme-probe --dry-run=server >/dev/null 2>&1; then break; fi
-  sleep 1
-done
 
 binding() { # namespace role subject-name
   cat <<YAML
@@ -75,6 +71,20 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: eve-wor
 subjects: [{ kind: ServiceAccount, name: eve-worker, namespace: eve }]
 YAML
 }
+
+# A new or changed policy takes a moment to reach the admission chain: wait
+# until it refuses an unlabelled namespace and lets the worker bind itself.
+"${K[@]}" create namespace acme-probe-managed --dry-run=client -o yaml \
+  | "${K[@]}" label --local -f - eve.horizon/managed=true -o yaml | "${K[@]}" apply -f - >/dev/null
+for _ in $(seq 1 60); do
+  if ! "${K[@]}" "${WORKER[@]}" create namespace acme-probe --dry-run=server >/dev/null 2>&1 \
+    && "${K[@]}" "${WORKER[@]}" create --dry-run=server -f - >/dev/null 2>&1 <<<"$(tenant_binding acme-probe-managed)"; then
+    break
+  fi
+  sleep 2
+done
+sleep 5
+"${K[@]}" delete namespace acme-probe-managed --wait=false >/dev/null
 
 failures=0
 run() { # expect(allow|deny) description command...
@@ -108,6 +118,10 @@ echo "== refused"
 run deny "read a Secret in kube-system" "${W[@]}" -n kube-system get secrets
 run deny "list Secrets in every namespace" "${W[@]}" get secrets -A
 run deny "create a Secret in an unmanaged namespace" "${W[@]}" -n acme-foreign create secret generic x --from-literal=k=v
+# A leftover binding (made by an admin) gives RBAC rights there; the guard still refuses.
+"${K[@]}" apply -f - >/dev/null <<<"$(tenant_binding acme-foreign)"
+run deny "create a Secret in an unmanaged namespace where a leftover binding grants it" "${W[@]}" -n acme-foreign create secret generic x --from-literal=k=v
+"${K[@]}" -n acme-foreign delete rolebinding eve-worker-tenant >/dev/null
 run deny "bind eve-worker-tenant in an unmanaged namespace (RBAC allows; the guard refuses)" "${W[@]}" create -f - <<<"$(tenant_binding acme-foreign)"
 run deny "create a namespace without the managed label" "${W[@]}" create namespace acme-unlabelled
 run deny "add the managed label to a namespace Eve never owned" "${W[@]}" patch namespace acme-foreign --type=merge -p '{"metadata":{"labels":{"eve.horizon/managed":"true"}}}'

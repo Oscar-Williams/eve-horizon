@@ -124,6 +124,7 @@ import {
   type ClusterSnapshot,
   type PodSnapshot,
 } from './deploy-failure.js';
+import { K8sOperationError } from './k8s-error.js';
 
 /**
  * K8s probe configuration for readiness/liveness checks
@@ -2032,6 +2033,15 @@ export class DeployerService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('Kubernetes client not available')) {
+        return;
+      }
+      // The worker's rights end at the namespaces it manages (0.1.328), so it
+      // may not read kube-system: an unknown, not a missing controller.
+      if (error instanceof K8sOperationError && error.statusCode === 403) {
+        this.logger.warn(
+          'EVE_TCP_INGRESS_PROVIDER=aws-nlb: deployment/aws-load-balancer-controller in kube-system could not be checked ' +
+            '(the worker may not read kube-system); going on',
+        );
         return;
       }
       throw error;

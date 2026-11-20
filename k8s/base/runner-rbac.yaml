@@ -31,3 +31,21 @@ subjects:
   - kind: ServiceAccount
     name: eve-worker
     namespace: eve
+---
+# The worker's namespaced rights here (runner policies, FQDN policies): the
+# static counterpart of the binding it makes in each namespace it manages.
+# Named apart from eve's, so an overlay that sets one namespace for every
+# object fails on nothing (see docs/system/egress-policies.md).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eve-worker-tenant-runners
+  namespace: eve-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eve-worker-tenant
+subjects:
+  - kind: ServiceAccount
+    name: eve-worker
+    namespace: eve

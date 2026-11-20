@@ -396,6 +396,58 @@ same env var name, so apps see no change. Plain values stay inline.
   inline again and ignores these Secrets; they stay in the namespace until
   a newer deployer prunes them or the env is deleted.
 
+### Worker Rights
+
+The worker holds two ClusterRoles (`k8s/base/worker-rbac.yaml`):
+
+- `eve-worker-namespaces`, bound cluster-wide: namespaces (get, list,
+  watch, create, patch, delete; labels merge with a patch, so no `update`),
+  RoleBindings (create, get, list, delete) and `bind` on the ClusterRole
+  `eve-worker-tenant` alone. Nothing on Secrets or workloads.
+- `eve-worker-tenant`, never bound cluster-wide: pods, Services,
+  ConfigMaps, Secrets, PVCs, Deployments and the other workloads, Jobs,
+  Ingresses, NetworkPolicies and GKE FQDNNetworkPolicies. The worker binds
+  it (RoleBinding `eve-worker-tenant`) in each namespace it creates or
+  adopts; the template binds it in `eve` and `eve-runners`.
+
+Every namespace the worker creates carries `eve.horizon/managed=true`. At
+start-up the worker labels and binds the env namespaces earlier releases
+created (they carry `eve.env_id`) when that label names a live environment
+whose namespace it is; others are left alone and logged.
+
+The template's ValidatingAdmissionPolicy `eve-worker-namespace-guard`
+(`k8s/base/worker-admission-policy.yaml`, Kubernetes 1.30 or later) refuses
+the worker's service account:
+
+- writes of namespaced objects outside managed namespaces and `eve`,
+  `eve-runners` and `eve-builds`, and any cluster-scoped write but
+  namespaces;
+- creating a namespace without the managed label; changing a namespace that
+  has neither that label nor `eve.env_id`; deleting one without the label,
+  or a static one;
+- a RoleBinding (created or deleted) to any role but `eve-worker-tenant`, or
+  for any subject but the worker.
+
+`tests/k8s/worker-guard.kind.sh` runs each allowed and refused write on a
+kind cluster as the worker (`kubectl --as`).
+
+Other templates: an overlay that sets one `namespace:` for every object
+moves `eve-worker-tenant-runners` into the platform namespace; apply the
+runner namespace's objects from their own kustomization, as for the runner
+policies. The `aws-nlb` TCP ingress check reads
+`deployment/aws-load-balancer-controller` in `kube-system`; with no rights
+there it logs that it could not check and goes on.
+
+**Rollout (0.1.328):** apply the new ClusterRoles and bindings (the old
+`eve-worker` ClusterRole and ClusterRoleBinding stay for now), deploy the
+worker and wait for its log line "Managed namespaces reconciled", apply the
+admission policy, then delete `clusterrole/eve-worker` and
+`clusterrolebinding/eve-worker`. **Rollback:** re-apply the previous
+template, which brings back `eve-worker` with its all-namespace rights,
+and delete the admission policy (an earlier worker creates namespaces
+without the managed label, which the policy refuses). The labels,
+`eve-worker-tenant` and its RoleBindings stay, unused and harmless.
+
 ### Pod Security
 
 Under the project's `strict` profile (rule `isolation.pod_security`), tenant
