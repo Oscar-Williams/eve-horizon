@@ -138,10 +138,15 @@ One builder (`packages/shared/src/invoke/runner-manifests.ts`) makes every
 runner pod: non-root UID 1000, no privilege escalation, every capability
 dropped, `RuntimeDefault` seccomp, `enableServiceLinks: false`, no service
 account token, and the account from `EVE_RUNNER_SERVICE_ACCOUNT` (base:
-`eve-runner`, which has no RoleBinding and no cloud identity). The org
-filesystem is mounted only when the job's `orgfs_mount` mode is not `none`,
-and read-only unless it is `write`. This narrows the mount; it does not
-isolate one org's files from another's.
+`eve-runner`, which has no RoleBinding and no cloud identity). The runner sets
+`EVE_REQUIRE_ENVIRON_PROTECTION=true`, so it refuses to start when its
+process is dumpable and job processes (the same UID) could read its
+environment. The org filesystem is mounted only when the job's `orgfs_mount`
+mode is not `none`, and read-only unless it is `write`. This narrows the
+mount; it does not isolate one org's files from another's. Pod affinity
+(`EVE_RUNNER_POD_AFFINITY_*`) applies only to such a pod, which runs in the
+platform namespace beside the pod holding the claim; templates and other
+runner pods never carry it.
 
 ## Where job code runs (`isolation.runner_mode`)
 
