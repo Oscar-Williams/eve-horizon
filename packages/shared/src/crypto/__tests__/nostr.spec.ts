@@ -45,6 +45,29 @@ describe('nostr crypto utilities', () => {
     });
   });
 
+  describe('canonicalRequestUrl with the configured public origin', () => {
+    it('takes scheme and host from the origin, never from request headers', () => {
+      const url = canonicalRequestUrl(
+        {
+          headers: { 'x-forwarded-proto': 'http', 'x-forwarded-host': 'evil.example', host: 'evil.example' },
+          protocol: 'http',
+          hostname: 'evil.example',
+          url: '/projects/proj_1/jobs?b=2&a=1',
+        },
+        { publicOrigin: 'https://api.eve.example' },
+      );
+      expect(url).toBe('https://api.eve.example/projects/proj_1/jobs?a=1&b=2');
+    });
+
+    it('ignores any path on the configured origin', () => {
+      const url = canonicalRequestUrl(
+        { headers: {}, url: '/auth/me' },
+        { publicOrigin: 'https://api.eve.example/base/' },
+      );
+      expect(url).toBe('https://api.eve.example/auth/me');
+    });
+  });
+
   describe('canonicalRequestUrl', () => {
     it('builds canonical URL from request properties', () => {
       const url = canonicalRequestUrl({
