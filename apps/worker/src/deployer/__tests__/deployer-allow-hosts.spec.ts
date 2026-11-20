@@ -105,14 +105,23 @@ describe('deploy: egress.allow_hosts', () => {
     expect(order.filter((step) => step !== 'synced')).toEqual(['render', 'env:strict', 'runners:strict', 'workloads']);
   });
 
-  it("marks the release's manifest as the project's last explicit sync or deploy before the runner policies", async () => {
+  // A pipeline can build a release from a row its drift check stored from a
+  // built ref (whose contents job code controls, never checked by a sync):
+  // deploying it must not make it the source of the runner hosts.
+  it("never marks the release's manifest as synced: runner hosts come from the last explicit sync", async () => {
     vi.stubEnv('EVE_EGRESS_FQDN_PROVIDER', 'gke');
     mocks.profiles = { 'egress.default_deny': 'strict', 'egress.allow_hosts': 'strict' };
     const { deployer, order } = deployerFor();
     await deployer.deploy('env_prod', 'rel_1', { skipPreflight: true });
-    expect((deployer as any).manifests.markSynced).toHaveBeenCalledWith('man_1');
-    expect(order.indexOf('synced')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('synced')).toBeLessThan(order.indexOf('runners:strict'));
+    expect((deployer as any).manifests.markSynced).not.toHaveBeenCalled();
+    expect(order).not.toContain('synced');
+  });
+
+  it('never marks the manifest as synced when the deploy fails before rendering finishes', async () => {
+    const { deployer } = deployerFor();
+    (deployer as any).renderManifest = vi.fn(async () => { throw new Error('Invalid manifest'); });
+    await expect(deployer.deploy('env_prod', 'rel_1', { skipPreflight: true })).rejects.toThrow('Invalid manifest');
+    expect((deployer as any).manifests.markSynced).not.toHaveBeenCalled();
   });
 
   it('under audit with no provider deploys as before', async () => {
