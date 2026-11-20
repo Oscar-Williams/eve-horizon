@@ -57,6 +57,8 @@ function claims(token: string): Record<string, any> {
 const NOW = Date.UTC(2026, 10, 20, 12, 0, 0);
 const nowS = NOW / 1000;
 const DAY = 24 * 60 * 60;
+const HOUR_MS = 60 * 60 * 1000;
+const FAILED = 'eve.tokens-renew-failed';
 const NS = 'eve-acme-shop-prod';
 const ENV = {
   id: 'env_prod',
@@ -457,6 +459,7 @@ describe('service token renewal', () => {
     await renewal.renewAll();
     expect(cluster.hash('api')).toBe(hashBefore);
 
+    vi.setSystemTime(NOW + HOUR_MS);
     await renewal.renewAll();
     const renewed = cluster.value('api', 'EVE_SERVICE_TOKEN');
     expect(cluster.hash('api')).toBe(secretsHash({ EVE_SERVICE_TOKEN: renewed }));
@@ -686,6 +689,112 @@ describe('service token renewal', () => {
       expect(cluster.templateHash('prod-db')).toBe(secretsHash(cluster.secretData('prod-db')));
     });
 
+    describe('Secrets that fail', () => {
+      const failure = (deployment: string) => {
+        const raw = cluster.secrets.get(`${deployment}-eve-secrets`).metadata.annotations[FAILED];
+        return raw === undefined ? null : JSON.parse(raw);
+      };
+      const hoursLater = (hours: number) => vi.setSystemTime(NOW + hours * HOUR_MS);
+
+      it('do not take the batch: three that fail every pass leave room for a fourth environment', async () => {
+        mocks.environments.listForServiceTokenRenewal.mockResolvedValue([ENV, STAGING]);
+        // A revoked app-link grant, a release that is gone, and an admission refusal of the roll.
+        const link = appLinkToken({ days: 2 });
+        cluster.addService('api', { EVE_SERVICE_TOKEN: serviceToken({ days: 40 }), EVE_APP_LINK_LEDGER_TOKEN: link });
+        cluster.addService('worker', { EVE_SERVICE_TOKEN: serviceToken({ days: 3, service: 'worker' }) });
+        cluster.addService('web', { EVE_SERVICE_TOKEN: serviceToken({ days: 4, service: 'web' }) });
+        const staging = serviceToken({ days: 20, service: 'web', env: 'staging' });
+        cluster.addService('web', { EVE_SERVICE_TOKEN: staging }, 'rel_2', { env: STAGING });
+        vi.mocked(issuer.mintAppLinkToken).mockResolvedValue(null);
+        const mint = vi.mocked(issuer.mintServiceToken).getMockImplementation()!;
+        vi.mocked(issuer.mintServiceToken).mockImplementation(async (p) => (p.serviceName === 'worker' ? { status: 404 } : mint(p)));
+        const roll = cluster.appsApi.patchNamespacedDeployment.getMockImplementation()!;
+        cluster.appsApi.patchNamespacedDeployment.mockImplementation(async (name: string, ns: string, body: any) => {
+          if (name === 'prod-web') throw k8sError(403);
+          return roll(name, ns, body);
+        });
+
+        const report = await renewal.renewAll();
+
+        expect(cluster.secretValue('staging-web', 'EVE_SERVICE_TOKEN')).not.toBe(staging);
+        expect(cluster.templateHash('staging-web')).toBe(secretsHash(cluster.secretData('staging-web')));
+        expect(report.renewed).toEqual([expect.objectContaining({ env_id: 'env_staging', secret: 'staging-web-eve-secrets' })]);
+        expect(report.failed.map((item) => item.secret).sort()).toEqual(
+          ['prod-api-eve-secrets', 'prod-web-eve-secrets', 'prod-worker-eve-secrets'],
+        );
+        for (const deployment of ['prod-api', 'prod-worker', 'prod-web']) {
+          const recorded = failure(deployment);
+          expect(recorded).toMatchObject({ at: new Date(NOW).toISOString(), failures: 1, reason: expect.any(String) });
+          expect(recorded.reason.length).toBeLessThanOrEqual(200);
+          // No token in the record.
+          expect(recorded.reason).not.toMatch(/eyJ/);
+          expect(logs()).toMatch(new RegExp(`${deployment}-eve-secrets.*failed`));
+        }
+        expect(failure('staging-web')).toBeNull();
+      });
+
+      it('are tried again an hour after they fail, then after 2 hours, and the record goes once they renew', async () => {
+        const old = serviceToken({ days: 5 });
+        cluster.addService('api', { EVE_SERVICE_TOKEN: old });
+        let refuse = true;
+        const mint = vi.mocked(issuer.mintServiceToken).getMockImplementation()!;
+        vi.mocked(issuer.mintServiceToken).mockImplementation(async (p) => (refuse ? null : mint(p)));
+
+        await renewal.renewAll();
+        expect(failure('prod-api')).toMatchObject({ at: new Date(NOW).toISOString(), failures: 1 });
+
+        hoursLater(0.5);
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).toHaveBeenCalledTimes(1);
+
+        hoursLater(1);
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).toHaveBeenCalledTimes(2);
+        expect(failure('prod-api')).toMatchObject({ at: new Date(NOW + HOUR_MS).toISOString(), failures: 2 });
+
+        hoursLater(2);
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).toHaveBeenCalledTimes(2);
+
+        refuse = false;
+        hoursLater(3);
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).toHaveBeenCalledTimes(3);
+        expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(old);
+        expect(failure('prod-api')).toBeNull();
+      });
+
+      it('wait at most a day between tries', async () => {
+        cluster.addService('api', { EVE_SERVICE_TOKEN: serviceToken({ days: 5 }) });
+        const secret = cluster.secrets.get('prod-api-eve-secrets');
+        secret.metadata.annotations[FAILED] = JSON.stringify({
+          at: new Date(NOW - 23 * HOUR_MS).toISOString(), failures: 9, reason: 'the API minted no token',
+        });
+
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).not.toHaveBeenCalled();
+
+        hoursLater(1);
+        await renewal.renewAll();
+        expect(issuer.mintServiceToken).toHaveBeenCalledTimes(1);
+        expect(failure('prod-api')).toBeNull();
+      });
+
+      it('are tried at once on a rotation', async () => {
+        mocks.environments.listForServiceTokenRenewal.mockResolvedValue([{ ...ENV, service_tokens_not_before: new Date(NOW) }]);
+        const revoked = serviceToken({ days: 80, issuedAgo: 5 });
+        cluster.addService('api', { EVE_SERVICE_TOKEN: revoked });
+        cluster.secrets.get('prod-api-eve-secrets').metadata.annotations[FAILED] = JSON.stringify({
+          at: new Date(NOW).toISOString(), failures: 1, reason: 'the API minted no token',
+        });
+
+        const report = await renewal.renewEnvironment('env_prod');
+
+        expect(report.renewed).toEqual([expect.objectContaining({ secret: 'prod-api-eve-secrets', reason: 'revoked' })]);
+        expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(revoked);
+      });
+    });
+
     it('warns, and records an event, when a roll has not finished by the next pass past the deploy timeout', async () => {
       cluster.addService('api', { EVE_SERVICE_TOKEN: serviceToken({ days: 20 }) });
       await renewal.renewAll();
@@ -766,7 +875,10 @@ describe('service token renewal', () => {
 
       expect(issuer.mintServiceToken).toHaveBeenCalledTimes(1);
       expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).toBe(old);
-      expect(cluster.coreApi.patchNamespacedSecret).not.toHaveBeenCalled();
+      // No token is written (a failure may be recorded on the Secret).
+      for (const [, , body] of cluster.coreApi.patchNamespacedSecret.mock.calls) {
+        expect(body.data ?? {}).toEqual({});
+      }
       expect(errors()).toMatch(/prod.*env_prod.*rel_2/);
     });
   });
