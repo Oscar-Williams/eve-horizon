@@ -280,11 +280,23 @@ export class RunnerAttemptsService {
 
   /**
    * A refreshed Codex auth.json from the job. Accepted only when the account
-   * claims of its issuer-signed id_token and access_token (unexpired), and
-   * its plain account_id when present, all name the stored credential's
-   * account, and it carries the stored credential's API key (or none, as the
-   * stored one does). It goes to the secret's own scope, or, under the
-   * project's strict secrets.job_org_write, to project scope only.
+   * claim of its issuer-signed id_token, that of its access token when the
+   * access token is a JWT (verified when it names the issuer and a published
+   * key, else decoded; unexpired), and its plain account_id when present, all
+   * name the stored credential's account, and it carries the stored
+   * credential's API key (or none, as the stored one does). An access token
+   * that is not a JWT is not checked, and that is logged. It goes to the
+   * secret's own scope, or, under the project's strict
+   * secrets.job_org_write, to project scope only.
+   *
+   * Accepted residual: the refresh token is opaque and cannot be checked, so
+   * a job can write back a refresh token of its choosing beside the stored
+   * account's id_token; the next refresh then follows it. Under `audit` that
+   * reaches every job sharing an org-scope credential. Under `strict`,
+   * secrets.job_org_write sends an org-scope write-back to the job's own
+   * project (mayJobWriteSecret refuses org scope for a job token), so it
+   * reaches only that project. A project- or user-scope credential is
+   * written in place on every profile.
    */
   async writeBackCredential(token: JobTokenPayload, key: unknown, value: unknown): Promise<void> {
     if (typeof key !== 'string' || !(RUNNER_WRITABLE_CREDENTIALS as readonly string[]).includes(key)) {
@@ -303,7 +315,8 @@ export class RunnerAttemptsService {
     const storedAccount = codexAccountIdOf(decode(stored.value));
     let account: string;
     try {
-      account = await verifiedCodexAccountId(decode(value), await this.codexJwks());
+      account = await verifiedCodexAccountId(decode(value), await this.codexJwks(), Date.now(), (message) =>
+        this.logger.log(`Codex write-back for job ${token.job_id}: ${message}`));
     } catch (error) {
       this.logger.warn(`Refused Codex write-back for job ${token.job_id}: ${error instanceof Error ? error.message : String(error)}`);
       throw new ConflictException('The refreshed credential does not carry a verifiable account');

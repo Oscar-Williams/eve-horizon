@@ -1,13 +1,18 @@
 /**
  * The account a Codex auth.json belongs to, from its signed tokens.
  *
- * An auth.json names its account three times: the plain `tokens.account_id`
- * field, which whoever writes the file chooses, and the account claims of
- * the `id_token` and `access_token` the issuer signed. A write-back from a
- * job is accepted only when both signed claims, checked against the issuer's
- * published keys, name one account (the stored credential's), the access
- * token has not expired, and the plain field, when present, names it too.
- * The refresh token is opaque and cannot be checked here.
+ * An auth.json names its account up to three times: the plain
+ * `tokens.account_id` field, which whoever writes the file chooses, the
+ * account claim of the `id_token` the issuer signed, and, when the access
+ * token is a JWT, its account claim. A write-back from a job is accepted
+ * only when the id_token, checked against the issuer's published keys, names
+ * the stored credential's account, the access token (when it is a JWT) names
+ * the same account and has not expired, and the plain field, when present,
+ * names it too. An access token that names the issuer and one of its keys
+ * must verify against that key; one that does not (another issuer, a key
+ * not published) is only decoded. One that is not a JWT is not checked: the
+ * issuer does not promise its format. The refresh token is opaque and
+ * cannot be checked here.
  */
 
 import { createPublicKey, verify as verifySignature, type JsonWebKey } from 'node:crypto';
@@ -84,25 +89,56 @@ function verifiedPayload(token: string, jwks: Jwks, label: string): Record<strin
 const EXPIRY_SKEW_SECONDS = 60;
 
 /**
- * The account an auth.json belongs to, after checking that its id_token and
- * access_token are both signed by the issuer and name the same account, that
- * the access token has not expired (when it carries `exp`), and that the
- * plain `tokens.account_id`, when present, names that account too. Throws
- * otherwise.
+ * An access token's payload when it is a JWT, null when it is not. Its
+ * signature is verified when it names the issuer and one of the issuer's
+ * keys (throwing when it does not verify); otherwise it is only decoded.
  */
-export async function verifiedCodexAccountId(authJson: string, jwks: Jwks, now: number = Date.now()): Promise<string> {
+function accessTokenPayload(value: unknown, jwks: Jwks): Record<string, unknown> | null {
+  const token = jwtOf(value);
+  if (!token) return null;
+  let header: Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    const [headerB64, payloadB64] = token.split('.');
+    header = decodeSegment(headerB64);
+    payload = decodeSegment(payloadB64);
+  } catch {
+    return null;
+  }
+  if (!header || typeof header !== 'object' || !payload || typeof payload !== 'object') return null;
+  const issuerKey = payload.iss === CODEX_ID_TOKEN_ISSUER
+    && jwks.keys.some((key) => key.kid === header.kid && key.kty === 'RSA');
+  return issuerKey ? verifiedPayload(token, jwks, 'access_token') : payload;
+}
+
+/**
+ * The account an auth.json belongs to, after checking that its id_token is
+ * signed by the issuer, that its access token, when a JWT, names the same
+ * account and has not expired (when it carries `exp`), and that the plain
+ * `tokens.account_id`, when present, names that account too. Throws
+ * otherwise. `note` hears when the access token is not a JWT and was not
+ * checked.
+ */
+export async function verifiedCodexAccountId(
+  authJson: string,
+  jwks: Jwks,
+  now: number = Date.now(),
+  note?: (message: string) => void,
+): Promise<string> {
   const idToken = idTokenOf(authJson);
   if (!idToken) throw new Error('auth.json has no id_token');
   const account = accountClaim(verifiedPayload(idToken, jwks, 'id_token'));
   if (!account) throw new Error('id_token has no account claim');
 
   const tokens = tokensOf(authJson) ?? {};
-  const accessToken = jwtOf(tokens.access_token);
-  if (!accessToken) throw new Error('auth.json has no signed access_token');
-  const access = verifiedPayload(accessToken, jwks, 'access_token');
-  if (accountClaim(access) !== account) throw new Error("access_token names another account than the id_token's");
-  if (typeof access.exp === 'number' && access.exp + EXPIRY_SKEW_SECONDS < now / 1000) {
-    throw new Error('access_token has expired');
+  const access = accessTokenPayload(tokens.access_token, jwks);
+  if (access) {
+    if (accountClaim(access) !== account) throw new Error("access_token names another account than the id_token's");
+    if (typeof access.exp === 'number' && access.exp + EXPIRY_SKEW_SECONDS < now / 1000) {
+      throw new Error('access_token has expired');
+    }
+  } else {
+    note?.('access_token is not a JWT, so its account was not checked; the id_token was');
   }
 
   if (tokens.account_id !== undefined && tokens.account_id !== null && tokens.account_id !== account) {
