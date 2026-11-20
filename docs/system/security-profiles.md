@@ -178,15 +178,16 @@ Platform services call each other with a key per service, sent as
 
 | Key | Held by | Accepted |
 |---|---|---|
-| `EVE_INTERNAL_CORE_KEY` (`core`) | API, worker, orchestrator, agent runtime | On every internal route, and by the worker, agent runtime, orchestrator and gateway. They all hold the database URL, so separate keys between them would add no wall. |
+| `EVE_INTERNAL_CORE_KEY` (`core`) | API, worker, orchestrator, agent runtime | On every internal route, and by the worker, agent runtime and orchestrator. They all hold the database URL, so separate keys between them would add no wall. Never sent to the gateway, which refuses it. |
 | `EVE_INTERNAL_GATEWAY_KEY` (`gateway`) | Gateway | By the API, on the routes the gateway calls. |
 | `EVE_INTERNAL_SSO_KEY` (`sso`) | SSO | By the API, on `magic-link-wrap/inspect` and `consume`. |
+| `EVE_INTERNAL_DELIVER_KEY` (`deliver`) | API | By the gateway only, on `/internal/deliver` and simulate. |
 
 A callee that accepts a key without holding it holds its SHA-256 instead:
-`EVE_INTERNAL_CALLER_HASHES=core:<hex>,gateway:<hex>,sso:<hex>` (the API
-needs the gateway and SSO hashes, the gateway the core hash). It cannot act
-as those callers. Runner pods get only the core key's hash, to accept the
-worker's submissions.
+`EVE_INTERNAL_CALLER_HASHES=core:<hex>,gateway:<hex>,sso:<hex>,deliver:<hex>`
+(the API needs the gateway and SSO hashes, the gateway the deliver hash). It
+cannot act as those callers. Runner pods get only the core key's hash, to
+accept the worker's submissions.
 
 **Upgrade order does not matter.** While a service still holds the legacy
 `EVE_INTERNAL_API_KEY`, it also sends `x-eve-internal-token`, so a callee not

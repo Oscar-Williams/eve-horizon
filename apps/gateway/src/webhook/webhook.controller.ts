@@ -10,11 +10,12 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createJsonLogger, judgeInternalCall } from '@eve/shared';
+import { createJsonLogger } from '@eve/shared';
 import { GatewayProviderRegistry } from '../providers/provider-registry.js';
 import { GatewayChatService } from '../chat/gateway-chat.service.js';
 import { postJson, getJson } from '../api-client.js';
 import { isSimulateEnabled } from '../simulate-mode.js';
+import { assertDeliverCaller } from '../internal-auth.js';
 import type {
   GatewayProvider,
   WebhookRequest,
@@ -242,7 +243,7 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
   // Simulate endpoint (routes through gateway without real webhook).
   // Development and tests only: needs EVE_SIMULATE_ENABLED=true and the
-  // internal service token.
+  // deliver key or the legacy internal key.
   // ---------------------------------------------------------------------------
 
   @Post('simulate')
@@ -253,10 +254,7 @@ export class WebhookController {
     if (!isSimulateEnabled()) {
       throw new NotFoundException('Simulate endpoint disabled');
     }
-    const call = judgeInternalCall(req.headers);
-    if (!call || (call.kind === 'service' && call.service !== 'core')) {
-      throw new UnauthorizedException('Missing or invalid internal token');
-    }
+    assertDeliverCaller(req.headers);
 
     const body = req.body as SimulateRequest;
     const dedupeKey = body.dedupe_key;

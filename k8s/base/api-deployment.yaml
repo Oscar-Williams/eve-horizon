@@ -32,6 +32,13 @@ spec:
                   name: eve-app
                   key: EVE_INTERNAL_CORE_KEY
                   optional: true
+            # Sent to the gateway with each delivery, in place of the core key.
+            - name: EVE_INTERNAL_DELIVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eve-app
+                  key: EVE_INTERNAL_DELIVER_KEY
+                  optional: true
             - name: EVE_INTERNAL_CALLER_HASHES
               valueFrom:
                 secretKeyRef:

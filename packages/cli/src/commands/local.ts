@@ -1125,18 +1125,22 @@ function generateAuthSecrets(runtimeOptions: UpRuntimeOptions): void {
   const anonKey = generateHs256Jwt({ role: 'anon', iss: 'supabase', iat, exp }, jwtSecret);
 
   // Internal service keys: one core key (API, worker, orchestrator, agent
-  // runtime), the gateway's and the SSO's own, and the hashes callees check
-  // them against. Kept across runs, like the other keys.
+  // runtime), the gateway's and the SSO's own, the deliver key the API sends
+  // the gateway, and the hashes callees check them against. Kept across
+  // runs, like the other keys.
   const coreKey = readSecretValue(kubectl, 'EVE_INTERNAL_CORE_KEY') || randomBytes(32).toString('hex');
   const gatewayKey = readSecretValue(kubectl, 'EVE_INTERNAL_GATEWAY_KEY') || randomBytes(32).toString('hex');
   const ssoKey = readSecretValue(kubectl, 'EVE_INTERNAL_SSO_KEY') || randomBytes(32).toString('hex');
+  const deliverKey = readSecretValue(kubectl, 'EVE_INTERNAL_DELIVER_KEY') || randomBytes(32).toString('hex');
   const keyHash = (key: string) => createHash('sha256').update(key, 'utf8').digest('hex');
 
   const stringData: Record<string, string> = {
     EVE_INTERNAL_CORE_KEY: coreKey,
     EVE_INTERNAL_GATEWAY_KEY: gatewayKey,
     EVE_INTERNAL_SSO_KEY: ssoKey,
-    EVE_INTERNAL_CALLER_HASHES: `core:${keyHash(coreKey)},gateway:${keyHash(gatewayKey)},sso:${keyHash(ssoKey)}`,
+    EVE_INTERNAL_DELIVER_KEY: deliverKey,
+    EVE_INTERNAL_CALLER_HASHES:
+      `core:${keyHash(coreKey)},gateway:${keyHash(gatewayKey)},sso:${keyHash(ssoKey)},deliver:${keyHash(deliverKey)}`,
     EVE_REGISTRY_CREDENTIAL_KEY: readSecretValue(kubectl, 'EVE_REGISTRY_CREDENTIAL_KEY') || randomBytes(32).toString('hex'),
     EVE_INTERNAL_API_KEY: existingInternalApiKey || randomBytes(24).toString('hex'),
     EVE_SECRETS_MASTER_KEY: existingSecretsMasterKey || randomBytes(32).toString('hex'),

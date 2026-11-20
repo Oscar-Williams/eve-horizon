@@ -138,6 +138,9 @@ export const configSchema = z.object({
   EVE_INTERNAL_CORE_KEY: z.string().optional(),
   EVE_INTERNAL_GATEWAY_KEY: z.string().optional(),
   EVE_INTERNAL_SSO_KEY: z.string().optional(),
+  // Sent to the gateway's internal routes by the services that deliver (the
+  // API); the gateway holds only its hash.
+  EVE_INTERNAL_DELIVER_KEY: z.string().optional(),
   EVE_INTERNAL_CALLER_HASHES: z.string().optional(),
   EVE_GATEWAY_URL: z.string().url().optional(), // Internal gateway URL for outbound delivery (e.g., http://eve-gateway.eve.svc.cluster.local:4820)
   EVE_ORG_FS_LINK_TOKEN_SECRET: z.string().optional(),
