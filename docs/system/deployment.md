@@ -470,10 +470,20 @@ on the object before and after the write: Secrets named `kaniko-cfg-*`;
 claims named `eve-ws-*` or `eve-org-fs-*` that clone or bind no volume (no
 `dataSource`, `dataSourceRef`, `volumeName` or `selector`); pods labelled
 `eve.type=runner` or `eve.horizon/component=kaniko-build`, and Jobs with the
-kaniko label; NetworkPolicies and FQDN policies labelled
-`eve.horizon/egress`; nothing else. So the worker can neither replace nor
-remove the platform's Secrets (`eve-app`), pods, claims, Jobs or policies,
-whatever its Role in `eve` allows by verb.
+kaniko label; runner egress policies (below); nothing else. So the worker
+can neither replace nor remove the platform's Secrets (`eve-app`), pods,
+claims, Jobs or policies, whatever its Role in `eve` allows by verb.
+
+`eve-worker-runner-policy-guard` holds every NetworkPolicy and FQDN policy
+the worker writes in the runner namespaces (`eve-runners`, and `eve` for
+plain runner pods) to the shape `runnerEgressPolicies` and
+`runnerFqdnPolicies` make: labelled `eve.horizon/egress` before and after
+the write (so the static `eve-runner-deny` and `eve-runner-ingress`, and
+the platform's own policies, stay out of reach), selecting only runner pods
+(`podSelector.matchLabels` `eve.horizon/runner: "true"`), and egress only
+(`policyTypes: [Egress]`, none on an FQDN policy, no `ingress` rules). A
+policy labelled as Eve's can therefore open no way in to a platform pod,
+nor to a runner pod.
 
 The orchestrator (`k8s/base/orchestrator-rbac.yaml`) reads pods, events,
 Deployments and ReplicaSets, and patches only `deployments/scale` (the env

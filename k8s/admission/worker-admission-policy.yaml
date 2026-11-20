@@ -50,9 +50,21 @@
 #   volumeName never changed);
 # - pods labelled eve.type=runner (plain runner pods) or
 #   eve.horizon/component=kaniko-build, and Jobs with that kaniko label;
-# - NetworkPolicies and GKE FQDN policies labelled eve.horizon/egress (the
-#   runner egress policies);
+# - runner egress policies (NetworkPolicies and GKE FQDN policies), held to
+#   their shape by eve-worker-runner-policy-guard;
 # - nothing else.
+#
+# eve-worker-runner-policy-guard, on every write of a NetworkPolicy or GKE
+# FQDN policy in the runner namespaces (eve-runners, and eve for plain runner
+# pods): the worker writes there only the policies runnerEgressPolicies and
+# runnerFqdnPolicies (packages/shared/src/k8s) make:
+# - labelled eve.horizon/egress, before the write (update, delete) and after
+#   it (create, update), so the static eve-runner-deny and eve-runner-ingress
+#   and the platform's own policies stay out of reach;
+# - selecting only runner pods (podSelector.matchLabels
+#   eve.horizon/runner=true), never a platform pod;
+# - egress only (policyTypes [Egress], none for an FQDN policy, and no
+#   ingress rules), so no policy of the worker's opens a way in to any pod.
 #
 # Cluster-scoped: kustomize stamps a namespace on them in overlays that set
 # one; the API server ignores it.
@@ -372,11 +384,6 @@ spec:
         variables.kind != 'batch/jobs' ||
         ((!variables.checksNew || variables.newIsKaniko) && (!variables.checksOld || variables.oldIsKaniko))
       message: "In the platform namespace the Eve worker writes only kaniko build Jobs (eve.horizon/component=kaniko-build)"
-    - expression: >-
-        !(variables.kind in ['networking.k8s.io/networkpolicies', 'networking.gke.io/fqdnnetworkpolicies']) ||
-        ((!variables.checksNew || 'eve.horizon/egress' in variables.newLabels) &&
-         (!variables.checksOld || 'eve.horizon/egress' in variables.oldLabels))
-      message: "In the platform namespace the Eve worker writes only its own egress policies (labelled eve.horizon/egress)"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -384,4 +391,63 @@ metadata:
   name: eve-worker-platform-guard
 spec:
   policyName: eve-worker-platform-guard
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eve-worker-runner-policy-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["networkpolicies"]
+      - apiGroups: ["networking.gke.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["fqdnnetworkpolicies"]
+  matchConditions:
+    - name: the-worker
+      expression: "request.userInfo.username == 'system:serviceaccount:eve:eve-worker'"
+    - name: in-a-runner-namespace
+      expression: "request.namespace in ['eve', 'eve-runners']"
+  variables:
+    - name: checksNew
+      expression: "request.operation != 'DELETE'"
+    - name: checksOld
+      expression: "request.operation != 'CREATE'"
+    - name: newLabels
+      expression: "variables.checksNew && has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: oldLabels
+      expression: "variables.checksOld && has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    # FQDN policies are egress only and carry no policyTypes;
+    # NetworkPolicies always do (the API server defaults them).
+    - name: isFqdn
+      expression: "request.resource.group == 'networking.gke.io'"
+  validations:
+    - expression: >-
+        (!variables.checksNew || 'eve.horizon/egress' in variables.newLabels) &&
+        (!variables.checksOld || 'eve.horizon/egress' in variables.oldLabels)
+      message: "In the runner namespaces the Eve worker writes only its own runner policies (labelled eve.horizon/egress), never the static eve-runner-deny and eve-runner-ingress or the platform's policies"
+    - expression: >-
+        !variables.checksNew || (
+          has(object.spec) && has(object.spec.podSelector) && has(object.spec.podSelector.matchLabels) &&
+          'eve.horizon/runner' in object.spec.podSelector.matchLabels &&
+          object.spec.podSelector.matchLabels['eve.horizon/runner'] == 'true')
+      message: "In the runner namespaces the Eve worker's policies select only runner pods (podSelector.matchLabels eve.horizon/runner=true)"
+    - expression: >-
+        !variables.checksNew || (has(object.spec) &&
+          (has(object.spec.policyTypes) ? object.spec.policyTypes == ['Egress'] : variables.isFqdn) &&
+          (!has(object.spec.ingress) || object.spec.ingress.size() == 0))
+      message: "In the runner namespaces the Eve worker's policies are egress only (policyTypes [Egress], no ingress rules)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eve-worker-runner-policy-guard
+spec:
+  policyName: eve-worker-runner-policy-guard
   validationActions: [Deny]
