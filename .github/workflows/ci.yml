@@ -23,6 +23,12 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
 
+      - name: Supply chain gate
+        run: node scripts/check-supply-chain.mjs
+
+      - name: Supply chain gate tests
+        run: node --test scripts/__tests__/check-supply-chain.test.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
