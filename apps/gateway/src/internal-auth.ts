@@ -1,5 +1,5 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { judgeInternalCall, legacyInternalKeyJudge, type SecurityProfile } from '@eve/shared';
+import { judgeInternalCall, legacyInternalKeyJudge, SERVICE_KEY_HEADER, type SecurityProfile } from '@eve/shared';
 import { postJson } from './api-client.js';
 
 type Headers = Record<string, string | string[] | undefined>;
@@ -25,13 +25,22 @@ export function gatewayLegacyKeyJudge(): (route: string) => Promise<boolean> {
  * it and `internal.service_key` allows it (`legacyKeyAllowed`). No other
  * service key passes, the core key included: the gateway never needs it, so
  * it is never sent here.
+ *
+ * For one release, a verified core key is ignored rather than refused, and
+ * the call is judged on the legacy key beside it, as a legacy-only call: an
+ * API pod of the release before the deliver key sends both, during a rolling
+ * update or after the API alone is rolled back, and the API does not retry
+ * a refused delivery. The core key itself never passes.
  */
 export async function assertDeliverCaller(
   headers: Headers | undefined,
   route: string,
   legacyKeyAllowed: (route: string) => Promise<boolean>,
 ): Promise<void> {
-  const call = judgeInternalCall(headers);
+  let call = judgeInternalCall(headers);
+  if (call?.kind === 'service' && call.service === 'core') {
+    call = judgeInternalCall({ ...headers, [SERVICE_KEY_HEADER]: undefined });
+  }
   if (!call || (call.kind === 'service' && call.service !== 'deliver')) {
     throw new UnauthorizedException('Missing or invalid internal token');
   }
