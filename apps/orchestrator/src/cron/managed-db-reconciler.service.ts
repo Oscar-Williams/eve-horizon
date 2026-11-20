@@ -202,7 +202,11 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     enabled_extensions: string[];
     desired_roles: ManagedDbRoleDeclaration[];
     deleted_at?: Date | string | null;
+    updated_at?: Date | string | null;
+    last_error_code?: string | null;
   }): Promise<void> {
+    if ((tenant.status === 'deleting' || tenant.deleted_at) && !dropAttemptDue(tenant)) return;
+
     const token = crypto.randomUUID();
     const locked = await this.managedDb.acquireOperationLock(tenant.id, token);
     if (!locked) {
@@ -1181,6 +1185,28 @@ function connectionLimitFor(dbClass: string): number | null {
 
 /** How long a failing drop is retried before the tenant parks at failed. */
 const DROP_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DROP_RETRY_MIN_WAIT_MS = 60 * 1000;
+const DROP_RETRY_MAX_WAIT_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a deleted tenant is due a drop attempt. After a failed one (its
+ * error recorded, `updated_at` the time of the try) the next waits for a time
+ * that doubles with the time since the delete: 1 minute in the first 2, then
+ * 2, 4, 8... minutes, at most an hour. So a failing drop, and the snapshot it
+ * may repeat, runs about 30 times in its day rather than every 30 seconds.
+ */
+function dropAttemptDue(
+  tenant: { deleted_at?: Date | string | null; updated_at?: Date | string | null; last_error_code?: string | null },
+  now = Date.now(),
+): boolean {
+  if (!tenant.last_error_code || !tenant.deleted_at || !tenant.updated_at) return true;
+  const sinceDelete = now - new Date(tenant.deleted_at).getTime();
+  const sinceTry = now - new Date(tenant.updated_at).getTime();
+  if (!Number.isFinite(sinceDelete) || !Number.isFinite(sinceTry)) return true;
+  let wait = DROP_RETRY_MIN_WAIT_MS;
+  while (wait < DROP_RETRY_MAX_WAIT_MS && wait * 2 <= sinceDelete) wait *= 2;
+  return sinceTry >= Math.min(wait, DROP_RETRY_MAX_WAIT_MS);
+}
 
 function withinDropRetryWindow(deletedAt: Date | string | null | undefined): boolean {
   if (!deletedAt) return false;

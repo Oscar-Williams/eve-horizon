@@ -205,8 +205,10 @@ queues its managed databases for drop instead of failing on them or
 removing their rows (a forced delete no longer leaves the database behind),
 new managed databases carry the environment id in their name, a destroyed
 database is provisioned afresh on the next deploy, a failed drop is retried
-for a day, and a pre-delete snapshot that was asked for and fails keeps the
-database. Only the local provider provisions; any other fails with
+for a day (after a wait that doubles with the time since the delete, from 1
+minute to at most an hour), a database deleted while it was being provisioned
+or changed is still dropped, and a pre-delete snapshot that was asked for and
+fails keeps the database. Only the local provider provisions; any other fails with
 `provider_unsupported`.
 
 ### Internal service keys
