@@ -199,6 +199,12 @@ metadata server (`169.254.169.254:80`) and the Kubernetes API
 | `audit` | `audit`, or the instance switch | is recorded; the job runs |
 | `off` | `legacy` without the switch | no check |
 
+The runner writes `self_check` in every mode, `off` included (`{ mode: "off" }`),
+before job code starts. The API takes it once per attempt, so job code, which
+holds the same token, cannot fill the slot with a report of its own. When the
+write fails (an API error, or a report already there), the job does not run:
+"The runner could not record its self-check" (`error_code: self_check_not_recorded`).
+
 ### Rules a runner applies itself
 
 A runner has no database, so the worker decides the project's profile for
