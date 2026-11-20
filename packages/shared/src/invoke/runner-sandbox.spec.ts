@@ -24,7 +24,16 @@ describe('runner job classes', () => {
     expect(selectRunnerClass({ toolchains: ['python'] })).toBe('heavy');
     expect(selectRunnerClass({ labels: ['nightly'] })).toBe('job');
     expect(selectRunnerClass({})).toBe('job');
-    expect(selectRunnerClass({ labels: ['chat'], hint: 'heavy' })).toBe('heavy');
+  });
+
+  it('lets hints.runner_class choose only a lighter class, never heavy', () => {
+    expect(selectRunnerClass({ labels: ['chat'], hint: 'heavy' })).toBe('chat');
+    expect(selectRunnerClass({ labels: ['nightly'], hint: 'heavy' })).toBe('job');
+    expect(selectRunnerClass({ labels: ['chat'], hint: 'job' })).toBe('chat');
+    expect(selectRunnerClass({ labels: ['nightly'], hint: 'chat' })).toBe('chat');
+    expect(selectRunnerClass({ toolchains: ['python'], hint: 'job' })).toBe('job');
+    expect(selectRunnerClass({ resourceOverride: true, hint: 'heavy' })).toBe('heavy');
+    expect(selectRunnerClass({ labels: ['nightly'], hint: 'huge' })).toBe('job');
   });
 });
 

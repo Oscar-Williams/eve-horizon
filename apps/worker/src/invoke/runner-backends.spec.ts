@@ -16,6 +16,7 @@ import { resetSandboxDiscovery } from './sandbox-claim-backend.js';
 const k = vi.hoisted(() => ({
   crds: true,
   pool: true,
+  poolReplicas: 3,
   claim: 'ready' as 'ready' | 'pending' | 'failed',
   podPhase: 'Running',
   applied: [] as Array<Record<string, any>>,
@@ -38,6 +39,7 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
       k.applied.push(...(parsed.items ?? [parsed]));
     } else if (has('get', 'sandboxwarmpool')) {
       code = k.pool ? 0 : 1;
+      out = k.pool ? JSON.stringify({ metadata: { name: args[args.indexOf('sandboxwarmpool') + 1] }, spec: { replicas: k.poolReplicas } }) : '';
     } else if (has('get', 'sandboxclaim')) {
       out = JSON.stringify(k.claim === 'ready'
         ? { status: { conditions: [{ type: 'Ready', status: 'True' }], sandbox: { name: 'eve-runner-chat-x1', podIPs: ['10.1.0.7'] } } }
@@ -64,7 +66,7 @@ const submit = { kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', 
 let submittedTo: string[] = [];
 
 beforeEach(() => {
-  k.crds = true; k.pool = true; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
+  k.crds = true; k.pool = true; k.poolReplicas = 3; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
   submittedTo = [];
   resetSandboxDiscovery();
   vi.stubEnv('EVE_RUNNER_IMAGE', 'worker:test');
@@ -129,6 +131,14 @@ describe('runner pod backends', () => {
     const outcome = await run();
     expect(outcome.success).toBe(true);
     expect(deleted('sandboxclaim').length).toBeGreaterThanOrEqual(1);
+    expect(podsApplied()).toHaveLength(1);
+  });
+
+  it("creates the pod directly when the class's warm pool is sized 0, rather than wait on a cold claim", async () => {
+    k.poolReplicas = 0;
+    const outcome = await run();
+    expect(outcome.success).toBe(true);
+    expect(claimsApplied()).toEqual([]);
     expect(podsApplied()).toHaveLength(1);
   });
 

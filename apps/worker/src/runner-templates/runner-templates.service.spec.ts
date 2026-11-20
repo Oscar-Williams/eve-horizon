@@ -67,6 +67,13 @@ describe('runner template reconcile', () => {
     expect(k.applied.find((o) => o.kind === 'SandboxWarmPool' && o.metadata.name === 'eve-runner-chat')!.spec.replicas).toBe(3);
   });
 
+  it("sizes the heavy class's workspace claim from EVE_K8S_WORKSPACE_SIZE", async () => {
+    vi.stubEnv('EVE_K8S_WORKSPACE_SIZE', '5Gi');
+    await service().reconcile();
+    const heavy = k.applied.find((o) => o.kind === 'SandboxTemplate' && o.metadata.name === 'eve-runner-heavy')!;
+    expect(heavy.spec.volumeClaimTemplates[0].spec.resources.requests.storage).toBe('5Gi');
+  });
+
   it('does nothing without the agent-sandbox CRDs', async () => {
     k.crds = false;
     const report = await service().reconcile();
