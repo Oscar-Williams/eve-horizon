@@ -21,6 +21,7 @@ import {
   membershipQueries,
   orgInviteQueries,
   jobQueries,
+  environmentQueries,
   type MembershipRole,
 } from '@eve/db';
 import { AppAuthService } from './app-auth.service.js';
@@ -104,6 +105,9 @@ function readJwtAlgorithm(token: string): string | undefined {
   }
 }
 
+/** How long an environment's service-token floor is cached, per API replica. */
+const SERVICE_TOKEN_FLOOR_TTL_MS = 60_000;
+
 /**
  * Bearer-token verification for the auth hot path: routes job / service /
  * app-link / service-principal / user / Supabase tokens to their verifiers
@@ -125,6 +129,9 @@ export class TokenVerifierService {
   private readonly memberships: ReturnType<typeof membershipQueries>;
   private readonly orgInvites: ReturnType<typeof orgInviteQueries>;
   private jobQueriesCache?: ReturnType<typeof jobQueries>;
+  private environmentQueriesCache?: ReturnType<typeof environmentQueries>;
+  /** Per environment (`project\0env`): whether it exists and its floor in seconds, and when that was read. */
+  private readonly serviceTokenFloors = new Map<string, { readAt: number; exists: boolean; floor: number | null }>();
 
   constructor(
     @Inject('DB') private readonly db: Db,
@@ -147,6 +154,41 @@ export class TokenVerifierService {
   private get jobs(): ReturnType<typeof jobQueries> {
     this.jobQueriesCache ??= jobQueries(this.db);
     return this.jobQueriesCache;
+  }
+
+  /** Environment lookups for service-token revocation, created on first use. */
+  private get environments(): ReturnType<typeof environmentQueries> {
+    this.environmentQueriesCache ??= environmentQueries(this.db);
+    return this.environmentQueriesCache;
+  }
+
+  /**
+   * A token minted for an environment's service is refused once the
+   * environment is gone, or when it was issued before the environment's
+   * `service_tokens_not_before` (`eve env rotate-service-tokens`). The
+   * environment is read at most once a minute, so a rotation takes up to a
+   * minute to reach every replica.
+   */
+  private async assertServiceTokenCurrent(projectId: string, envName: string, issuedAt: number): Promise<void> {
+    const key = `${projectId}\u0000${envName}`;
+    const now = Date.now();
+    let entry = this.serviceTokenFloors.get(key);
+    if (!entry || now - entry.readAt >= SERVICE_TOKEN_FLOOR_TTL_MS) {
+      const environment = await this.environments.findByProjectAndName(projectId, envName);
+      const notBefore = environment?.service_tokens_not_before;
+      entry = {
+        readAt: now,
+        exists: Boolean(environment),
+        floor: notBefore ? Math.floor(new Date(notBefore).getTime() / 1000) : null,
+      };
+      this.serviceTokenFloors.set(key, entry);
+    }
+    if (!entry.exists) {
+      throw new UnauthorizedException('Service token environment not found');
+    }
+    if (entry.floor !== null && issuedAt < entry.floor) {
+      throw new UnauthorizedException('Service token revoked');
+    }
   }
 
   /**
@@ -466,8 +508,9 @@ export class TokenVerifierService {
     };
   }
 
-  private resolveServiceTokenAuth(token: string): AuthUser {
+  private async resolveServiceTokenAuth(token: string): Promise<AuthUser> {
     const payload = this.verifyServiceToken(token);
+    await this.assertServiceTokenCurrent(payload.project_id, payload.env_name, payload.iat);
     return {
       user_id: payload.sub,
       role: 'member',
@@ -483,6 +526,10 @@ export class TokenVerifierService {
 
   private async resolveAppLinkTokenAuth(token: string): Promise<AuthUser> {
     const payload = await this.appAuth.verifyAppLinkToken(token);
+    // A deployed service's link token goes with its environment's service tokens.
+    if (payload.consumer_principal.startsWith('service:') && payload.consumer_env) {
+      await this.assertServiceTokenCurrent(payload.consumer_project_id, payload.consumer_env, payload.iat);
+    }
     return {
       user_id: payload.sub,
       role: 'member',

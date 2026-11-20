@@ -24,6 +24,8 @@ export interface Environment {
   registry_pull_epoch: number;  // Bumped each time the deployer rewrites the eve-registry pull secret
   registry_key_version: string | null;  // Version of the registry key that signed the pull secret
   registry_key_epoch: number | null;    // registry_pull_epoch when registry_key_version was recorded
+  /** Service tokens (and app-link tokens injected into services) issued before this are refused. */
+  service_tokens_not_before: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -56,7 +58,7 @@ export function environmentQueries(db: Db) {
     },
 
     async create(
-      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch'> & { deploy_status?: string },
+      environment: Omit<Environment, 'created_at' | 'updated_at' | 'status' | 'suspended_at' | 'suspension_reason' | 'deploy_status' | 'registry_pull_epoch' | 'registry_key_version' | 'registry_key_epoch' | 'service_tokens_not_before'> & { deploy_status?: string },
     ): Promise<Environment> {
       const overridesJson = environment.overrides_json
         ? db.json(environment.overrides_json as never)
@@ -398,6 +400,21 @@ export function environmentQueries(db: Db) {
         SET status = 'suspended',
             suspended_at = NOW(),
             suspension_reason = ${reason},
+            updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+      return row ?? null;
+    },
+
+    /**
+     * Revoke the environment's service tokens issued before `notBefore`. The
+     * floor only moves forward. Null when the environment is gone.
+     */
+    async revokeServiceTokens(id: string, notBefore: Date): Promise<Environment | null> {
+      const [row] = await db<Environment[]>`
+        UPDATE environments
+        SET service_tokens_not_before = GREATEST(service_tokens_not_before, ${notBefore}),
             updated_at = NOW()
         WHERE id = ${id}
         RETURNING *
