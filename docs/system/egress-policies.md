@@ -194,9 +194,15 @@ neither sync deletes the other's.
 
 - the ingress controller (`app.kubernetes.io/name: traefik` in `traefik` or
   `kube-system`), for the env's hosts;
-- the platform's own services in the platform namespace (`eve-api` fetches
-  app API specs and proxies app calls), but no runner pod there (pods
-  without `eve.horizon/runner`);
+- the API in the platform namespace (`app.kubernetes.io/name: eve-api`),
+  which fetches app API specs, delivers webhooks to private targets and runs
+  `eve db` queries. No other pod there: the worker, orchestrator and gateway
+  reach apps only through the Kubernetes API, and tenant code runs in the
+  platform namespace too (agent runtime inline jobs, the shared buildkitd,
+  kaniko Jobs, legacy pipeline steps in the worker). Only the template's
+  workloads carry that label there; the worker's admission policy refuses a
+  pod or pod template of its own in the platform namespace that sets
+  `app.kubernetes.io/name` or `app`;
 - the project's own env namespaces, this one included;
 - the project's runner pods (`eve.horizon/runner=true` and its
   `eve.horizon/project-id`, in `eve-runners` and the platform namespace);
