@@ -636,6 +636,41 @@ describe('service token renewal', () => {
       expect(cluster.appsApi.patchNamespacedDeployment).toHaveBeenCalledTimes(1);
     });
 
+    it('rolls Recreate services at once when their revoked tokens also expire within 30 days or were signed by a retired key', async () => {
+      mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
+        { ...ENV, service_tokens_not_before: new Date(NOW - 60_000) },
+      ]);
+      cluster.addService('db', { EVE_SERVICE_TOKEN: serviceToken({ days: 25, issuedAgo: 65, service: 'db' }) }, 'rel_2', { strategy: 'Recreate' });
+      cluster.addService('cache', { EVE_SERVICE_TOKEN: serviceToken({ days: 80, issuedAgo: 120, key: retired, service: 'cache' }) }, 'rel_2', { strategy: 'Recreate' });
+
+      const report = await renewal.renewAll();
+
+      expect(report.renewed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ secret: 'prod-db-eve-secrets', reason: 'revoked' }),
+        expect.objectContaining({ secret: 'prod-cache-eve-secrets', reason: 'revoked' }),
+      ]));
+      expect(cluster.appsApi.patchNamespacedDeployment).toHaveBeenCalledTimes(2);
+      expect(cluster.templateHash('prod-db')).toBe(secretsHash(cluster.secretData('prod-db')));
+      expect(cluster.templateHash('prod-cache')).toBe(secretsHash(cluster.secretData('prod-cache')));
+    });
+
+    it('takes a revoked token that also expires within 30 days before one closer to expiry', async () => {
+      process.env.EVE_SERVICE_TOKEN_RENEW_BATCH = '1';
+      mocks.environments.listForServiceTokenRenewal.mockResolvedValue([
+        { ...ENV, service_tokens_not_before: new Date(NOW - 60_000) },
+        STAGING,
+      ]);
+      const revoked = serviceToken({ days: 25, issuedAgo: 65 });
+      const staging = serviceToken({ days: 5, service: 'web', env: 'staging' });
+      cluster.addService('api', { EVE_SERVICE_TOKEN: revoked });
+      cluster.addService('web', { EVE_SERVICE_TOKEN: staging }, 'rel_2', { env: STAGING });
+
+      await renewal.renewAll();
+
+      expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(revoked);
+      expect(cluster.secretValue('staging-web', 'EVE_SERVICE_TOKEN')).toBe(staging);
+    });
+
     it('rolls a deferred Recreate service at once when its pods\' token is revoked later', async () => {
       cluster.addService('db', { EVE_SERVICE_TOKEN: serviceToken({ days: 20, service: 'db' }) }, 'rel_2', { strategy: 'Recreate' });
       await renewal.renewAll();
