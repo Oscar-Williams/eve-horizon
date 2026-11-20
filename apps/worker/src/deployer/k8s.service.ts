@@ -120,6 +120,36 @@ export class K8sService {
     }
   }
 
+  /** Labels and annotations of a namespace, or null when it does not exist. */
+  async getNamespaceMetadata(name: string): Promise<{ labels: Record<string, string>; annotations: Record<string, string> } | null> {
+    this.ensureAvailable();
+    try {
+      const existing = await this.coreApi!.readNamespace(name);
+      return { labels: existing.body.metadata?.labels ?? {}, annotations: existing.body.metadata?.annotations ?? {} };
+    } catch (err) {
+      if (isK8sNotFound(err)) return null;
+      throw wrapK8sError(err, 'read', { kind: 'Namespace', name });
+    }
+  }
+
+  /** Merge labels and annotations into a namespace (a JSON merge patch); a null value removes one. */
+  async patchNamespaceMetadata(
+    name: string,
+    patch: { labels: Record<string, string | null>; annotations: Record<string, string | null> },
+  ): Promise<void> {
+    this.ensureAvailable();
+    try {
+      await this.coreApi!.patchNamespace(
+        name,
+        { metadata: { labels: patch.labels, annotations: patch.annotations } },
+        undefined, undefined, undefined, undefined, undefined,
+        { headers: { 'Content-Type': 'application/merge-patch+json' } },
+      );
+    } catch (err) {
+      throw wrapK8sError(err, 'patch', { kind: 'Namespace', name });
+    }
+  }
+
   /** Namespaces matching a label selector, with their labels. */
   async listNamespaces(labelSelector: string): Promise<Array<{ name: string; labels: Record<string, string> }>> {
     this.ensureAvailable();

@@ -63,7 +63,8 @@ import {
   EGRESS_RULE,
   ALLOW_HOSTS_RULE,
   POD_SECURITY_ADMISSION_RULE,
-  podSecurityAdmissionLabels,
+  podSecurityAdmissionPatch,
+  podSecurityVersion,
   EgressProviderMissingError,
   egressFqdnProvider,
   WORKLOAD_IDENTITY_LABEL,
@@ -91,6 +92,7 @@ import {
   needsImageUser,
   parseImageUser,
   planPodSecurity,
+  podSecurityLevelOf,
   podSecurityNamespaceLabels,
   type PodSecurityLevel,
   type PodSecurityPlan,
@@ -450,10 +452,9 @@ export class DeployerService {
       }, { ownerLabel: 'eve.env_id' });
     }
 
-    await this.applyPodSecurityAdmission(
-      { orgId: project.org_id, projectId: project.id, envName: environment.name, namespace },
-      renderResult.podSecurityLevel ?? 'restricted',
-    );
+    const podSecurityScope = { orgId: project.org_id, projectId: project.id, envName: environment.name, namespace };
+    const podSecurityLevel = renderResult.podSecurityLevel ?? 'restricted';
+    const podSecurityAdmission = await this.applyPodSecurityAdmission(podSecurityScope, podSecurityLevel, 'before');
 
     await this.applyEgressPolicies(
       { id: envId, projectId: project.id, name: environment.name, namespace },
@@ -620,6 +621,12 @@ export class DeployerService {
       const k8sStatus = Object.keys(renderResult.services).length > 0
         ? await this.deploymentReadiness.waitForDeploymentReadiness(namespace, readinessTimeoutMs)
         : await this.k8sService.getDeploymentStatus(namespace);
+
+      // Pod Security enforce only once the release is up: raised earlier, it
+      // would strand old pods that do not meet it on the next node change.
+      if (k8sStatus.ready) {
+        await this.applyPodSecurityAdmission(podSecurityScope, podSecurityLevel, 'after', podSecurityAdmission);
+      }
 
       return {
         envId,
@@ -1761,6 +1768,17 @@ export class DeployerService {
           ingressManifest: yaml.stringify(aliasIngress),
         });
       });
+    }
+
+    // Service jobs (migrations) run later in this namespace: its level must
+    // admit them too, or an enforce at restricted refuses a job that opts out.
+    if (podSecurity === 'strict') {
+      for (const service of Object.values(mergedServices)) {
+        const xeve = this.resolveXeve(service);
+        if (xeve?.role !== 'job' || xeve.external || xeve.connection_url) continue;
+        const declared = ServiceSecuritySchema.safeParse(xeve.security ?? {});
+        if (declared.success && podSecurityLevelOf(declared.data) === 'baseline') podSecurityLevel = 'baseline';
+      }
     }
 
     return {
@@ -2911,22 +2929,29 @@ export class DeployerService {
   }
 
   /**
-   * isolation.pod_security_admission: the namespace's Pod Security labels
-   * (`enforce` at its level under strict, `warn` and `audit` under audit;
-   * an `enforce` a strict profile left is removed otherwise), written only
-   * when they differ, before the workloads. Under strict a failure stops the
-   * deploy; otherwise it is logged.
+   * isolation.pod_security_admission at one point of a deploy (see
+   * podSecurityAdmissionPatch): `before` the workloads, `warn` and `audit`
+   * at the namespace's level (and, under strict, an `enforce` Eve set that
+   * is stricter than the level lowered); `after` a rollout that succeeded,
+   * under strict, `enforce` at the level, pinned to EVE_POD_SECURITY_VERSION
+   * and marked as Eve's. Under audit and legacy an `enforce` Eve set goes
+   * and one it did not set stays. Written only when it differs. `before`
+   * resolves and records the profile and returns it for `after`; under
+   * strict a failure there stops the deploy. A failure `after` is logged:
+   * the release is up, and the next deploy sets enforce.
    */
   private async applyPodSecurityAdmission(
     scope: { orgId: string; projectId: string; envName: string; namespace: string },
     level: 'restricted' | 'baseline',
-  ): Promise<void> {
-    const profile = await governingSecurityProfile(this.db, {
+    phase: 'before' | 'after',
+    resolved?: SecurityProfile,
+  ): Promise<SecurityProfile> {
+    const profile = resolved ?? await governingSecurityProfile(this.db, {
       projectId: scope.projectId,
       governing: 'project',
       rule: POD_SECURITY_ADMISSION_RULE,
     });
-    if (profile !== 'legacy') {
+    if (phase === 'before' && profile !== 'legacy') {
       await decideSecurityRule(this.db, POD_SECURITY_ADMISSION_RULE, {
         orgId: scope.orgId,
         projectId: scope.projectId,
@@ -2937,21 +2962,23 @@ export class DeployerService {
       });
     }
     try {
-      const wanted = podSecurityAdmissionLabels(profile, level);
-      const current = (await this.k8sService.getNamespaceLabels(scope.namespace)) ?? {};
-      const patch = Object.fromEntries(Object.entries(wanted)
-        .filter(([key, value]) => (value === null ? key in current : current[key] !== value)));
-      if (Object.keys(patch).length > 0) await this.k8sService.setNamespaceLabels(scope.namespace, patch);
+      const current = (await this.k8sService.getNamespaceMetadata(scope.namespace)) ?? { labels: {}, annotations: {} };
+      const patch = podSecurityAdmissionPatch({ profile, level, phase, current, version: podSecurityVersion() });
+      if (Object.keys(patch.labels).length > 0 || Object.keys(patch.annotations).length > 0) {
+        await this.k8sService.patchNamespaceMetadata(scope.namespace, patch);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (profile === 'strict') {
+      if (profile === 'strict' && phase === 'before') {
         throw new Error(
-          `The strict profile needs Pod Security enforce on namespace ${scope.namespace}, which could not be set: ${message} ` +
+          `The strict profile needs Pod Security labels on namespace ${scope.namespace}, which could not be set: ${message} ` +
             `(rule ${POD_SECURITY_ADMISSION_RULE})`,
         );
       }
-      this.logger.warn(`Could not set the Pod Security labels of ${scope.namespace} (${profile}): ${message}`);
+      const log = profile === 'strict' ? this.logger.error.bind(this.logger) : this.logger.warn.bind(this.logger);
+      log(`Could not set the Pod Security labels of ${scope.namespace} (${profile}, ${phase} the rollout): ${message}`);
     }
+    return profile;
   }
 
   private buildPodAnnotations(params: {

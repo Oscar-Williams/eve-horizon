@@ -465,14 +465,31 @@ opt-out); `enforce` comes from the rule `isolation.pod_security_admission`
 below. Under `audit` and `legacy` pod specs are unchanged;
 `audit` records each service's image user and what `strict` would add.
 
-Under the rule `isolation.pod_security_admission` (rule set 3) the deploy
-also sets, before any workload is applied, `pod-security.kubernetes.io/enforce`
-at the namespace's level (`restricted`, or `baseline` after an opt-out) with
-`enforce-version: latest`, beside `warn` and `audit`. Under `audit` the
-namespace carries `warn` and `audit` only, and under `audit` and `legacy` an
-`enforce` a strict profile left is removed at the next deploy. Labels are
-written only when they differ. Under `strict` a failure to set them stops the
-deploy. Each `audit` and `strict` deploy is recorded with the env and level.
+Under the rule `isolation.pod_security_admission` (rule set 3) a strict
+deploy sets `warn` and `audit` at the namespace's level before the workloads,
+and `pod-security.kubernetes.io/enforce` at that level only once the
+rollout has succeeded, so pods of the old release that do not meet it are
+never refused when a node is replaced. The level is the least of every
+service's, service jobs included (`restricted`, or `baseline` once a service
+or a job such as a migration opts out with `run_as_root` or a capability).
+`enforce-version` is pinned to `EVE_POD_SECURITY_VERSION` on the worker
+(`v1.<minor>`, default `v1.30`, the oldest minor Eve's admission policies
+support; set it to the cluster's minor), never `latest`, so a cluster
+upgrade does not tighten running namespaces. Eve marks the namespace
+`eve.horizon/pod-security-enforce` when it sets `enforce`.
+
+- A rollout that fails or does not finish leaves `enforce` as it was; the
+  next successful deploy sets it. A failure to set it after the rollout is
+  logged.
+- When a release lowers the level (a new opt-out), an `enforce` Eve set is
+  lowered before the workloads, so the new pods are admitted.
+- Under `audit` the namespace carries `warn` and `audit` only. Under `audit`
+  and `legacy` an `enforce` Eve set (marked) is removed at the next deploy;
+  one Eve did not set stays.
+
+Labels are written only when they differ. Under `strict` a failure to set
+the labels before the workloads stops the deploy. Each `audit` and `strict`
+deploy is recorded with the env and level.
 
 ### Load Balancer Recovery
 
