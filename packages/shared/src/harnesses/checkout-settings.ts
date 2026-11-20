@@ -28,7 +28,9 @@
  * - **Claude Code** (and the cc-mirror wrappers, which pass flags through)
  *   gets a cleaned copy of the project and local settings through
  *   `--settings`, with `--setting-sources user`, so the originals are not
- *   read; Eve's copy of the config directory is cleaned in place.
+ *   read; Eve's copy of the config directory is cleaned in place. It also
+ *   runs with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which no settings file
+ *   may override.
  * - **Codex** is refused when a checkout config (the project's
  *   `.codex/config.toml`, or a config home inside the checkout, the default
  *   `CODEX_HOME`) sets any routing setting, widens what shell commands
@@ -194,14 +196,26 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
   return found;
 }
 
-/** A copy of Claude Code settings without routing env names and the key helper. */
+/**
+ * Claude Code's switch that strips credentials from the environment of the
+ * subprocesses it starts (Bash commands, hooks, stdio MCP servers). Eve sets
+ * it to `1` under `strict`; a settings file may not set it.
+ */
+export const CLAUDE_SUBPROCESS_ENV_SCRUB = 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB';
+
+/** Env names Claude Code settings may not set under `strict`: the routing names and the scrub switch. */
+function isClaudeHeldEnvKey(key: string): boolean {
+  return isCheckoutRoutingEnvKey(key) || key.toUpperCase() === CLAUDE_SUBPROCESS_ENV_SCRUB;
+}
+
+/** A copy of Claude Code settings without routing env names, the scrub switch and the key helper. */
 export function cleanClaudeSettings(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
   const { apiKeyHelper: _helper, ...rest } = value;
   if (!isRecord(rest.env)) return rest;
   return {
     ...rest,
-    env: Object.fromEntries(Object.entries(rest.env).filter(([key]) => !isCheckoutRoutingEnvKey(key))),
+    env: Object.fromEntries(Object.entries(rest.env).filter(([key]) => !isClaudeHeldEnvKey(key))),
   };
 }
 
@@ -323,7 +337,7 @@ function claudeRoutingSettings(value: unknown): string[] {
   if ('apiKeyHelper' in value) settings.push('apiKeyHelper');
   if (isRecord(value.env)) {
     for (const key of Object.keys(value.env)) {
-      if (isCheckoutRoutingEnvKey(key)) settings.push(`env.${key}`);
+      if (isClaudeHeldEnvKey(key)) settings.push(`env.${key}`);
     }
   }
   return settings.sort();
