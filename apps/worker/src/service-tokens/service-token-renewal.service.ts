@@ -9,6 +9,7 @@ import {
   serviceTokenFloor,
   toK8sLabelValue,
 } from '@eve/shared';
+import { K8sOperationError } from '../deployer/k8s-error';
 import { K8sService } from '../deployer/k8s.service';
 import {
   SECRETS_HASH_ANNOTATION,
@@ -26,8 +27,14 @@ const TOKEN_TTL_SECONDS = 90 * DAY_SECONDS;
 const DEFAULT_RENEW_DAYS = 30;
 /** A longer window would renew a fresh 90-day token again within the month. */
 const MAX_RENEW_DAYS = 60;
-/** The hourly pass renews and rolls at most this many Deployments (EVE_SERVICE_TOKEN_RENEW_BATCH). */
+/** The hourly pass renews or rolls at most this many Secrets (EVE_SERVICE_TOKEN_RENEW_BATCH); failures do not count. */
 const DEFAULT_RENEW_BATCH = 3;
+/** A Secret that failed is tried again an hour later, then after 2, 4, ... hours, at most a day. */
+const RETRY_FIRST_SECONDS = 60 * 60;
+const RETRY_MAX_SECONDS = DAY_SECONDS;
+/** Passes run an hour apart, give or take: a retry due this close to a pass is made on it. */
+const PASS_SLACK_SECONDS = 5 * 60;
+const MAX_FAILURE_REASON_LENGTH = 200;
 /**
  * A Recreate Deployment (a database, a ReadWriteOnce volume, stable egress)
  * stops serving while it rolls, so its pods roll onto renewed tokens only once
@@ -44,6 +51,14 @@ const APP_LINK_TOKEN_KEY = /^EVE_APP_LINK_[A-Z0-9_]+_TOKEN$/;
  * Secret (its hash differs from the pod template's).
  */
 export const TOKENS_ROLL_BY_ANNOTATION = 'eve.tokens-roll-by';
+/**
+ * Secret annotation: the failures in a row to renew the Secret's tokens or
+ * roll its Deployment onto them, as JSON `{ at, failures, reason }` (a short
+ * reason, no secret values). The hourly pass leaves the Secret until its
+ * retry falls due. A success removes it, and so does a deploy (it replaces
+ * the Secret).
+ */
+export const TOKENS_RENEW_FAILED_ANNOTATION = 'eve.tokens-renew-failed';
 /** Event recorded for a renewal roll that has not finished by the next pass past the deploy timeout. */
 export const ROLLOUT_STUCK_EVENT = 'system.service_token.rollout_stuck';
 
@@ -63,7 +78,7 @@ export interface RenewedToken {
  * What a pass did with the tokens it took on: renewed (written, and rolled or
  * held back); conflicted (their Secret was written in between, by a deploy:
  * the next pass looks again); failed (not renewed, or renewed but not rolled
- * onto: the next pass tries again).
+ * onto: a later pass tries again, see TOKENS_RENEW_FAILED_ANNOTATION).
  */
 export interface RenewalReport {
   renewed: RenewedToken[];
@@ -212,6 +227,23 @@ interface SecretWork {
   urgency: number;
 }
 
+/**
+ * What the work on one Secret came to: its report; why it failed, if it did
+ * (short, no secret values); and the Secret's resourceVersion after it.
+ */
+interface SecretOutcome extends RenewalReport {
+  failure: string | null;
+  version: string;
+}
+
+/** The failures in a row recorded on a Secret. */
+interface RenewalFailure {
+  /** The last one, in seconds. */
+  at: number;
+  failures: number;
+  reason: string;
+}
+
 /** A roll renewal started, checked on a later pass. */
 interface StartedRoll {
   env: ServiceTokenRenewalTarget;
@@ -224,6 +256,10 @@ const isRefusal = (value: string | MintRefusal | null): value is MintRefusal =>
   typeof value === 'object' && value !== null;
 
 const byUrgency = (a: SecretWork, b: SecretWork) => (a.urgency === b.urgency ? 0 : a.urgency < b.urgency ? -1 : 1);
+
+/** A Secret renewed or a Deployment rolled: what the hourly batch counts. */
+const succeeded = (outcome: SecretOutcome) =>
+  outcome.renewed.length > 0 || (outcome.failure === null && outcome.conflicted.length === 0);
 
 /** The API refuses the token: it was issued before its environment's floor. */
 function isRevoked(token: DecodedToken, policy: RenewalPolicy): boolean {
@@ -260,14 +296,18 @@ const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
  * (a manifest that sets EVE_SERVICE_TOKEN, as the portal blanks it) is never
  * touched.
  *
- * Rolls are unattended, so the hourly pass acts on at most
- * EVE_SERVICE_TOKEN_RENEW_BATCH Deployments (default 3), the soonest to
- * expire first; the rest wait for the next pass. A Recreate Deployment is
- * down while it rolls: its Secret is renewed, but it rolls only once the
- * token its pods hold is revoked or within 7 days of expiry (or when it
- * restarts by itself). The next pass checks each roll it started and warns,
- * with a `system.service_token.rollout_stuck` event, about one not done past
- * the deploy timeout. A rotation renews its whole environment at once.
+ * Rolls are unattended, so the hourly pass renews or rolls at most
+ * EVE_SERVICE_TOKEN_RENEW_BATCH Secrets (default 3), revoked tokens first,
+ * then the soonest to expire; the rest wait for the next pass. A Secret that
+ * fails does not count: its failure is recorded on it and logged, and it is
+ * tried again an hour later, then 2, 4, ... hours later, at most a day. A
+ * Recreate Deployment is down while it rolls: its Secret is renewed, but it
+ * rolls at once only when the token its pods hold is revoked, otherwise
+ * within 7 days of that token's expiry (a pod that restarts by itself picks
+ * up the new token sooner). The next pass checks each roll it started and
+ * warns, with a `system.service_token.rollout_stuck` event, about one not
+ * done past the deploy timeout. A rotation renews its whole environment at
+ * once, whatever failed before.
  */
 @Injectable()
 export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy {
@@ -317,8 +357,8 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
 
   /**
    * The hourly pass over every deployed environment: at most
-   * EVE_SERVICE_TOKEN_RENEW_BATCH Deployments, the soonest to expire first.
-   * Renews nothing with EVE_SERVICE_TOKEN_RENEW_DAYS=0.
+   * EVE_SERVICE_TOKEN_RENEW_BATCH Secrets renewed or rolled, the most pressing
+   * first. Renews nothing with EVE_SERVICE_TOKEN_RENEW_DAYS=0.
    */
   async renewAll(): Promise<RenewalReport> {
     const days = this.renewDays();
@@ -365,7 +405,8 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
 
   /**
    * `hourly`: every deployed environment, at most EVE_SERVICE_TOKEN_RENEW_BATCH
-   * Secrets, and an environment that cannot be read waits for the next pass.
+   * Secrets renewed or rolled, a Secret that failed lately left alone, and an
+   * environment that cannot be read waits for the next pass.
    * `rotation`: one environment a person asked for, all of it, or an error.
    */
   private async renew(envs: ServiceTokenRenewalTarget[], days: number, mode: 'hourly' | 'rotation'): Promise<RenewalReport> {
@@ -394,29 +435,90 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     }
 
     work.sort(byUrgency);
-    const batch = mode === 'hourly' ? this.renewBatch() : work.length;
-    const chosen = work.slice(0, batch);
-    if (work.length > chosen.length) {
+    const ready = mode === 'hourly' ? work.filter((item) => !this.backingOff(item)) : work;
+    const batch = mode === 'hourly' ? this.renewBatch() : Infinity;
+    const report = emptyReport();
+    // Only a Secret renewed or rolled counts against the batch: one that
+    // fails every pass must not take it from the others.
+    let done = 0;
+    let tried = 0;
+    for (const item of ready) {
+      if (done >= batch) break;
+      tried += 1;
+      const outcome = await this.attempt(item);
+      report.renewed.push(...outcome.renewed);
+      report.conflicted.push(...outcome.conflicted);
+      report.failed.push(...outcome.failed);
+      if (succeeded(outcome)) done += 1;
+    }
+    if (ready.length > tried) {
       this.logger.log(
-        `${work.length - chosen.length} more service Secret(s) wait for the next pass (at most ${batch} a pass, EVE_SERVICE_TOKEN_RENEW_BATCH)`,
+        `${ready.length - tried} more service Secret(s) wait for the next pass `
+        + `(at most ${batch} renewed or rolled a pass, EVE_SERVICE_TOKEN_RENEW_BATCH)`,
       );
     }
-    const report = emptyReport();
-    for (const item of chosen) {
-      try {
-        const done = await this.act(item);
-        report.renewed.push(...done.renewed);
-        report.conflicted.push(...done.conflicted);
-        report.failed.push(...done.failed);
-      } catch (err) {
-        this.logger.warn(`Service-token renewal failed for ${item.env.namespace}/${item.secretName}: ${errorText(err)}`);
-        report.failed.push(...item.due.map(({ key, reason }) => ({
-          ...tokenAt(item, key, reason),
-          error: errorText(err),
-        })));
-      }
-    }
     return report;
+  }
+
+  /** A Secret that failed lately: the hourly pass leaves it until its retry falls due. */
+  private backingOff(item: SecretWork): boolean {
+    const failure = recordedFailure(item.secret);
+    if (!failure) return false;
+    const retry = retryFrom(failure);
+    if (item.policy.now >= retry - PASS_SLACK_SECONDS) return false;
+    if (!this.reported) {
+      this.logger.log(
+        `${item.env.namespace}/${item.secretName} failed ${failure.failures} time(s) in a row (${failure.reason}); tried again from ${iso(retry)}`,
+      );
+    }
+    return true;
+  }
+
+  /** Work on one Secret, then record on it a failure (the hourly pass backs off) or a success after failures. */
+  private async attempt(item: SecretWork): Promise<SecretOutcome> {
+    let outcome: SecretOutcome;
+    try {
+      outcome = await this.act(item);
+    } catch (err) {
+      this.logger.warn(`Service-token renewal failed for ${item.env.namespace}/${item.secretName}: ${errorText(err)}`);
+      outcome = {
+        ...emptyReport(),
+        failed: item.due.map(({ key, reason }) => ({ ...tokenAt(item, key, reason), error: errorText(err) })),
+        failure: `renewal failed${k8sStatus(err)}`,
+        version: item.secret.resourceVersion,
+      };
+    }
+    await this.recordOutcome(item, outcome);
+    return outcome;
+  }
+
+  private async recordOutcome(item: SecretWork, outcome: SecretOutcome): Promise<void> {
+    const { env, secretName, secret, policy } = item;
+    const where = `${env.namespace}/${secretName}`;
+    let record: string | null;
+    if (outcome.failure !== null) {
+      const failure: RenewalFailure = {
+        at: policy.now,
+        failures: (recordedFailure(secret)?.failures ?? 0) + 1,
+        reason: outcome.failure.slice(0, MAX_FAILURE_REASON_LENGTH),
+      };
+      this.logger.warn(
+        `Service-token renewal of ${where} failed (${failure.reason}; ${failure.failures} time(s) in a row); `
+        + `the hourly pass tries it again from ${iso(retryFrom(failure))}`,
+      );
+      record = JSON.stringify({ at: iso(failure.at), failures: failure.failures, reason: failure.reason });
+    } else if (secret.annotations[TOKENS_RENEW_FAILED_ANNOTATION] !== undefined && outcome.conflicted.length === 0) {
+      this.logger.log(`Service-token renewal of ${where} succeeded after failing before`);
+      record = null;
+    } else {
+      return;
+    }
+    try {
+      // On the version this pass left: a deploy in between replaced the Secret, and the record with it.
+      await this.k8s.patchSecretData(env.namespace, secretName, {}, outcome.version, { [TOKENS_RENEW_FAILED_ANNOTATION]: record });
+    } catch (err) {
+      this.logger.warn(`Could not record the renewal outcome on ${where}: ${errorText(err)}`);
+    }
   }
 
   /** The Secrets of one environment that need work now, read but not yet touched. */
@@ -482,7 +584,7 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
   }
 
   /** Renew a Secret's due tokens, then roll its Deployment onto them, or hold a Recreate one back. */
-  private async act(work: SecretWork): Promise<RenewalReport> {
+  private async act(work: SecretWork): Promise<SecretOutcome> {
     const { env, secretName, secret, deployment, rollout, policy } = work;
     const fresh: Record<string, string> = {};
     const renewed: RenewedToken[] = [];
@@ -492,7 +594,7 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     for (const { key, held, reason } of work.due) {
       const token = await this.mint(env, held, `${env.namespace}/${secretName} ${key}`);
       if (!token) {
-        this.logger.warn(`Could not renew ${key} of ${env.namespace}/${secretName} (${reason}); the next run tries again`);
+        this.logger.warn(`Could not renew ${key} of ${env.namespace}/${secretName} (${reason})`);
         failed.push({ ...tokenAt(work, key, reason), error: 'the API minted no token' });
         continue;
       }
@@ -509,6 +611,9 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
     const rollBy = work.podsBehind ? heldBack : replacedExpiry - RECREATE_ROLL_WITHIN_SECONDS;
     const holdBack = recreate && !pressing && rollBy !== null && rollBy > policy.now;
 
+    // Tokens the API would not mint: the Secret failed, whatever else went through.
+    const mintFailure = failed.length > 0 ? `the API minted no token for ${failed.map((item) => item.key).join(', ')}` : null;
+    let version = secret.resourceVersion;
     let rolledHash = secret.annotations[SECRETS_HASH_ANNOTATION];
     if (renewed.length > 0) {
       rolledHash = secretsHash({ ...secret.data, ...fresh });
@@ -518,16 +623,18 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
       if (holdBack) annotations[TOKENS_ROLL_BY_ANNOTATION] = iso(rollBy!);
       else if (secret.annotations[TOKENS_ROLL_BY_ANNOTATION] !== undefined) annotations[TOKENS_ROLL_BY_ANNOTATION] = null;
       const written = await this.k8s.patchSecretData(env.namespace, secretName, fresh, secret.resourceVersion, annotations);
-      if (!written) {
+      if (written === null) {
         this.logger.log(`Secret ${env.namespace}/${secretName} changed since it was read; its tokens are renewed next run`);
-        return { renewed: [], conflicted: renewed, failed };
+        return { renewed: [], conflicted: renewed, failed, failure: null, version };
       }
+      version = written;
       for (const item of renewed) {
         this.logger.log(`Renewed ${item.key} of ${env.namespace}/${secretName} (${item.reason})`);
       }
     }
 
-    if (!deployment || !rollout || !rolledHash) return { renewed, conflicted: [], failed };
+    const outcome: SecretOutcome = { renewed, conflicted: [], failed, failure: mintFailure, version };
+    if (!deployment || !rollout || !rolledHash) return outcome;
     if (holdBack) {
       if (renewed.length > 0) {
         this.logger.log(
@@ -536,17 +643,23 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
           + 'or at once if that token is revoked',
         );
       }
-      return { renewed, conflicted: [], failed };
+      return outcome;
     }
     try {
       await this.rollOnto(env, deployment, rollout, rolledHash);
     } catch (err) {
-      // The Secret holds the new tokens, the pods the old ones: the next pass rolls it.
-      this.logger.warn(`${env.namespace}/${deployment} did not roll onto its renewed tokens: ${errorText(err)}; the next run tries again`);
+      // The Secret holds the new tokens, the pods the old ones: a later pass rolls it.
+      this.logger.warn(`${env.namespace}/${deployment} did not roll onto its renewed tokens: ${errorText(err)}`);
       const error = `renewed in the Secret, but ${deployment} did not roll onto it: ${errorText(err)}`;
-      return { renewed: [], conflicted: [], failed: [...failed, ...renewed.map((item) => ({ ...item, error }))] };
+      return {
+        renewed: [],
+        conflicted: [],
+        failed: [...failed, ...renewed.map((item) => ({ ...item, error }))],
+        failure: `${deployment} did not roll${k8sStatus(err)}`,
+        version,
+      };
     }
-    return { renewed, conflicted: [], failed };
+    return outcome;
   }
 
   private async mint(env: ServiceTokenRenewalTarget, held: HeldToken, what: string): Promise<string | null> {
@@ -661,6 +774,33 @@ export class ServiceTokenRenewalService implements OnModuleInit, OnModuleDestroy
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** ` (403 Forbidden)` for a Kubernetes refusal: its status, never its message (which can quote what was sent). */
+function k8sStatus(err: unknown): string {
+  if (!(err instanceof K8sOperationError)) return '';
+  const status = [err.statusCode, err.reason].filter(Boolean).join(' ');
+  return status ? ` (${status})` : '';
+}
+
+/** The failures in a row recorded on a Secret; null when none (or the record cannot be read). */
+function recordedFailure(secret: ServiceSecret): RenewalFailure | null {
+  const raw = secret.annotations[TOKENS_RENEW_FAILED_ANNOTATION];
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as { at?: unknown; failures?: unknown; reason?: unknown } | null;
+    const at = typeof value?.at === 'string' ? new Date(value.at).getTime() : NaN;
+    const failures = value?.failures;
+    if (!Number.isFinite(at) || typeof failures !== 'number' || !Number.isInteger(failures) || failures < 1) return null;
+    return { at: Math.floor(at / 1000), failures, reason: typeof value?.reason === 'string' ? value.reason : '' };
+  } catch {
+    return null;
+  }
+}
+
+/** Seconds: when the hourly pass tries a failed Secret again: an hour after the first failure, doubling to a day. */
+function retryFrom(failure: RenewalFailure): number {
+  return failure.at + Math.min(RETRY_FIRST_SECONDS * 2 ** (failure.failures - 1), RETRY_MAX_SECONDS);
+}
 
 function tokenAt(work: Pick<SecretWork, 'env' | 'secretName'>, key: string, reason: RenewalReason): RenewedToken {
   return { env_id: work.env.id, namespace: work.env.namespace, secret: work.secretName, key, reason };

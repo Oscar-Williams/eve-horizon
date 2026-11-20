@@ -877,8 +877,8 @@ export class K8sService {
   /**
    * Set the given keys (and annotations; null removes one) of a Secret,
    * leaving the others, only while it is still at `resourceVersion` (a merge
-   * patch carrying it). False when it was written since it was read, or is
-   * gone.
+   * patch carrying it). The Secret's resourceVersion after the write; null
+   * when it was written since it was read, or is gone.
    */
   async patchSecretData(
     namespace: string,
@@ -886,10 +886,10 @@ export class K8sService {
     data: Record<string, string>,
     resourceVersion: string,
     annotations?: Record<string, string | null>,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     this.ensureAvailable();
     try {
-      await this.coreApi!.patchNamespacedSecret(
+      const response = await this.coreApi!.patchNamespacedSecret(
         name,
         namespace,
         {
@@ -901,9 +901,9 @@ export class K8sService {
         undefined, undefined, undefined, undefined, undefined,
         { headers: { 'Content-Type': 'application/merge-patch+json' } },
       );
-      return true;
+      return response.body.metadata?.resourceVersion ?? resourceVersion;
     } catch (err) {
-      if (isK8sConflict(err) || isK8sNotFound(err)) return false;
+      if (isK8sConflict(err) || isK8sNotFound(err)) return null;
       throw wrapK8sError(err, 'patch', { kind: 'Secret', name, namespace });
     }
   }
