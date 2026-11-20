@@ -56,17 +56,24 @@ const TOKENS: Record<string, Record<string, unknown>> = {
 const issuer = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwks = { keys: [{ ...issuer.publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256' }] };
 
-function idToken(account: string): string {
+function idToken(account: string, extra: Record<string, unknown> = {}): string {
   const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
-  const body = `${enc({ alg: 'RS256', kid: 'k1' })}.${enc({ iss: 'https://auth.openai.com', 'https://api.openai.com/auth': { chatgpt_account_id: account } })}`;
+  const body = `${enc({ alg: 'RS256', kid: 'k1' })}.${enc({ iss: 'https://auth.openai.com', 'https://api.openai.com/auth': { chatgpt_account_id: account }, ...extra })}`;
   const signer = createSign('RSA-SHA256');
   signer.update(body);
   return `${body}.${signer.sign(issuer.privateKey).toString('base64url')}`;
 }
 
-function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string } = {}): string {
-  return Buffer.from(JSON.stringify({ tokens: { access_token: `at-${opts.refresh ?? '1'}`, refresh_token: 'rt',
-    account_id: opts.plainAccount ?? account, id_token: idToken(account) } })).toString('base64');
+/** An issuer-signed access token, as Codex holds it after a refresh. */
+const accessToken = (account: string, refresh = '1') =>
+  idToken(account, { exp: Math.floor(Date.now() / 1000) + 3600, jti: `at-${refresh}` });
+
+function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string; accessAccount?: string; apiKey?: string | null } = {}): string {
+  return Buffer.from(JSON.stringify({
+    ...(opts.apiKey !== undefined ? { OPENAI_API_KEY: opts.apiKey } : {}),
+    tokens: { access_token: accessToken(opts.accessAccount ?? account, opts.refresh), refresh_token: 'rt',
+      account_id: opts.plainAccount ?? account, id_token: idToken(account) },
+  })).toString('base64');
 }
 
 let profiles: Record<string, SecurityProfile>;
@@ -188,6 +195,27 @@ describe('runner routes: the Codex credential write-back', () => {
       .rejects.toBeInstanceOf(ConflictException);
     expect(secrets.updateIfExists).not.toHaveBeenCalled();
     expect(secrets.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses an auth.json whose access token or plain account_id names another account, beside the stored account's id_token", async () => {
+    const { controller: c } = controller();
+    for (const forged of [
+      codexAuth('acct_acme', { accessAccount: 'acct_other', refresh: '2' }),
+      codexAuth('acct_acme', { plainAccount: 'acct_other', refresh: '2' }),
+    ]) {
+      await expect(c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: forged }))
+        .rejects.toBeInstanceOf(ConflictException);
+    }
+    expect(secrets.updateIfExists).not.toHaveBeenCalled();
+    expect(secrets.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses an auth.json that changes the API key the stored one carries', async () => {
+    const { controller: c } = controller();
+    const swapped = codexAuth('acct_acme', { refresh: '2', apiKey: 'sk-other' });
+    await expect(c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: swapped }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(secrets.updateIfExists).not.toHaveBeenCalled();
   });
 
   it('refuses any other key', async () => {
