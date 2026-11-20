@@ -64,6 +64,7 @@ import {
   ALLOW_HOSTS_RULE,
   POD_SECURITY_ADMISSION_RULE,
   podSecurityAdmissionPatch,
+  podSecurityEnforceLowering,
   podSecurityVersion,
   EgressProviderMissingError,
   egressFqdnProvider,
@@ -1029,6 +1030,12 @@ export class DeployerService {
 
     // A service job can run before the env's first deploy: its egress policies first.
     await this.applyEgressPolicies({ id: environment.id, projectId: project.id, name: environment.name, namespace }, parsed);
+    // And before the deploy that would lower the namespace's enforce (a
+    // migrate-then-deploy pipeline): an enforce Eve set that would refuse it.
+    await this.lowerPodSecurityEnforceForJob(
+      { projectId: project.id, namespace, serviceName: params.serviceName },
+      podSecurity === 'strict' && podSecurityPlan ? podSecurityPlan.level : 'restricted',
+    );
 
     // The run's own Secret, removed when the run ends.
     const hasJobSecret = Object.keys(sealed.data).length > 0;
@@ -2975,6 +2982,40 @@ export class DeployerService {
       log(`Could not set the Pod Security labels of ${scope.namespace} (${profile}, ${phase} the rollout): ${message}`);
     }
     return profile;
+  }
+
+  /**
+   * isolation.pod_security_admission before a service job: a job (a
+   * migration) can run before the deploy that would lower the namespace's
+   * `enforce`, so an `enforce` Eve set that is stricter than the job's level
+   * is lowered to it now, as a deploy does when the level drops. Never
+   * raised, one Eve did not set stays, and nothing is read under legacy; the
+   * next successful deploy sets `enforce` at the namespace's level, which
+   * counts service jobs. A failure is logged: the job's pod is then refused
+   * with Pod Security's own message.
+   */
+  private async lowerPodSecurityEnforceForJob(
+    scope: { projectId: string; namespace: string; serviceName: string },
+    level: 'restricted' | 'baseline',
+  ): Promise<void> {
+    const profile = await governingSecurityProfile(this.db, {
+      projectId: scope.projectId,
+      governing: 'project',
+      rule: POD_SECURITY_ADMISSION_RULE,
+    });
+    if (profile === 'legacy') return;
+    try {
+      const current = await this.k8sService.getNamespaceMetadata(scope.namespace);
+      const patch = current ? podSecurityEnforceLowering(current, level) : null;
+      if (!patch || Object.keys(patch.labels).length === 0) return;
+      await this.k8sService.patchNamespaceMetadata(scope.namespace, patch);
+      this.logger.log(`Lowered Pod Security enforce on ${scope.namespace} to ${level} for job ${scope.serviceName}`);
+    } catch (error) {
+      this.logger.warn(
+        `Could not lower Pod Security enforce on ${scope.namespace} to ${level} for job ${scope.serviceName}: ` +
+          `${error instanceof Error ? error.message : String(error)} (rule ${POD_SECURITY_ADMISSION_RULE})`,
+      );
+    }
   }
 
   private buildPodAnnotations(params: {

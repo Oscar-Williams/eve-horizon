@@ -192,6 +192,20 @@ export interface NamespaceMetadataPatch {
 const RANK: Record<string, number> = { privileged: 0, baseline: 1, restricted: 2 };
 
 /**
+ * An `enforce` Eve set (marked by POD_SECURITY_ENFORCE_ANNOTATION) that is
+ * stricter than `level`, lowered to it, as a patch; empty when the namespace
+ * has none, it is not stricter, or Eve did not set it. Never raises or adds
+ * `enforce`. Used before a deploy's workloads and before a service job.
+ */
+export function podSecurityEnforceLowering(current: NamespaceMetadata, level: PodSecurityAdmissionLevel): NamespaceMetadataPatch {
+  const enforced = current.labels[`${PSA}/enforce`];
+  if (!(POD_SECURITY_ENFORCE_ANNOTATION in current.annotations) || enforced === undefined || (RANK[enforced] ?? 0) <= RANK[level]) {
+    return { labels: {}, annotations: {} };
+  }
+  return { labels: { [`${PSA}/enforce`]: level }, annotations: { [POD_SECURITY_ENFORCE_ANNOTATION]: level } };
+}
+
+/**
  * isolation.pod_security_admission: what an env namespace's Pod Security
  * labels need at one point of a deploy, as a patch holding only what differs
  * from `current`. `level` is the namespace's level from the render: the
@@ -234,11 +248,9 @@ export function podSecurityAdmissionPatch(input: {
     }
   } else if (profile === 'strict') {
     Object.assign(labels, { [`${PSA}/warn`]: level, [`${PSA}/audit`]: level });
-    const enforced = current.labels[`${PSA}/enforce`];
-    if (evesEnforce && enforced !== undefined && (RANK[enforced] ?? 0) > RANK[level]) {
-      labels[`${PSA}/enforce`] = level;
-      annotations[POD_SECURITY_ENFORCE_ANNOTATION] = level;
-    }
+    const lowering = podSecurityEnforceLowering(current, level);
+    Object.assign(labels, lowering.labels);
+    Object.assign(annotations, lowering.annotations);
   } else {
     if (profile === 'audit') Object.assign(labels, { [`${PSA}/warn`]: level, [`${PSA}/audit`]: level });
     if (evesEnforce) {

@@ -535,6 +535,11 @@ upgrade does not tighten running namespaces. Eve marks the namespace
   logged.
 - When a release lowers the level (a new opt-out), an `enforce` Eve set is
   lowered before the workloads, so the new pods are admitted.
+- A service job (a migration) can run before that deploy: before it starts,
+  an `enforce` Eve set that is stricter than the job's level is lowered to
+  it, so a migrate-then-deploy pipeline whose job opts out is not refused.
+  It is never raised there; the next successful deploy sets `enforce` at
+  the namespace's level, which counts service jobs.
 - Under `audit` the namespace carries `warn` and `audit` only. Under `audit`
   and `legacy` an `enforce` Eve set (marked) is removed at the next deploy;
   one Eve did not set stays.
