@@ -61,7 +61,14 @@ describe('profile stamps', () => {
       expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 2 }, rule)).toBe('audit');
       expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 3 }, rule)).toBe('strict');
     }
-    expect(SECURITY_CURRENT_RULESET).toBe(3);
+  });
+
+  it('places the P4 rule in rule set 4, which a rule-set-3 strict runs under audit', () => {
+    const rule = 'manifest.approval_unenforced';
+    expect(securityRuleSet(rule)).toBe(4);
+    expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 3 }, rule)).toBe('audit');
+    expect(resolveSecurityProfile({ project: 'strict', projectRuleset: 4 }, rule)).toBe('strict');
+    expect(SECURITY_CURRENT_RULESET).toBe(4);
   });
 
   it('counts a rule it does not know, or no rule, as rule set 1', () => {
