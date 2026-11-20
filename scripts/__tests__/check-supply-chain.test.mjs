@@ -186,3 +186,11 @@ describe('repository scan', () => {
     assert.equal(offences.length, 0, `supply-chain offences:\n${offences.map(formatOffence).join('\n')}`);
   });
 });
+
+describe('the harness CLI lock', () => {
+  it('is committed, so npm ci in the image builds installs exactly what was reviewed', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const tracked = execFileSync('git', ['ls-files', 'docker/harness-clis/package-lock.json'], { encoding: 'utf8', cwd: ROOT }).trim();
+    assert.equal(tracked, 'docker/harness-clis/package-lock.json');
+  });
+});
