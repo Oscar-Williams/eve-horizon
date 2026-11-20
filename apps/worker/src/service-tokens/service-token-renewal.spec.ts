@@ -66,6 +66,7 @@ const ENV = {
   namespace: NS,
   release_id: 'rel_2',
   current_release_id: 'rel_2' as string | null,
+  created_at: new Date(Date.UTC(2026, 0, 1)),
   service_tokens_not_before: null as Date | null,
 };
 const STAGING_NS = 'eve-acme-shop-staging';
@@ -367,6 +368,17 @@ describe('service token renewal', () => {
 
     expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(old);
     expect(cluster.value('web', 'EVE_SERVICE_TOKEN')).toBe(fresh);
+  });
+
+  it('renews one issued before its environment was created, which the API refuses', async () => {
+    mocks.environments.listForServiceTokenRenewal.mockResolvedValue([{ ...ENV, created_at: new Date(NOW - 60_000) }]);
+    const old = serviceToken({ days: 80, issuedAgo: 120 });
+    cluster.addService('api', { EVE_SERVICE_TOKEN: old });
+
+    const report = await renewal.renewAll();
+
+    expect(cluster.value('api', 'EVE_SERVICE_TOKEN')).not.toBe(old);
+    expect(report.renewed).toEqual([expect.objectContaining({ key: 'EVE_SERVICE_TOKEN', reason: 'revoked' })]);
   });
 
   it('skips a service whose environment sets EVE_SERVICE_TOKEN', async () => {

@@ -84,6 +84,8 @@ describe('environment service tokens', () => {
       }),
     ]);
     expect(listed[0].service_tokens_not_before).toBeInstanceOf(Date);
+    // A token issued before the environment row was created is refused too.
+    expect(listed[0].created_at).toBeInstanceOf(Date);
 
     expect(await environments.listForServiceTokenRenewal(env)).toHaveLength(1);
     expect(await environments.listForServiceTokenRenewal(`env_stage${suffix}`)).toEqual([]);
