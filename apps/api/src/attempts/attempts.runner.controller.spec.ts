@@ -16,6 +16,7 @@ const m = vi.hoisted(() => ({
   threads: {} as Record<string, { project_id: string | null }>,
   logs: [] as Array<{ attemptId: string; type: string; content: unknown }>,
   meta: [] as Array<{ attemptId: string; meta: Record<string, unknown> }>,
+  metaOnce: new Set<string>(),
   events: [] as Array<Record<string, unknown>>,
   messages: [] as Array<Record<string, unknown>>,
   results: new Map<string, unknown>(),
@@ -29,6 +30,12 @@ vi.mock('@eve/db', async (importOriginal) => {
       getTokenLiveness: vi.fn(async (id: string) => m.liveness[id] ?? null),
       findById: vi.fn(async (id: string) => m.jobs[id] ?? null),
       updateRuntimeMeta: vi.fn(async (attemptId: string, meta: Record<string, unknown>) => { m.meta.push({ attemptId, meta }); return {}; }),
+      setRuntimeMetaOnce: vi.fn(async (attemptId: string, field: string, value: unknown) => {
+        if (m.metaOnce.has(`${attemptId}:${field}`)) return false;
+        m.metaOnce.add(`${attemptId}:${field}`);
+        m.meta.push({ attemptId, meta: { [field]: value } });
+        return true;
+      }),
     })),
     executionLogQueries: vi.fn(() => ({
       appendLog: vi.fn(async (attemptId: string, type: string, content: unknown) => { m.logs.push({ attemptId, type, content }); }),
@@ -56,17 +63,24 @@ const TOKENS: Record<string, Record<string, unknown>> = {
 const issuer = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwks = { keys: [{ ...issuer.publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256' }] };
 
-function idToken(account: string): string {
+function idToken(account: string, extra: Record<string, unknown> = {}): string {
   const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
-  const body = `${enc({ alg: 'RS256', kid: 'k1' })}.${enc({ iss: 'https://auth.openai.com', 'https://api.openai.com/auth': { chatgpt_account_id: account } })}`;
+  const body = `${enc({ alg: 'RS256', kid: 'k1' })}.${enc({ iss: 'https://auth.openai.com', 'https://api.openai.com/auth': { chatgpt_account_id: account }, ...extra })}`;
   const signer = createSign('RSA-SHA256');
   signer.update(body);
   return `${body}.${signer.sign(issuer.privateKey).toString('base64url')}`;
 }
 
-function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string } = {}): string {
-  return Buffer.from(JSON.stringify({ tokens: { access_token: `at-${opts.refresh ?? '1'}`, refresh_token: 'rt',
-    account_id: opts.plainAccount ?? account, id_token: idToken(account) } })).toString('base64');
+/** An issuer-signed access token, as Codex holds it after a refresh. */
+const accessToken = (account: string, refresh = '1') =>
+  idToken(account, { exp: Math.floor(Date.now() / 1000) + 3600, jti: `at-${refresh}` });
+
+function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string; accessAccount?: string; apiKey?: string | null } = {}): string {
+  return Buffer.from(JSON.stringify({
+    ...(opts.apiKey !== undefined ? { OPENAI_API_KEY: opts.apiKey } : {}),
+    tokens: { access_token: accessToken(opts.accessAccount ?? account, opts.refresh), refresh_token: 'rt',
+      account_id: opts.plainAccount ?? account, id_token: idToken(account) },
+  })).toString('base64');
 }
 
 let profiles: Record<string, SecurityProfile>;
@@ -98,12 +112,12 @@ beforeEach(() => {
     'shop-2': { phase: 'active', running_attempt_id: 'att-b' },
   };
   m.jobs = {
-    'shop-1': { id: 'shop-1', project_id: 'proj_shop', parent_id: 'lead-1', hints: { thread_id: 'thr_chat' } },
+    'shop-1': { id: 'shop-1', project_id: 'proj_shop', parent_id: 'lead-1', assignee: 'reviewer', hints: { thread_id: 'thr_chat' } },
     'lead-1': { id: 'lead-1', project_id: 'proj_shop', hints: { coordination: { thread_id: 'thr_coord' } } },
     'shop-2': { id: 'shop-2', project_id: 'proj_shop', hints: {} },
   };
   m.threads = { thr_chat: { project_id: 'proj_shop' }, thr_coord: { project_id: 'proj_shop' }, thr_other: { project_id: 'proj_other' } };
-  m.logs = []; m.meta = []; m.events = []; m.messages = []; m.results = new Map();
+  m.logs = []; m.meta = []; m.metaOnce = new Set(); m.events = []; m.messages = []; m.results = new Map();
   profiles = {};
   stored = { key: 'CODEX_AUTH_JSON_B64', value: codexAuth('acct_acme'), type: 'env_var', scope_type: 'org', scope_id: 'org_acme' };
   secrets.resolveForJob.mockClear(); secrets.updateIfExists.mockClear(); secrets.create.mockClear(); secrets.mayJobWriteSecret.mockClear();
@@ -171,6 +185,23 @@ describe('runner routes: pushed state', () => {
     ]);
   });
 
+  it('records the self-check once per attempt; job code cannot overwrite it', async () => {
+    const { controller: c } = controller();
+    await c.updateRuntimeMeta('shop-1', 'att-a', 'Bearer token-a', { meta: { self_check: { mode: 'audit', metadata_server: 'open' } } });
+    await expect(c.updateRuntimeMeta('shop-1', 'att-a', 'Bearer token-a', { meta: { self_check: { mode: 'audit', metadata_server: 'refused' } } }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(m.meta.filter((entry) => 'self_check' in entry.meta).map((entry) => entry.meta.self_check))
+      .toEqual([{ mode: 'audit', metadata_server: 'open' }]);
+  });
+
+  it("posts thread messages as the job's own agent, whatever actor the body names", async () => {
+    const { controller: c } = controller();
+    await c.createThreadMessage('shop-1', 'att-a', 'Bearer token-a', { thread_id: 'thr_coord', body: 'done', actor_type: 'system', actor_id: 'platform' });
+    m.jobs['shop-1'] = { ...m.jobs['shop-1'], assignee: null };
+    await c.createThreadMessage('shop-1', 'att-a', 'Bearer token-a', { thread_id: 'thr_chat', body: 'done', actor_type: 'agent', actor_id: 'someone_else' });
+    expect(m.messages.map((msg) => [msg.actor_type, msg.actor_id])).toEqual([['agent', 'reviewer'], ['agent', 'shop-1']]);
+  });
+
   it('emits only resource hydration events, for its own project', async () => {
     const { controller: c } = controller();
     await c.emitEvent('shop-1', 'att-a', 'Bearer token-a', { type: 'system.resource.hydration.completed', payload: { resolved_count: 1 } });
@@ -188,6 +219,27 @@ describe('runner routes: the Codex credential write-back', () => {
       .rejects.toBeInstanceOf(ConflictException);
     expect(secrets.updateIfExists).not.toHaveBeenCalled();
     expect(secrets.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses an auth.json whose access token or plain account_id names another account, beside the stored account's id_token", async () => {
+    const { controller: c } = controller();
+    for (const forged of [
+      codexAuth('acct_acme', { accessAccount: 'acct_other', refresh: '2' }),
+      codexAuth('acct_acme', { plainAccount: 'acct_other', refresh: '2' }),
+    ]) {
+      await expect(c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: forged }))
+        .rejects.toBeInstanceOf(ConflictException);
+    }
+    expect(secrets.updateIfExists).not.toHaveBeenCalled();
+    expect(secrets.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses an auth.json that changes the API key the stored one carries', async () => {
+    const { controller: c } = controller();
+    const swapped = codexAuth('acct_acme', { refresh: '2', apiKey: 'sk-other' });
+    await expect(c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: swapped }))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(secrets.updateIfExists).not.toHaveBeenCalled();
   });
 
   it('refuses any other key', async () => {

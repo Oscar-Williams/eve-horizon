@@ -9,14 +9,22 @@
  * (`/jobs/:job/attempts/:attempt/runner/...`), with the attempt's own job
  * token, and ends with one `result`.
  *
- * The worker authenticates its submit with a key made for that pod: the pod
- * spec carries only the key's SHA-256 (`EVE_RUNNER_INBOUND_KEY_SHA256`), and
- * the submit presents the key in `x-eve-runner-key`. A pod taken from a warm
- * pool cannot carry per-job env, so it has no hash; it then accepts the first
- * submit only, which is all a one-job pod ever takes.
+ * The worker authenticates its submit with a key, presented in
+ * `x-eve-runner-key`, whose SHA-256 alone the pod carries:
+ *
+ * - a plain pod: a key made for that pod (`EVE_RUNNER_INBOUND_KEY_SHA256`);
+ * - a pod from a warm pool, which cannot carry per-job env: the worker's pool
+ *   key (`EVE_RUNNER_POOL_KEY_SHA256`, in the SandboxTemplate). Only the
+ *   worker holds the key: `EVE_RUNNER_POOL_KEY` when set, else an HMAC of its
+ *   internal core key (or the legacy key) with a fixed label. Changing either
+ *   changes the templates the worker renders, and the warm pools (update
+ *   strategy Recreate) replace their pods.
+ *
+ * A runner with neither hash takes no submit.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { INTERNAL_KEY_ENV } from '../api-client/internal-keys.js';
 import type { SecretResolveItem } from '../schemas/secret.js';
 import type { HarnessInvocation } from '../types/harness.js';
 import type { JobGit, ResolvedGitMetadata } from '../schemas/git-controls.js';
@@ -27,6 +35,11 @@ export const RUNNER_PORT = 4749;
 export const RUNNER_SUBMIT_PATH = '/runner/submit';
 export const RUNNER_INBOUND_KEY_HEADER = 'x-eve-runner-key';
 export const RUNNER_INBOUND_KEY_SHA256_ENV = 'EVE_RUNNER_INBOUND_KEY_SHA256';
+/** The SHA-256 of the worker's pool key, in a warm-pool template. */
+export const RUNNER_POOL_KEY_SHA256_ENV = 'EVE_RUNNER_POOL_KEY_SHA256';
+/** A dedicated pool key for the worker (a Secret value); derived from the internal key when unset. */
+export const RUNNER_POOL_KEY_ENV = 'EVE_RUNNER_POOL_KEY';
+const POOL_KEY_LABEL = 'eve-runner-pool-key/v1';
 
 /** A fresh inbound key for one runner pod, and the hash its spec carries. */
 export function createRunnerInboundKey(): { key: string; sha256: string } {
@@ -42,6 +55,29 @@ export function runnerInboundKeyMatches(presented: string | undefined, sha256: s
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * The worker's pool key and the hash warm-pool templates carry: the
+ * dedicated `EVE_RUNNER_POOL_KEY`, else an HMAC of the internal core key (or
+ * the legacy `EVE_INTERNAL_API_KEY`) with a fixed label. Null when the worker
+ * holds none of them: it then claims no warm pod.
+ */
+export function runnerPoolKey(env: NodeJS.ProcessEnv = process.env): { key: string; sha256: string } | null {
+  const dedicated = env[RUNNER_POOL_KEY_ENV]?.trim();
+  const base = env[INTERNAL_KEY_ENV.core]?.trim() || env.EVE_INTERNAL_API_KEY?.trim();
+  const key = dedicated || (base ? createHmac('sha256', base).update(POOL_KEY_LABEL).digest('base64url') : '');
+  return key ? { key, sha256: sha256Hex(key) } : null;
+}
+
+/**
+ * Whether a submit's key is one this runner accepts: its own inbound key, or
+ * (a warm-pool pod) the worker's pool key, each checked against the hash the
+ * pod carries. A runner with neither hash accepts nothing.
+ */
+export function runnerSubmitKeyMatches(presented: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  return runnerInboundKeyMatches(presented, env[RUNNER_INBOUND_KEY_SHA256_ENV])
+    || runnerInboundKeyMatches(presented, env[RUNNER_POOL_KEY_SHA256_ENV]);
 }
 
 /**

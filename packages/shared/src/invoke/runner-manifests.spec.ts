@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { buildRunnerPod, RUNNER_CONTAINER_ARGS } from './runner-manifests.js';
 import { createRunnerInboundKey, runnerInboundKeyMatches } from './runner-protocol.js';
+import { resolveRunnerPodIsolation } from './runner-pod.js';
+import { renderRunnerTemplates } from './runner-sandbox.js';
 
 /**
  * Runner pods run job code. The one pod builder both dispatch paths use puts
@@ -93,5 +95,25 @@ describe('runner pod builder', () => {
     expect(readOnly.volumeMounts).toContainEqual({ name: 'org-fs', mountPath: '/org', readOnly: true });
     const writable = pod({ orgFs: { readOnly: false } }).container;
     expect(writable.volumeMounts).toContainEqual({ name: 'org-fs', mountPath: '/org', readOnly: false });
+  });
+
+  it('refuses to start unless job processes cannot read its environment', () => {
+    expect(pod().container.env).toContainEqual({ name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' });
+    const templates = renderRunnerTemplates({ namespace: 'eve-runners', image: 'w', warmPools: {} }) as Array<Record<string, any>>;
+    for (const template of templates.filter((o) => o.kind === 'SandboxTemplate')) {
+      expect(template.spec.podTemplate.spec.containers[0].env).toContainEqual({ name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' });
+    }
+  });
+
+  it('co-locates only a pod that mounts the org filesystem with the pod holding it', () => {
+    const isolation = resolveRunnerPodIsolation({
+      EVE_RUNNER_POD_AFFINITY_KEY: 'app.kubernetes.io/name', EVE_RUNNER_POD_AFFINITY_VALUE: 'eve-agent-runtime',
+    } as NodeJS.ProcessEnv);
+    expect(pod({ isolation, orgFs: { readOnly: true } }).manifest.spec.affinity).toEqual(isolation.affinity);
+    expect(pod({ isolation }).manifest.spec.affinity).toBeUndefined();
+    const templates = renderRunnerTemplates({ namespace: 'eve-runners', image: 'w', warmPools: {}, isolation }) as Array<Record<string, any>>;
+    for (const template of templates.filter((o) => o.kind === 'SandboxTemplate')) {
+      expect(template.spec.podTemplate.spec.affinity).toBeUndefined();
+    }
   });
 });

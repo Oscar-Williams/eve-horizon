@@ -4602,11 +4602,10 @@ paths:
                   type: string
                 actor_type:
                   type: string
-                  enum:
-                    - agent
-                    - system
+                  description: "Ignored: the message is posted as the job's own agent"
                 actor_id:
                   type: string
+                  description: "Ignored: the job's assignee, else the job id"
                 id:
                   type: string
                 chat_progress:
@@ -4615,7 +4614,6 @@ paths:
               required:
                 - thread_id
                 - body
-                - actor_type
       responses:
         "204":
           description: ""

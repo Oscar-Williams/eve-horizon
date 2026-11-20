@@ -2,15 +2,23 @@
  * Runner pods through kubernetes-sigs/agent-sandbox: a SandboxClaim on the
  * job class's warm pool, in the runner namespace. The worker needs only
  * create, get, watch and delete on sandboxclaims there, get and list on
- * templates and pools, and get on the claimed pod; nothing on sandboxes.
+ * templates and pools, and get and list on pods; nothing on sandboxes.
+ *
+ * The claimed pod is found by the attempt label the claim puts on it, at the
+ * IP the claim reports, never by the sandbox's name: agent-sandbox may name a
+ * pod apart from its sandbox (the Sandbox's `agents.x-k8s.io/pod-name`
+ * annotation), and v1.0.11 labels a warm pod just after the claim is Ready.
  */
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
+  RUNNER_LABELS,
+  RUNNER_POOL_KEY_SHA256_ENV,
   SANDBOX_API_GROUP,
   SANDBOX_CLAIM_RESOURCE,
   buildRunnerSandboxClaim,
+  runnerJobLabels,
   runnerTemplateName,
   type RunnerClass,
 } from '@eve/shared';
@@ -33,7 +41,7 @@ const TERMINAL_CLAIM_REASONS = new Set([
   'VolumeClaimTemplatesError', 'ClaimExpired', 'SandboxExpired', 'InvalidConfiguration', 'PodFailed',
 ]);
 let crdCache: { present: boolean; at: number } | null = null;
-const poolCache = new Map<string, { present: boolean; at: number }>();
+const poolCache = new Map<string, { size: number | null; at: number }>();
 
 /** Whether the agent-sandbox extension CRDs are served (API discovery; needs no RBAC). */
 export async function sandboxCrdsPresent(): Promise<boolean> {
@@ -50,23 +58,60 @@ export async function sandboxCrdsPresent(): Promise<boolean> {
   return present;
 }
 
-/** Whether the class's warm pool has been rendered in the runner namespace. */
-export async function sandboxPoolPresent(namespace: string, jobClass: RunnerClass): Promise<boolean> {
+/**
+ * The size of the class's warm pool in the runner namespace, or null when it
+ * has not been rendered. A pool of 0 holds no warm pod, so a claim on it
+ * would only wait for a cold one: the dispatcher creates the pod directly.
+ */
+export async function sandboxPoolSize(namespace: string, jobClass: RunnerClass): Promise<number | null> {
   const key = `${namespace}/${jobClass}`;
   const cached = poolCache.get(key);
-  if (cached && Date.now() - cached.at < CRD_CACHE_MS) return cached.present;
-  const result = await execKubectl(['get', 'sandboxwarmpool', runnerTemplateName(jobClass), `--namespace=${namespace}`, '-o', 'name'])
+  if (cached && Date.now() - cached.at < CRD_CACHE_MS) return cached.size;
+  const result = await execKubectl(['get', 'sandboxwarmpool', runnerTemplateName(jobClass), `--namespace=${namespace}`, '-o', 'json'])
     .catch(() => ({ exitCode: 1, stdout: '', stderr: '' }));
-  const present = result.exitCode === 0;
-  poolCache.set(key, { present, at: Date.now() });
-  return present;
+  let size: number | null = null;
+  if (result.exitCode === 0) {
+    try {
+      const replicas = (JSON.parse(result.stdout) as { spec?: { replicas?: unknown } }).spec?.replicas;
+      // The CRD defaults replicas to 1.
+      size = typeof replicas === 'number' ? replicas : 1;
+    } catch {
+      size = null;
+    }
+  }
+  poolCache.set(key, { size, at: Date.now() });
+  return size;
+}
+
+let namespaceSeen: { namespace: string; at: number } | null = null;
+
+/**
+ * Whether the runner namespace exists. Only a NotFound answer counts as
+ * missing (any other kubectl failure is left to the pod or claim to report);
+ * a namespace seen is remembered for a while.
+ */
+export async function runnerNamespaceExists(namespace: string): Promise<boolean> {
+  if (namespaceSeen?.namespace === namespace && Date.now() - namespaceSeen.at < CRD_CACHE_MS) return true;
+  const result = await execKubectl(['get', 'namespace', namespace, '-o', 'name']).catch(() => null);
+  if (result && result.exitCode !== 0 && /NotFound|not found/i.test(result.stderr)) return false;
+  if (result?.exitCode === 0) namespaceSeen = { namespace, at: Date.now() };
+  return true;
 }
 
 /** Forget cached discovery (tests, and after a reconcile). */
 export function resetSandboxDiscovery(): void {
   crdCache = null;
   poolCache.clear();
+  namespaceSeen = null;
 }
+
+type PodList = {
+  items?: Array<{
+    metadata?: { name?: string };
+    spec?: { containers?: Array<{ name?: string; env?: Array<{ name?: string; value?: string }> }> };
+    status?: { podIP?: string; podIPs?: Array<{ ip?: string }> };
+  }>;
+};
 
 type ClaimStatus = {
   status?: {
@@ -86,10 +131,34 @@ export function createSandboxClaimBackend(opts: {
   jobClass: RunnerClass;
   submit: { job_id: string; attempt_id: string; project_id: string };
   timeoutSeconds: number;
+  /** SHA-256 of the worker's pool key: a claimed pod from a template with another key is not used. */
+  poolKeySha256?: string;
   onPodCreated?: (meta: { runtime: string; backend: string; pod_name: string; namespace: string; claim: string }) => Promise<void>;
 }): RunnerPodBackend & { claimName: string } {
   const claimName = sandboxClaimName(opts.submit.attempt_id);
+  const attemptLabel = runnerJobLabels({ projectId: opts.submit.project_id, attemptId: opts.submit.attempt_id, jobClass: opts.jobClass })[RUNNER_LABELS.attemptId];
   let podName: string | null = null;
+
+  /**
+   * The pod carrying this attempt's label at the claim's IP, once the claim
+   * has labelled it. A pod whose template carried another pool key (one
+   * warmed before the key changed, not yet replaced) is not usable.
+   */
+  async function claimedPodName(ip: string, signal?: AbortSignal): Promise<string | null> {
+    const result = await execKubectl(['get', 'pods', '-l', `${RUNNER_LABELS.attemptId}=${attemptLabel}`, `--namespace=${opts.namespace}`, '-o', 'json'], undefined, signal);
+    if (result.exitCode !== 0) return null;
+    const pod = ((JSON.parse(result.stdout || '{}') as PodList).items ?? [])
+      .find((item) => item.status?.podIP === ip || item.status?.podIPs?.some((entry) => entry.ip === ip));
+    if (!pod?.metadata?.name) return null;
+    if (opts.poolKeySha256) {
+      const runner = pod.spec?.containers?.find((container) => container.name === 'runner') ?? pod.spec?.containers?.[0];
+      const held = runner?.env?.find((entry) => entry.name === RUNNER_POOL_KEY_SHA256_ENV)?.value;
+      if (held !== opts.poolKeySha256) {
+        throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} got pod ${pod.metadata.name} from a template with another pool key`);
+      }
+    }
+    return pod.metadata.name;
+  }
   const claimTimeoutMs = parseDurationMs(process.env.EVE_SANDBOX_CLAIM_TIMEOUT ?? '10s', 'EVE_SANDBOX_CLAIM_TIMEOUT');
   const pollMs = parseInt(process.env.EVE_SANDBOX_CLAIM_POLL_MS ?? '250', 10);
 
@@ -119,15 +188,16 @@ export function createSandboxClaimBackend(opts: {
             throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} failed: ${ready.reason}${ready.message ? ` (${ready.message})` : ''}`);
           }
           const ip = status?.sandbox?.podIPs?.[0];
-          if (ready?.status === 'True' && ip) {
-            podName = status?.sandbox?.name ?? null;
-            await opts.onPodCreated?.({ runtime: 'k8s', backend: 'sandbox', pod_name: podName ?? claimName, namespace: opts.namespace, claim: claimName });
-            return { ip, podName: podName ?? claimName, namespace: opts.namespace };
+          const name = ready?.status === 'True' && ip ? await claimedPodName(ip, signal) : null;
+          if (ip && name) {
+            podName = name;
+            await opts.onPodCreated?.({ runtime: 'k8s', backend: 'sandbox', pod_name: name, namespace: opts.namespace, claim: claimName });
+            return { ip, podName: name, namespace: opts.namespace };
           }
         }
         await delay(pollMs, undefined, { signal });
       }
-      throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} was not Ready within ${claimTimeoutMs}ms`);
+      throw new SandboxClaimUnavailable(`SandboxClaim ${claimName} was not Ready with its labelled pod within ${claimTimeoutMs}ms`);
     },
 
     async podEnded() {

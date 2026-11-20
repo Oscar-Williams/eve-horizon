@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { runInRunnerPod, type RunnerPodBackend } from './runner-dispatch.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { runInRunnerPod, runnerApiUrl, type RunnerPodBackend } from './runner-dispatch.js';
 
 /**
  * The worker records a runner attempt only once the runner's pushed result
@@ -102,5 +102,23 @@ describe('runner dispatch', () => {
     expect(outcome).toMatchObject({ success: false });
     expect(outcome.error).toMatch(/401/);
     expect(b.stop).toHaveBeenCalled();
+  });
+});
+
+describe('the API URL a runner reports to', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is EVE_API_APP_URL's default (the cluster name on the public port), never the worker's own EVE_API_URL", () => {
+    vi.stubEnv('EVE_API_URL', 'http://eve-api:4791');
+    vi.stubEnv('EVE_API_APP_URL', '');
+    expect(runnerApiUrl()).toBe('http://eve-api.eve.svc.cluster.local:4701');
+  });
+
+  it('qualifies a short host name with the platform namespace, as the deployer does for apps', () => {
+    vi.stubEnv('EVE_API_URL', 'http://eve-api:4791');
+    vi.stubEnv('EVE_API_APP_URL', 'http://eve-api:4701');
+    expect(runnerApiUrl()).toBe('http://eve-api.eve.svc.cluster.local:4701');
+    vi.stubEnv('EVE_API_APP_URL', 'https://api.eve.example');
+    expect(runnerApiUrl()).toBe('https://api.eve.example');
   });
 });

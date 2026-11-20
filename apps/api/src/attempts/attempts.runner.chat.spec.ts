@@ -46,7 +46,7 @@ const progress = (thread = 'thr_chat') => ({
 
 beforeEach(() => {
   m.jobs = {
-    'shop-1': { id: 'shop-1', project_id: 'proj_shop', parent_id: 'lead-1', labels: ['chat'], hints: { thread_id: 'thr_chat' } },
+    'shop-1': { id: 'shop-1', project_id: 'proj_shop', parent_id: 'lead-1', assignee: 'agent_review', labels: ['chat'], hints: { thread_id: 'thr_chat' } },
     'lead-1': { id: 'lead-1', project_id: 'proj_shop', hints: { coordination: { thread_id: 'thr_coord' } } },
   };
   m.progress = { count: 0, last: null };
@@ -64,6 +64,12 @@ describe('chat progress from a runner pod', () => {
 
     expect(chat.deliverChatResult).toHaveBeenCalledTimes(1);
     expect(chat.deliverChatResult.mock.calls[0]).toEqual(inlineChat.deliverChatResult.mock.calls[0]);
+  });
+
+  it("delivers it as the job's own agent, whatever agent the body names", async () => {
+    const { runner, chat } = setup();
+    await runner.createThreadMessage('shop-1', 'att-a', 'Bearer token-a', { ...progress(), actor_id: 'agent_other' });
+    expect(chat.deliverChatResult).toHaveBeenCalledWith(expect.objectContaining({ agent_id: 'agent_review' }));
   });
 
   it("delivers only to the job's own chat thread, and only for a chat job", async () => {

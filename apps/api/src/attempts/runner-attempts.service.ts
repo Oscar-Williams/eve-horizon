@@ -31,6 +31,7 @@ import {
   RUNNER_RUNTIME_META_KEYS,
   RUNNER_WRITABLE_CREDENTIALS,
   codexAccountIdOf,
+  codexApiKeyOf,
   generateEventId,
   projectThreadId,
   verifiedCodexAccountId,
@@ -170,7 +171,12 @@ export class RunnerAttemptsService {
     if (extra.length > 0) {
       throw new BadRequestException(`A runner reports only ${RUNNER_RUNTIME_META_KEYS.join(', ')} (got ${extra.join(', ')})`);
     }
-    const update = { ...(meta as Record<string, unknown>) };
+    const { self_check: selfCheck, ...update } = meta as Record<string, unknown>;
+    // The egress self-check is reported once, before job code runs; job code holds the same token.
+    if (selfCheck !== undefined && !await this.jobs.setRuntimeMetaOnce(attemptId, 'self_check', selfCheck)) {
+      throw new ConflictException('This attempt has already reported its self-check');
+    }
+    if (Object.keys(update).length === 0) return;
     // Keep the toolchain image IDs the worker recorded at pod start.
     if (update.toolchains && typeof update.toolchains === 'object') {
       const [attempt] = await this.db<{ runtime_meta: { toolchains?: { image_ids?: unknown } } | null }[]>`
@@ -182,17 +188,21 @@ export class RunnerAttemptsService {
     await this.jobs.updateRuntimeMeta(attemptId, update);
   }
 
-  /** A message on the job's own chat thread or its parent's coordination thread. */
+  /**
+   * A message on the job's own chat thread or its parent's coordination
+   * thread. It is posted as the job's own agent (its assignee, else the job):
+   * the actor the body names is ignored, since job code holds the same token.
+   */
   async createThreadMessage(token: JobTokenPayload, body: Record<string, unknown>): Promise<void> {
     const threadId = body.thread_id;
     const text = body.body;
-    const actorType = body.actor_type;
     if (typeof threadId !== 'string' || typeof text !== 'string' || !text || text.length > MAX_THREAD_MESSAGE) {
       throw new BadRequestException('thread_id and a body of at most 16 KiB are required');
     }
-    if (actorType !== 'agent' && actorType !== 'system') throw new BadRequestException('actor_type must be agent or system');
+    const job = await this.jobs.findById(token.job_id) as { assignee?: string | null } | null;
+    const agentId = job?.assignee || token.job_id;
     if (body.chat_progress === true) {
-      await this.deliverChatProgress(token, threadId, text, typeof body.actor_id === 'string' ? body.actor_id : undefined);
+      await this.deliverChatProgress(token, threadId, text, agentId);
       return;
     }
     if (!(await this.jobThreads(token.job_id)).has(threadId)) {
@@ -202,8 +212,8 @@ export class RunnerAttemptsService {
       id: typeof body.id === 'string' && body.id ? body.id : randomUUID(),
       thread_id: threadId,
       direction: 'outbound',
-      actor_type: actorType,
-      actor_id: typeof body.actor_id === 'string' && body.actor_id ? body.actor_id : token.job_id,
+      actor_type: 'agent',
+      actor_id: agentId,
       body: text,
       job_id: token.job_id,
     } as never);
@@ -270,9 +280,11 @@ export class RunnerAttemptsService {
 
   /**
    * A refreshed Codex auth.json from the job. Accepted only when the account
-   * claim of its issuer-signed id_token names the stored credential's
-   * account. It goes to the secret's own scope, or, under the project's
-   * strict secrets.job_org_write, to project scope only.
+   * claims of its issuer-signed id_token and access_token (unexpired), and
+   * its plain account_id when present, all name the stored credential's
+   * account, and it carries the stored credential's API key (or none, as the
+   * stored one does). It goes to the secret's own scope, or, under the
+   * project's strict secrets.job_org_write, to project scope only.
    */
   async writeBackCredential(token: JobTokenPayload, key: unknown, value: unknown): Promise<void> {
     if (typeof key !== 'string' || !(RUNNER_WRITABLE_CREDENTIALS as readonly string[]).includes(key)) {
@@ -299,6 +311,11 @@ export class RunnerAttemptsService {
     if (!storedAccount || storedAccount !== account) {
       this.logger.warn(`Refused Codex write-back for job ${token.job_id}: its account differs from the stored credential's`);
       throw new ConflictException('The refreshed credential belongs to another account');
+    }
+    // A refresh never changes the API key the file carries.
+    if (codexApiKeyOf(decode(value)) !== codexApiKeyOf(decode(stored.value))) {
+      this.logger.warn(`Refused Codex write-back for job ${token.job_id}: it changes the stored credential's API key`);
+      throw new ConflictException('The refreshed credential changes its API key');
     }
 
     // Rule secrets.job_org_write: an org-scope write-back only outside the

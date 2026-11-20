@@ -71,7 +71,7 @@ export class AttemptsRunnerController {
   @Post('thread-messages')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: "Post a runner's message to its job's chat or coordination thread (the attempt's job token only)" })
-  @ApiBody(objectBody({ thread_id: { type: 'string' }, body: { type: 'string' }, actor_type: { type: 'string', enum: ['agent', 'system'] }, actor_id: { type: 'string' }, id: { type: 'string' }, chat_progress: { type: 'boolean', description: "A chat job's progress, delivered to its chat thread and provider" } }, ['thread_id', 'body', 'actor_type']))
+  @ApiBody(objectBody({ thread_id: { type: 'string' }, body: { type: 'string' }, actor_type: { type: 'string', description: "Ignored: the message is posted as the job's own agent" }, actor_id: { type: 'string', description: "Ignored: the job's assignee, else the job id" }, id: { type: 'string' }, chat_progress: { type: 'boolean', description: "A chat job's progress, delivered to its chat thread and provider" } }, ['thread_id', 'body']))
   async createThreadMessage(
     @Param('job_id') jobId: string,
     @Param('attempt_id') attemptId: string,

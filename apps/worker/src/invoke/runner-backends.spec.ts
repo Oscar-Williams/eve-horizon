@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchToRunnerPod } from './runner-dispatch.js';
 import { resetSandboxDiscovery } from './sandbox-claim-backend.js';
@@ -16,6 +17,10 @@ import { resetSandboxDiscovery } from './sandbox-claim-backend.js';
 const k = vi.hoisted(() => ({
   crds: true,
   pool: true,
+  poolReplicas: 3,
+  runnerNamespace: true,
+  /** The pool key hash the claimed pod's template carried. */
+  podPoolHash: '',
   claim: 'ready' as 'ready' | 'pending' | 'failed',
   podPhase: 'Running',
   applied: [] as Array<Record<string, any>>,
@@ -30,25 +35,42 @@ vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<t
   child.stdin.on('finish', () => {
     let code = 0;
     let out = '';
+    let err = '';
     const has = (...words: string[]) => words.every((w) => args.includes(w));
-    if (args.includes('api-resources')) {
+    const noRunnerNamespace = 'Error from server (NotFound): namespaces "eve-runners" not found';
+    if (has('get', 'namespace')) {
+      code = k.runnerNamespace ? 0 : 1;
+      if (k.runnerNamespace) out = 'namespace/eve-runners'; else err = noRunnerNamespace;
+    } else if (has('apply') && !k.runnerNamespace && input.includes('"namespace":"eve-runners"')) {
+      code = 1;
+      err = noRunnerNamespace;
+    } else if (args.includes('api-resources')) {
       out = k.crds ? 'sandboxclaims.extensions.agents.x-k8s.io\nsandboxtemplates.extensions.agents.x-k8s.io\nsandboxwarmpools.extensions.agents.x-k8s.io\n' : '';
     } else if (has('apply')) {
       const parsed = JSON.parse(input);
       k.applied.push(...(parsed.items ?? [parsed]));
     } else if (has('get', 'sandboxwarmpool')) {
       code = k.pool ? 0 : 1;
+      out = k.pool ? JSON.stringify({ metadata: { name: args[args.indexOf('sandboxwarmpool') + 1] }, spec: { replicas: k.poolReplicas } }) : '';
     } else if (has('get', 'sandboxclaim')) {
       out = JSON.stringify(k.claim === 'ready'
         ? { status: { conditions: [{ type: 'Ready', status: 'True' }], sandbox: { name: 'eve-runner-chat-x1', podIPs: ['10.1.0.7'] } } }
         : k.claim === 'failed'
           ? { status: { conditions: [{ type: 'Ready', status: 'False', reason: 'InvalidMetadata' }] } }
           : { status: {} });
+    } else if (has('get', 'pods', '-l')) {
+      // The claimed pod, found by the attempt label the claim puts on it.
+      out = JSON.stringify({ items: [{
+        metadata: { name: 'eve-runner-chat-x1' },
+        spec: { containers: [{ name: 'runner', env: [{ name: 'EVE_RUNNER_POOL_KEY_SHA256', value: k.podPoolHash }] }] },
+        status: { phase: k.podPhase, podIP: '10.1.0.7' },
+      }] });
     } else if (has('get', 'pod')) {
       out = JSON.stringify({ status: { phase: k.podPhase, podIP: '10.2.0.9', conditions: [{ type: 'Ready', status: 'True' }] } });
     }
     queueMicrotask(() => {
       child.stdout.write(out);
+      child.stderr.write(err);
       child.stdout.end(); child.stderr.end(); child.emit('close', code);
     });
   });
@@ -61,22 +83,28 @@ vi.mock('../network/runner-egress.js', () => ({
 }));
 
 const submit = { kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', project_id: 'proj_shop', job_token: 't', api_url: 'http://api.test' };
+const POOL_KEY = 'pool-key-for-test';
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 let submittedTo: string[] = [];
+let submittedKeys: string[] = [];
 
 beforeEach(() => {
-  k.crds = true; k.pool = true; k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
+  k.crds = true; k.pool = true; k.poolReplicas = 3; k.runnerNamespace = true; k.podPoolHash = sha256(POOL_KEY); k.claim = 'ready'; k.podPhase = 'Running'; k.applied = []; k.calls = [];
   submittedTo = [];
+  submittedKeys = [];
   resetSandboxDiscovery();
+  vi.stubEnv('EVE_RUNNER_POOL_KEY', POOL_KEY);
   vi.stubEnv('EVE_RUNNER_IMAGE', 'worker:test');
   vi.stubEnv('EVE_RUNNER_NAMESPACE', 'eve-runners');
   vi.stubEnv('EVE_K8S_NAMESPACE', 'eve');
   vi.stubEnv('EVE_K8S_RUNNER_POLL_MS', '1');
   vi.stubEnv('EVE_SANDBOX_CLAIM_TIMEOUT', '30ms');
   vi.stubEnv('EVE_SANDBOX_CLAIM_POLL_MS', '5');
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
     if (url.endsWith('/health')) return new Response('{}', { status: 200 });
     if (url.endsWith('/runner/submit')) {
       submittedTo.push(url);
+      submittedKeys.push(init?.headers?.['x-eve-runner-key'] ?? '');
       k.podPhase = 'Succeeded';
       return new Response('{"accepted":true}', { status: 202 });
     }
@@ -129,6 +157,57 @@ describe('runner pod backends', () => {
     const outcome = await run();
     expect(outcome.success).toBe(true);
     expect(deleted('sandboxclaim').length).toBeGreaterThanOrEqual(1);
+    expect(podsApplied()).toHaveLength(1);
+  });
+
+  it("creates the pod directly when the class's warm pool is sized 0, rather than wait on a cold claim", async () => {
+    k.poolReplicas = 0;
+    const outcome = await run();
+    expect(outcome.success).toBe(true);
+    expect(claimsApplied()).toEqual([]);
+    expect(podsApplied()).toHaveLength(1);
+  });
+
+  it('fails with the missing runner namespace and the install step it needs', async () => {
+    for (const crds of [true, false]) {
+      k.runnerNamespace = false; k.crds = crds; k.pool = false; k.applied = [];
+      resetSandboxDiscovery();
+      const outcome = await run();
+      expect(outcome.success).toBe(false);
+      expect(outcome.error).toMatch(/runner namespace eve-runners does not exist/i);
+      expect(outcome.error).toMatch(/runner-namespace\.yaml/);
+      expect(podsApplied()).toEqual([]);
+    }
+  });
+
+  it("submits to a claimed pod with the worker's pool key, and to a plain pod with that pod's own key", async () => {
+    expect((await run()).success).toBe(true);
+    expect(submittedKeys).toEqual([POOL_KEY]);
+
+    k.applied = []; k.calls = []; submittedTo = []; submittedKeys = []; k.podPhase = 'Running';
+    k.crds = false;
+    resetSandboxDiscovery();
+    expect((await run()).success).toBe(true);
+    const env = podsApplied()[0].spec.containers[0].env as Array<{ name: string; value: string }>;
+    expect(submittedKeys[0]).not.toBe(POOL_KEY);
+    expect(sha256(submittedKeys[0])).toBe(env.find((e) => e.name === 'EVE_RUNNER_INBOUND_KEY_SHA256')!.value);
+    expect(env.map((e) => e.name)).not.toContain('EVE_RUNNER_POOL_KEY_SHA256');
+  });
+
+  it('drops a claimed pod from a template with another pool key, and creates the pod directly', async () => {
+    k.podPoolHash = sha256('an-older-pool-key');
+    expect((await run()).success).toBe(true);
+    expect(deleted('sandboxclaim').length).toBeGreaterThanOrEqual(1);
+    expect(podsApplied()).toHaveLength(1);
+    expect(submittedKeys).not.toContain(POOL_KEY);
+  });
+
+  it('claims nothing when the worker holds no key to derive the pool key from', async () => {
+    vi.stubEnv('EVE_RUNNER_POOL_KEY', '');
+    vi.stubEnv('EVE_INTERNAL_CORE_KEY', '');
+    vi.stubEnv('EVE_INTERNAL_API_KEY', '');
+    expect((await run()).success).toBe(true);
+    expect(claimsApplied()).toEqual([]);
     expect(podsApplied()).toHaveLength(1);
   });
 

@@ -38,12 +38,29 @@ deployer, builder, reaper or pipeline modules. It serves two routes:
 | `GET /health` | Answers from the process alone (readiness). |
 | `POST /runner/submit` | Takes one job (`RunnerSubmit`, `packages/shared/src/invoke/runner-protocol.ts`). A second submit gets 409. |
 
-The submit is authenticated with a key made for that pod: the worker
-generates 32 random bytes, puts only their SHA-256 in the pod's env
-(`EVE_RUNNER_INBOUND_KEY_SHA256`), and presents the key in
-`x-eve-runner-key`. The runner compares hashes in constant time. A pod
-started from a warm pool cannot carry per-job env; with no hash it takes the
-first submit that carries a key, which is all a one-job pod ever takes.
+The submit presents a key in `x-eve-runner-key`, and the pod holds only its
+SHA-256; the runner compares hashes in constant time, and a pod with no hash
+takes no submit:
+
+- **a plain pod:** a key made for that pod. The worker generates 32 random
+  bytes and puts only their SHA-256 in the pod's env
+  (`EVE_RUNNER_INBOUND_KEY_SHA256`);
+- **a pod from a warm pool,** which cannot carry per-job env: the worker's
+  pool key. Each SandboxTemplate carries its SHA-256
+  (`EVE_RUNNER_POOL_KEY_SHA256`). The key is `EVE_RUNNER_POOL_KEY` on the
+  worker when set (a Secret value), else an HMAC-SHA256 of the worker's
+  internal core key (or the legacy `EVE_INTERNAL_API_KEY`) with a fixed
+  label. Job code never sees it: the runner reads it from the request header
+  only. A worker with none of them claims no warm pod and renders no
+  template.
+
+**Rotating the pool key:** set or change `EVE_RUNNER_POOL_KEY` (or rotate the
+core key it is derived from) and restart the worker. At startup (or on
+`eve system security reconcile`) it renders the templates with the new hash;
+the warm pools (update strategy `Recreate`) then replace their warm pods,
+while claimed pods run on. A claim that lands on a warm pod from the older
+template before it is replaced is dropped and the job's pod created directly,
+so a rotation costs latency, not jobs.
 
 The runner reports its result, then exits (`EVE_RUNNER_SELF_TERMINATE=1`),
 so the pod ends `Succeeded`.
@@ -101,11 +118,11 @@ Another attempt's routes get 403. None returns platform data.
 
 | Route | Accepts |
 |---|---|
-| `logs` | `{ entries: [{ type, content }] }`, up to 500 per call. |
+| `logs` | `{ entries: [{ type, content }] }`, up to 500 per call (the API's JSON body limit, 1 MiB, applies). The runner sends at most 100 per call and keeps each body under 512 KiB; an entry over 256 KiB on its own has its longest strings cut, marked `truncated: true` with `original_bytes`. |
 | `events` | `system.resource.hydration.{started,completed,failed}` only, on the job's project. |
-| `runtime-meta` | Only `orgfs_mount`, `resource_hydration`, `resource_index_path`, `browser`, `toolchains`, `self_check` (400 otherwise); toolchain image IDs the worker recorded are kept. |
-| `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. With `chat_progress: true`, a chat job's `eve-message` progress, delivered to its chat thread and provider through the same chat delivery the inline path uses; only for a chat job's own chat thread, at most 10 per job and 30 s apart (429 otherwise), 500 characters. |
-| `credential` | A refreshed `CODEX_AUTH_JSON_B64` only. Accepted when the account claim (`https://api.openai.com/auth`.`chatgpt_account_id`) of its `id_token`, verified against the issuer's published keys (`https://auth.openai.com/.well-known/jwks.json`, or `EVE_CODEX_JWKS_URL`), names the stored credential's account; the plain `account_id` field is ignored. It goes to the secret's own scope, or, under the project's strict `secrets.job_org_write`, to project scope only. A mismatch is refused (409) and logged; the job does not fail. |
+| `runtime-meta` | Only `orgfs_mount`, `resource_hydration`, `resource_index_path`, `browser`, `toolchains`, `self_check` (400 otherwise); toolchain image IDs the worker recorded are kept. `self_check` is written once per attempt (a second gets 409), so job code cannot overwrite the runner's report. |
+| `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. Each is posted as the job's own agent (`actor_type: agent`, its assignee, else the job id); the actor the body names is ignored. With `chat_progress: true`, a chat job's `eve-message` progress, delivered to its chat thread and provider through the same chat delivery the inline path uses; only for a chat job's own chat thread, at most 10 per job and 30 s apart (429 otherwise), 500 characters. |
+| `credential` | A refreshed `CODEX_AUTH_JSON_B64` only. Accepted when the account claims (`https://api.openai.com/auth`.`chatgpt_account_id`) of its `id_token` and its `access_token`, each verified against the issuer's published keys (`https://auth.openai.com/.well-known/jwks.json`, or `EVE_CODEX_JWKS_URL`), name the stored credential's account; the access token must not have expired; the plain `tokens.account_id`, when present, must name the same account; and its `OPENAI_API_KEY` must be the stored file's (or absent, as there). The refresh token is opaque and is not checked: a job holds the stored session anyway. It goes to the secret's own scope, or, under the project's strict `secrets.job_org_write`, to project scope only. A mismatch is refused (409) and logged; the job does not fail. |
 | `result` | The attempt's result, once (`job_attempt_runner_results`); a second gets 409. |
 
 Job code holds the same token, so it can push only to its own attempt: it can
@@ -127,8 +144,8 @@ whatever happens; a cancelled job's pod with a 5 s grace period.
 | `EVE_K8S_POLL_TIMEOUT_MS` | `1800000` | How long to wait for a result. |
 | `EVE_K8S_RUNNER_RESULT_GRACE_MS` | `30000` | How long a pod may run on after its result. |
 | `EVE_K8S_POD_READY_TIMEOUT` | `60s` | How long a pod may take to become Ready. |
-| `EVE_API_APP_URL` | `EVE_API_URL` | The API URL a runner reports to: the API's public port, by a name that resolves from the runner namespace (base: `http://eve-api.eve.svc.cluster.local:4701`). |
-| `EVE_RUNNER_NAMESPACE` | `eve-runners` | Where runner pods, templates and claims live. |
+| `EVE_API_APP_URL` | `http://eve-api.eve.svc.cluster.local:4701` | The API URL a runner reports to (as apps do): the API's public port, by a name that resolves from the runner namespace. Never the worker's own `EVE_API_URL`; a single-label host is qualified with the platform namespace. |
+| `EVE_RUNNER_NAMESPACE` | `eve-runners` | Where runner pods, templates and claims live. When it does not exist, dispatch fails with "The runner namespace … does not exist" and the k8s/base files to apply. |
 | `EVE_SANDBOX_CLAIM_TIMEOUT` | `10s` | How long a claim may take to be Ready before the plain-pod fallback. |
 | `EVE_RUNNER_PODS_ONLY` | unset | `true`: every project's job code in runner pods. |
 
@@ -138,16 +155,21 @@ One builder (`packages/shared/src/invoke/runner-manifests.ts`) makes every
 runner pod: non-root UID 1000, no privilege escalation, every capability
 dropped, `RuntimeDefault` seccomp, `enableServiceLinks: false`, no service
 account token, and the account from `EVE_RUNNER_SERVICE_ACCOUNT` (base:
-`eve-runner`, which has no RoleBinding and no cloud identity). The org
-filesystem is mounted only when the job's `orgfs_mount` mode is not `none`,
-and read-only unless it is `write`. This narrows the mount; it does not
-isolate one org's files from another's.
+`eve-runner`, which has no RoleBinding and no cloud identity). The runner sets
+`EVE_REQUIRE_ENVIRON_PROTECTION=true`, so it refuses to start when its
+process is dumpable and job processes (the same UID) could read its
+environment. The org filesystem is mounted only when the job's `orgfs_mount`
+mode is not `none`, and read-only unless it is `write`. This narrows the
+mount; it does not isolate one org's files from another's. Pod affinity
+(`EVE_RUNNER_POD_AFFINITY_*`) applies only to such a pod, which runs in the
+platform namespace beside the pod holding the claim; templates and other
+runner pods never carry it.
 
 ## Where job code runs (`isolation.runner_mode`)
 
 | Work | `legacy` / `audit` | `strict`, or `EVE_RUNNER_PODS_ONLY=true` |
 |---|---|---|
-| Agent job | The agent runtime inline when `EVE_AGENT_RUNTIME_URL` is set (recorded under `audit`), else the worker's runner pod | The worker's runner pod; the orchestrator never sends it to the agent runtime |
+| Agent job | The agent runtime inline when `EVE_AGENT_RUNTIME_URL` is set (recorded under `audit`), else the worker's runner pod | The worker's runner pod; the orchestrator never sends it to the agent runtime, and the agent runtime, deciding the rule as the worker does, refuses to run one inline (it still hands it to the worker in runner mode) |
 | Script step | The worker's process, or a runner pod with `EVE_SCRIPT_K8S_RUNNER=true` (inline recorded under `audit`) | A runner pod |
 | `action: run` | The worker's process (recorded under `audit`) | A runner pod, through the script handler (checked out at the action's `git_sha`; timeout code `action_run_timeout`) |
 | Legacy pipeline-runner `run` step | The worker's process (recorded under `audit`) | Refused: 400, "use a `script:` step" |
@@ -193,9 +215,11 @@ Runner pods live in their own namespace, `EVE_RUNNER_NAMESPACE` (base:
 
 - **agent-sandbox** (`kubernetes-sigs/agent-sandbox`, v1.0.11): when the
   extension CRDs are served (`extensions.agents.x-k8s.io/v1beta1`, found by
-  API discovery) and the job class's warm pool exists, the worker creates a
+  API discovery) and the job class's warm pool exists with a size above 0, the worker creates a
   `SandboxClaim` on that pool and reaches the pod at
-  `status.sandbox.podIPs`. The claim carries the pod labels below through
+  `status.sandbox.podIPs`. It follows the pod (for liveness) by the
+  `eve.horizon/attempt-id` label the claim puts on it, at that IP, never by
+  the sandbox's name, and submits only once the label is there. The claim carries the pod labels below through
   `additionalPodMetadata`, no env, and `lifecycle.shutdownTime` (the job's
   timeout plus 15 min) with `shutdownPolicy: Delete`, a safety net if the
   worker dies mid-job. The worker deletes the claim when the job ends.
@@ -214,7 +238,13 @@ Runner pods live in their own namespace, `EVE_RUNNER_NAMESPACE` (base:
 |---|---|---|---|---|
 | `chat` | jobs labelled `chat` | `eve-runner-chat` (100m/512Mi, limits 1 CPU/2Gi) | `emptyDir` | `runner.warm_pool.chat` |
 | `job` | everything else | `eve-runner-job` (`EVE_K8S_RUNNER_*` defaults) | `emptyDir` | `runner.warm_pool.job` |
-| `heavy` | a resource-class override, toolchains or app CLIs, or `hints.runner_class: heavy` | `eve-runner-heavy` (500m/2Gi, limits 4 CPU/8Gi) | a 20Gi claim (`volumeClaimTemplates`) | always 0 (cold) |
+| `heavy` | a resource class with Kubernetes sizing (job hints or manifest defaults), toolchains or app CLIs | `eve-runner-heavy` (500m/2Gi, limits 4 CPU/8Gi) | a claim of `EVE_K8S_WORKSPACE_SIZE` (default 20Gi; `volumeClaimTemplates`) | always 0 (cold) |
+
+`hints.runner_class` may name a lighter class than the job's (chat, job,
+heavy, lightest first), never a heavier one. A class whose warm pool is
+sized 0 (heavy always, chat and job by default) is not claimed: the worker
+creates its pod directly, rather than wait `EVE_SANDBOX_CLAIM_TIMEOUT` for a
+cold claim and then fall back.
 
 The worker renders one `SandboxTemplate` and one `SandboxWarmPool` per class
 from its own `EVE_RUNNER_IMAGE` and the instance settings, and applies them in

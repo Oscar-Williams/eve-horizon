@@ -27,8 +27,8 @@ afterEach(() => {
 const invocation = { jobId: 'job-test', attemptId: 'attempt-test', projectId: 'project-test',
   text: '', workspacePath: '/tmp/workspace' } as unknown as HarnessInvocation;
 
-function podSpec() {
-  const manifest = JSON.parse(buildRunnerManifests(invocation, 'eve', 'workspace', 'runner'));
+function podSpec(plan: Parameters<typeof buildRunnerManifests>[6] = {}) {
+  const manifest = JSON.parse(buildRunnerManifests(invocation, 'eve', 'workspace', 'runner', undefined, undefined, plan));
   return manifest.items.find((item: { kind: string }) => item.kind === 'Pod').spec;
 }
 
@@ -69,10 +69,12 @@ describe('worker runner pod isolation', () => {
   it('follows the node holding a ReadWriteOnce org filesystem when pod affinity is set', () => {
     process.env.EVE_RUNNER_POD_AFFINITY_KEY = 'app.kubernetes.io/name';
     process.env.EVE_RUNNER_POD_AFFINITY_VALUE = 'eve-agent-runtime';
-    expect(podSpec().affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution).toEqual([{
+    expect(podSpec({ orgFs: { readOnly: true } }).affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution).toEqual([{
       labelSelector: { matchLabels: { 'app.kubernetes.io/name': 'eve-agent-runtime' } },
       topologyKey: 'kubernetes.io/hostname',
     }]);
+    // A pod with no org filesystem has nothing to be placed beside.
+    expect(podSpec()).not.toHaveProperty('affinity');
   });
 
   it('gives job code no platform credential: no database URL, no internal key, no forwarded settings', () => {

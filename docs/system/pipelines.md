@@ -142,7 +142,8 @@ the wrong pool. A runner mounts the org filesystem claim
 `eve-org-fs-org-default` only when the job's `orgfs_mount` mode is not `none`,
 read-only unless it writes. With a `ReadWriteOnce` claim such a runner must
 land on the node that already holds it, or it hangs in `ContainerCreating`
-with a Multi-Attach error. Set pod affinity to the agent runtime for that case:
+with a Multi-Attach error. Set pod affinity to the agent runtime for that case
+(it applies only to runner pods that mount the org filesystem):
 
 ```yaml
 - name: EVE_RUNNER_POD_AFFINITY_KEY     # required affinity, topologyKey

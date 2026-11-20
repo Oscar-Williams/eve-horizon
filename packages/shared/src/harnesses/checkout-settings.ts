@@ -19,9 +19,11 @@
  *   gets a cleaned copy of the project and local settings through
  *   `--settings`, with `--setting-sources user`, so the originals are not
  *   read; Eve's copy of the config directory is cleaned in place.
- * - **Codex** gets `-c model_provider="openai"` (and the same for the variant
- *   profile), which outranks the project and user config layers; a base URL
- *   no override can undo is refused.
+ * - **Codex** is refused when a checkout config (the project's
+ *   `.codex/config.toml`, or a config home inside the checkout, the default
+ *   `CODEX_HOME`) sets any routing setting, since the file cannot be edited
+ *   and `-c` cannot undo a profile the file chooses. Otherwise it gets
+ *   `-c model_provider="openai"` (and the same for the variant profile).
  * - **Gemini** gets a per-job, Eve-owned system settings file, which outranks
  *   workspace settings, excluding the routing names from the project `.env`;
  *   routing names in `.gemini/.env`, which Gemini loads whatever the
@@ -34,6 +36,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { isUserSecretWithheldKey } from '../schemas/job.js';
 import type { SecurityProfile } from '../security/profile.js';
+import { parseToml, type TomlTable, type TomlValue } from './toml.js';
 
 /** The rule's id (rule set 2). */
 export const CHECKOUT_SETTINGS_RULE = 'harness.checkout_settings';
@@ -170,16 +173,18 @@ export function strictClaudeSettingsArgs(workspace: string, configDir: string | 
 }
 
 /**
- * Codex under `strict`: `-c` overrides (the top config layer) that pin the
+ * Codex under `strict`: a checkout config that sets any routing setting is
+ * refused. It cannot be edited (an agent may commit it), and `-c` cannot
+ * reliably undo it: a `profile` the file chooses outranks the top-level
+ * keys `-c` sets. Otherwise `-c` overrides (the top config layer) pin the
  * built-in OpenAI provider, which honours the job's own OPENAI_BASE_URL, for
- * the base config and the variant's profile. A checkout config that sets a
- * base URL outside a provider entry is refused, since no override undoes it.
+ * the base config and the variant's profile.
  */
 export function strictCodexArgs(workspace: string, codexHome: string | undefined, variant: string | undefined): string[] {
-  const unremovable = findCheckoutRouting({ workspace, harness: 'codex', configDir: codexHome })
-    .flatMap((finding) => finding.settings.filter((setting) => /base_url$/.test(setting)).map((setting) => `${finding.file}: ${setting}`));
-  if (unremovable.length > 0) {
-    throw new Error(checkoutSettingsRefusal(`The checkout's Codex config sets ${unremovable.join(', ')}`));
+  const routed = findCheckoutRouting({ workspace, harness: 'codex', configDir: codexHome })
+    .flatMap((finding) => finding.settings.map((setting) => `${finding.file}: ${setting}`));
+  if (routed.length > 0) {
+    throw new Error(checkoutSettingsRefusal(`The checkout's Codex config sets ${routed.join(', ')}`));
   }
   const args = ['-c', 'model_provider="openai"'];
   if (variant) args.push('-c', `profiles.${variant}.model_provider="openai"`);
@@ -256,29 +261,48 @@ function claudeRoutingSettings(value: unknown): string[] {
 
 /**
  * Codex config keys that choose the provider or where it sends traffic, by
- * dotted name: `model_provider` (also a profile's), each `model_providers`
- * entry, and any key ending `base_url`. A line scan, enough to name them.
+ * dotted name, read with a TOML parser so every form counts (tables, dotted
+ * keys, inline tables, quoted keys): the top-level `profile` (it selects a
+ * profile's provider), `model_provider` at any depth (profiles included),
+ * each `model_providers` entry, any key ending `base_url`, and any env
+ * override (an upper-case key with a value, such as
+ * `shell_environment_policy.set.OPENAI_BASE_URL` or an MCP server's `env`)
+ * that sets a routing name. A file it cannot read is `(unreadable)`.
  */
 function codexRoutingSettings(text: string | null): string[] {
   if (!text) return [];
-  const settings = new Set<string>();
-  let table = '';
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/\s+#.*$/, '').trim();
-    if (!line || line.startsWith('#')) continue;
-    const header = /^\[\[?\s*(.+?)\s*\]\]?$/.exec(line);
-    if (header) {
-      table = unquote(header[1]);
-      continue;
-    }
-    const assign = /^([A-Za-z0-9_."'-]+(?:\s*\.\s*[A-Za-z0-9_."'-]+)*)\s*=/.exec(line);
-    if (!assign) continue;
-    const key = [table, unquote(assign[1])].filter(Boolean).join('.');
-    const provider = /^model_providers\.([^.]+)/.exec(key);
-    if (provider) settings.add(`model_providers.${provider[1]}`);
-    else if (/(^|\.)model_provider$/.test(key) || /base_url$/.test(key)) settings.add(key);
+  let doc: TomlTable;
+  try {
+    doc = parseToml(text);
+  } catch {
+    return ['(unreadable)'];
   }
+  const settings = new Set<string>();
+  const walk = (table: TomlTable, keys: string[]) => {
+    for (const [key, value] of Object.entries(table)) {
+      const path = [...keys, key];
+      const name = path.join('.');
+      if (path.length === 1 && key === 'model_providers') {
+        const entries = isTable(value) ? Object.keys(value) : [];
+        for (const entry of entries.length > 0 ? entries : ['']) settings.add(entry ? `${name}.${entry}` : name);
+        continue;
+      }
+      if ((path.length === 1 && key === 'profile') || key === 'model_provider' || /base_url$/i.test(key)) {
+        settings.add(name);
+      } else if (!isTable(value) && !Array.isArray(value) && /^[A-Z_][A-Z0-9_]*$/.test(key) && isCheckoutRoutingEnvKey(key)) {
+        settings.add(name);
+      }
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (isTable(child)) walk(child, path);
+      }
+    }
+  };
+  walk(doc, []);
   return [...settings];
+}
+
+function isTable(value: TomlValue | undefined): value is TomlTable {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function envFileRoutingNames(text: string | null): string[] {
@@ -314,10 +338,6 @@ function configLabel(workspace: string, harness: string, configDir: string, file
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-function unquote(dotted: string): string {
-  return dotted.split('.').map((part) => part.trim().replace(/^["']|["']$/g, '')).join('.');
 }
 
 function readText(file: string): string | null {

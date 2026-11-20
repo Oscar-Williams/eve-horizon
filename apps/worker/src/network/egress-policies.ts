@@ -339,7 +339,13 @@ export class EgressPolicies {
     return { cidrs: [], namespaces: [] };
   }
 
-  /** The namespaces (and service port) of the app-link producers a project consumes, for these env names. */
+  /**
+   * The namespaces (and service port) of the app-link producers a project
+   * consumes, for these env names. A link with a fixed producer env counts
+   * whatever the env names (jobs resolve it with no environment, so a
+   * job-only project's runners need it too); a `same` link counts once per
+   * env name.
+   */
   private async producerPeers(projectId: string, envNames: string[]): Promise<Array<{ namespace: string; ports?: number[] }>> {
     const peers = new Map<string, { namespace: string; ports?: number[] }>();
     for (const subscription of await this.appLinks.listWithGrants({ consumer_project_id: projectId })) {
@@ -350,9 +356,10 @@ export class EgressPolicies {
       if (!producer || !org) continue;
       const port = await this.servicePort(producer.id, grant.service_name);
       const ports = port ? [port] : undefined;
-      for (const envName of envNames) {
-        const producerEnv = subscription.environment_strategy === 'same' ? envName : subscription.producer_env_name;
-        if (!producerEnv) continue;
+      const producerEnvs = subscription.environment_strategy === 'same'
+        ? envNames
+        : (subscription.producer_env_name ? [subscription.producer_env_name] : []);
+      for (const producerEnv of new Set(producerEnvs)) {
         if (grant.envs.length > 0 && !grant.envs.includes(producerEnv)) continue;
         // Callers address the derived namespace; an env may also hold its own.
         const stored = (await this.envs.findByProjectAndName(producer.id, producerEnv))?.namespace;

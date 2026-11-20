@@ -6,6 +6,7 @@ import {
   RUNNER_SETTINGS,
   renderRunnerTemplates,
   resolveRunnerPodIsolation,
+  runnerPoolKey,
   type RunnerClass,
 } from '@eve/shared';
 import { execKubectl } from '../invoke/k8s-runner.js';
@@ -27,6 +28,13 @@ export interface RunnerTemplatesReport {
  * them at startup, so a release's runner image follows the release, and on
  * `eve system security reconcile`, so changed settings take effect. Without
  * the agent-sandbox CRDs it does nothing: runner pods are created directly.
+ *
+ * Each template carries only the SHA-256 of the worker's pool key
+ * (`runnerPoolKey`), so a warm pod takes a submit only from a worker. A new
+ * key (`EVE_RUNNER_POOL_KEY`, or the internal core key it is derived from)
+ * changes the templates at the next startup or reconcile, and the pools
+ * (update strategy Recreate) replace their warm pods. With no key to derive
+ * it from, nothing is rendered and runner pods are created directly.
  *
  * Settings: `runner.runtime_class` (for example `gvisor`),
  * `runner.runtime_class_opt_out` (classes that run without it, comma
@@ -54,6 +62,10 @@ export class RunnerTemplatesService implements OnApplicationBootstrap {
     }
     const image = process.env.EVE_RUNNER_IMAGE;
     if (!image) throw new Error('EVE_RUNNER_IMAGE is not set on the worker');
+    const poolKey = runnerPoolKey();
+    if (!poolKey) {
+      return { backend: 'pod', namespace, reason: 'the worker holds no key to derive the runner pool key from (EVE_RUNNER_POOL_KEY or its internal key)' };
+    }
 
     const settings = systemSettingsQueries(this.db);
     const read = async (key: string) => (await settings.get(key))?.value?.trim() || null;
@@ -68,6 +80,9 @@ export class RunnerTemplatesService implements OnApplicationBootstrap {
 
     const objects = renderRunnerTemplates({
       namespace, image, runtimeClass, runtimeOptOut: optOut, warmPools, isolation: resolveRunnerPodIsolation(),
+      // The heavy class's workspace claim, as a heavy plain pod's.
+      heavyWorkspaceSize: process.env.EVE_K8S_WORKSPACE_SIZE || undefined,
+      poolKeySha256: poolKey.sha256,
     });
     const applied = await execKubectl(['apply', '-f', '-'], JSON.stringify({ apiVersion: 'v1', kind: 'List', items: objects }));
     if (applied.exitCode !== 0) throw new Error(`Runner templates were not applied: ${applied.stderr || applied.stdout}`);

@@ -328,8 +328,8 @@ export function runnerDenyPolicies(namespaces: { runnerNamespace: string; platfo
 
 /**
  * The static `eve-runner-ingress`: runner pods take connections only from
- * the worker, on the submit port. A warm pod accepts the first submit that
- * brings a key, so nothing else may reach it.
+ * the worker, on the submit port. Behind it, a submit must still present the
+ * pod's own key or the worker's pool key (runner-protocol.ts).
  */
 export function runnerIngressPolicies(namespaces: { runnerNamespace: string; platformNamespace: string }): IngressNetworkPolicy[] {
   return [namespaces.runnerNamespace, namespaces.platformNamespace].map((namespace) => ({
