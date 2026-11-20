@@ -8,7 +8,8 @@ type Headers = Record<string, string | string[] | undefined>;
  * `internal.service_key` for a call that only the legacy key proves. The
  * gateway holds no database, so the API decides the instance's profile and
  * records the finding; the answer is reused for half a minute. When the API
- * cannot answer, the call is let through as before this rule.
+ * cannot answer, the last answer stands (a `strict` one keeps refusing); a
+ * gateway that has never had an answer lets the call through.
  */
 export function gatewayLegacyKeyJudge(): (route: string) => Promise<boolean> {
   return legacyInternalKeyJudge(async (route) => {
