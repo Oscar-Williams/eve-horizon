@@ -1,5 +1,5 @@
 import { connect } from 'node:net';
-import type { RunnerApiClient, RunnerResultReport, RunnerSubmit } from '@eve/shared';
+import { RunnerApiError, type RunnerApiClient, type RunnerResultReport, type RunnerSubmit } from '@eve/shared';
 
 export const RUNNER_SELF_CHECK = 'RUNNER_SELF_CHECK';
 
@@ -26,7 +26,9 @@ export function tcpReachable(host: string, port: number, timeoutMs = 1500): Prom
  * The result goes to the attempt's runtime_meta.self_check, which the API
  * takes once. It is always written before job code starts, `off` (or no
  * mode) included, so job code, which holds the same token, finds the slot
- * taken; when the write fails the job does not run. Under `enforce` (the
+ * taken; when the write fails the job does not run. A network error or a 5xx
+ * is retried once; a 409 on that retry means the first write landed (job
+ * code cannot have run yet), so it counts as recorded. Under `enforce` (the
  * project's strict profile) a connection that opens fails the job with
  * "egress policy not enforced"; under `audit` the job runs; `off` skips the
  * connections.
@@ -34,8 +36,28 @@ export function tcpReachable(host: string, port: number, timeoutMs = 1500): Prom
 export function egressSelfCheck(opts: {
   probe?: (host: string, port: number) => Promise<boolean>;
   kubernetesHost?: string;
+  /** Wait before the one retry of the write. */
+  retryDelayMs?: number;
 } = {}): RunnerSelfCheck {
   const probe = opts.probe ?? tcpReachable;
+  const retryDelayMs = opts.retryDelayMs ?? 1000;
+  const record = async (client: Pick<RunnerApiClient, 'updateRuntimeMeta'>, report: Record<string, unknown>) => {
+    try {
+      await client.updateRuntimeMeta({ self_check: report });
+    } catch (err) {
+      // A refusal (4xx) is final, a 409 on the first write included: something else wrote the slot.
+      if (err instanceof RunnerApiError && err.status < 500) throw err;
+      console.warn(`[runner] Recording the self-check failed (${err instanceof Error ? err.message : String(err)}); retrying once`);
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      try {
+        await client.updateRuntimeMeta({ self_check: report });
+      } catch (retryErr) {
+        // The first write reached the API after all; no job code has run to take the slot.
+        if (retryErr instanceof RunnerApiError && retryErr.status === 409) return;
+        throw retryErr;
+      }
+    }
+  };
   return async (submit, client) => {
     const mode = submit.self_check ?? 'off';
     let metadata = false;
@@ -49,7 +71,7 @@ export function egressSelfCheck(opts: {
       ? { mode, checked_at: checkedAt }
       : { mode, metadata_reachable: metadata, kubernetes_reachable: kubernetes, checked_at: checkedAt };
     try {
-      await client.updateRuntimeMeta({ self_check: report });
+      await record(client, report);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.error(`[runner] Failed to record the self-check: ${reason}`);

@@ -86,6 +86,18 @@ describe('Codex auth.json: the access token and the plain account field', () => 
     }
   });
 
+  it('says so when it accepts an access token on its decoded claims only, and not when the token verifies', async () => {
+    for (const opts of [{ iss: 'https://issuer.example' }, { kid: 'unknown', key: otherKeys.privateKey }]) {
+      const note = vi.fn();
+      const json = authJson({ id_token: idToken('acct_acme'), access_token: accessToken('acct_acme', opts) });
+      await expect(verifiedCodexAccountId(json, jwks, NOW, note)).resolves.toBe('acct_acme');
+      expect(note, JSON.stringify(opts)).toHaveBeenCalledWith(expect.stringMatching(/access_token .*decoded claims only/));
+    }
+    const note = vi.fn();
+    await expect(verifiedCodexAccountId(authJson({ id_token: idToken('acct_acme') }), jwks, NOW, note)).resolves.toBe('acct_acme');
+    expect(note).not.toHaveBeenCalled();
+  });
+
   it('skips the access token check, and says so, when the access token is not a JWT', async () => {
     for (const access of ['at-opaque', undefined]) {
       const note = vi.fn();
