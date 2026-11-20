@@ -93,6 +93,18 @@ describe('Claude Code under strict', () => {
     expect(argAfter(args, '--setting-sources')).toBe('user');
   });
 
+  it('refuses a checkout settings file it cannot read, rather than pass it as clean', () => {
+    for (const file of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) {
+      expect(() => build(context('claude', dir({ [file]: '{ "env": ' }), { CLAUDE_CONFIG_DIR: dir() })), file)
+        .toThrow(/harness\.checkout_settings/);
+    }
+    for (const file of ['settings.json', '.claude.json']) {
+      const config = dir({ [file]: '{ "env": ' });
+      expect(() => build(context('mclaude', dir(), { CLAUDE_CONFIG_DIR: config })), file).toThrow(/harness\.checkout_settings/);
+      expect(fs.readFileSync(path.join(config, file), 'utf8')).toBe('{ "env": ');
+    }
+  });
+
   it('changes nothing without the strict flag', () => {
     const ws = dir({ '.claude/settings.json': PROJECT_SETTINGS });
     const { args } = build(context('claude', ws, { EVE_HARNESS_CHECKOUT_SETTINGS: undefined, CLAUDE_CONFIG_DIR: dir() }));
@@ -219,6 +231,14 @@ describe('Gemini under strict', () => {
   it('refuses a workspace MCP server that expands a credential', () => {
     const settings = JSON.stringify({ mcpServers: { local: { command: 'srv', env: { KEY: '$GEMINI_API_KEY' } } } });
     expect(() => build(context('gemini', dir({ '.gemini/settings.json': settings })))).toThrow(/harness\.checkout_settings/);
+  });
+
+  it('reads workspace settings with comments as Gemini does, and refuses settings it cannot read', () => {
+    const commented = '{\n  // a credential\n  "mcpServers": { "local": { "command": "srv", "env": { "KEY": "$GEMINI_API_KEY" } } }\n}\n';
+    expect(() => build(context('gemini', dir({ '.gemini/settings.json': commented })))).toThrow(/harness\.checkout_settings/);
+    expect(() => build(context('gemini', dir({ '.gemini/settings.json': '{ "mcpServers": ' })))).toThrow(/harness\.checkout_settings/);
+    const clean = '{\n  /* tools */\n  "mcpServers": { "local": { "command": "srv", "env": { "MODE": "$SHOP_MODE" } } }\n}\n';
+    expect(build(context('gemini', dir({ '.gemini/settings.json': clean }))).env.GEMINI_CLI_SYSTEM_SETTINGS_PATH).toBeDefined();
   });
 });
 
