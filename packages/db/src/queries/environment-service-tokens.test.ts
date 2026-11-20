@@ -1,6 +1,7 @@
 /**
  * An environment's service tokens can be revoked: `service_tokens_not_before`
  * is null until a rotation sets it, and a later rotation never moves it back.
+ * The worker renews the tokens of deployed environments only.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -55,6 +56,40 @@ describe('environment service tokens', () => {
     const later = new Date('2026-11-20T13:00:00Z');
     expect((await environments.revokeServiceTokens(env, later))?.service_tokens_not_before?.toISOString())
       .toBe(later.toISOString());
+  });
+
+  it('lists deployed environments for renewal, with their org and applied release', async () => {
+    const environments = environmentQueries(db);
+    await db`INSERT INTO environments (id, project_id, name, type, namespace)
+             VALUES (${`env_stage${suffix}`}, ${project}, 'staging', 'persistent', 'eve-acme-shop-staging')`;
+    await db`INSERT INTO releases (id, project_id, git_sha, manifest_hash)
+             VALUES (${`rel_1${suffix}`}, ${project}, 'a1b2c3d', 'hash-1'),
+                    (${`rel_2${suffix}`}, ${project}, 'e4f5a6b', 'hash-2')`;
+    await db`UPDATE environments
+             SET namespace = 'eve-acme-shop-prod', current_release_id = ${`rel_1${suffix}`},
+                 last_applied_release_id = ${`rel_2${suffix}`}
+             WHERE id = ${env}`;
+
+    const listed = (await environments.listForServiceTokenRenewal()).filter((row) => row.project_id === project);
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: env,
+        org_id: org,
+        name: 'prod',
+        namespace: 'eve-acme-shop-prod',
+        release_id: `rel_2${suffix}`,
+      }),
+    ]);
+    expect(listed[0].service_tokens_not_before).toBeInstanceOf(Date);
+
+    expect(await environments.listForServiceTokenRenewal(env)).toHaveLength(1);
+    expect(await environments.listForServiceTokenRenewal(`env_stage${suffix}`)).toEqual([]);
+
+    await db`UPDATE projects SET deleted_at = NOW() WHERE id = ${project}`;
+    expect(await environments.listForServiceTokenRenewal(env)).toEqual([]);
+    await db`UPDATE projects SET deleted_at = NULL WHERE id = ${project}`;
+    await db`UPDATE environments SET current_release_id = NULL, last_applied_release_id = NULL WHERE id = ${env}`;
+    await db`DELETE FROM releases WHERE project_id = ${project}`;
   });
 
   it('finds no environment to rotate when it is gone', async () => {
