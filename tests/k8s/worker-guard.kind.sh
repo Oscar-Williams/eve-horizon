@@ -57,7 +57,8 @@ fi
 
 # --- Fixtures, as the cluster admin -----------------------------------------
 "${K[@]}" delete namespace eve-acme-shop-new --ignore-not-found --wait=true >/dev/null
-for ns in eve-acme-shop-prod eve-acme-shop-old acme-foreign; do
+# eve-builds: the per-build namespace, a static one the template may not hold.
+for ns in eve-acme-shop-prod eve-acme-shop-old acme-foreign eve-builds; do
   "${K[@]}" create namespace "$ns" --dry-run=client -o yaml | "${K[@]}" apply -f - >/dev/null
 done
 "${K[@]}" label namespace eve-acme-shop-prod eve.env_id=env_prod eve.horizon/managed=true --overwrite >/dev/null
@@ -224,6 +225,13 @@ guard $WG "label a pod in the platform namespace as a platform workload (eve-api
 guard $WG "mount eve-app in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"s","secret":{"secretName":"eve-app"}}]')")"
 guard $WG "read eve-app through env in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner"' '{"name":"main","image":"registry.example/app:1","envFrom":[{"secretRef":{"name":"eve-app"}}]}')")"
 guard $WG "mount a platform claim (postgres data) in a pod in the platform namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve probe "$(spec '"serviceAccountName":"eve-runner","volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"postgres-data-postgres-0"}}]')")"
+
+echo "== refused: RoleBindings in the static namespaces"
+# RBAC lets the worker bind eve-worker-tenant anywhere; in eve that would win
+# back Secret reads, ConfigMaps and Deployments there.
+for ns in eve eve-runners eve-builds; do
+  guard $NG "bind eve-worker-tenant for the worker in $ns" "${W[@]}" "${DRY[@]}" <<<"$(tenant_binding "$ns")"
+done
 
 echo "== refused: pods and pod templates, in any namespace"
 guard $WG "a privileged pod in a managed namespace" "${W[@]}" "${DRY[@]}" <<<"$(pod eve-acme-shop-prod probe "$(spec '' '{"name":"main","image":"registry.example/app:1","securityContext":{"privileged":true}}')")"

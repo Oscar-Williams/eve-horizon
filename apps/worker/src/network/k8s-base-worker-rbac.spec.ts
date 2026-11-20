@@ -165,6 +165,12 @@ describe('k8s/base: the worker namespace guard', () => {
     expect(messages.join('\n')).toMatch(/managed/);
     expect(policy()!.spec.validations.length).toBeGreaterThanOrEqual(5);
   });
+
+  it('refuses every RoleBinding in the static namespaces (eve-worker-tenant in eve would give back its Secrets)', () => {
+    const rules = (policy()!.spec.validations as Array<{ expression: string }>)
+      .filter((v) => v.expression.includes('variables.isRoleBinding'));
+    expect(rules.some((v) => v.expression.includes('variables.staticNamespaces'))).toBe(true);
+  });
 });
 
 describe('k8s/admission: the worker workload guard', () => {
