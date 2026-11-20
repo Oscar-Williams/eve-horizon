@@ -406,7 +406,7 @@ see [security profiles](security-profiles.md#rule-set-2-01327)) covers them.
 
 | Harness | Checkout settings read | Under `strict` |
 |---|---|---|
-| `claude`, `mclaude`, `zai` | `.claude/settings.json`, `.claude/settings.local.json`; Eve's copy of `.agent/harnesses/<harness>/settings.json`; MCP servers in `.mcp.json` and the config directory's `.claude.json` | Claude Code reads a cleaned merge of the project and local settings through `--settings`, with `--setting-sources user`, so the originals are not read. Eve's copy of the config directory is cleaned in place (its tool gate and hooks stay). Claude Code runs with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` (below), which no settings file may set. **Refused:** a config directory inside the checkout that sets routing, `apiKeyHelper` or the scrub switch; an MCP server that names a credential or routing variable; any of these files that cannot be parsed. |
+| `claude`, `mclaude`, `zai` | `.claude/settings.json`, `.claude/settings.local.json`; Eve's copy of `.agent/harnesses/<harness>/settings.json`; MCP servers in `.mcp.json` and the config directory's `.claude.json` | Claude Code reads a cleaned merge of the project and local settings through `--settings`, with `--setting-sources user`, so the originals are not read. Eve's copy of the config directory is cleaned in place (its tool gate and hooks stay). **Refused:** a config directory inside the checkout that sets routing or `apiKeyHelper`; an MCP server that names a credential or routing variable; any of these files that cannot be parsed. |
 | `codex` | a trusted project's `.codex/config.toml`; `CODEX_HOME/config.toml` and `CODEX_HOME/.env` when `CODEX_HOME` is in the checkout (`.agent/harnesses/codex/`, or `variants/<variant>/` under it) | **Refused:** a checkout config that sets the top-level `profile` (it selects a profile's provider, which `-c` cannot undo), `model_provider` (top level or in a profile), any `model_providers` entry, any `*base_url` (`openai_base_url`, `chatgpt_base_url`, a profile's), an env override that sets a routing name (`shell_environment_policy.set`, an MCP server's `env`), a `shell_environment_policy` that widens what shell commands inherit (`inherit = "all"`, `ignore_default_excludes = true`, an `include_only` or `filters` pattern that keeps a credential, a `set` entry that names or references one), or an MCP server handed a credential or routing variable by name (`env_vars`, `bearer_token_env_var`, `env_http_headers` values) or an `auth` other than `oauth`; a config it cannot parse (it is read with a TOML parser, so tables, dotted keys, inline tables and quoted keys all count); and **any** `.env` in a config home inside the checkout, whatever it holds: Codex loads it over its own environment (keeping out only `CODEX_` names) and expands `${NAME}` in it, so a harmless name can carry a key. Otherwise `-c model_provider="openai"` (and `-c profiles.<variant>.model_provider="openai"`), the top config layer, pins the built-in provider, which uses the job's own `OPENAI_BASE_URL`. |
 | `gemini` | `.gemini/.env`, then `.env`, loaded into Gemini's environment; `.gemini/settings.json` (JSON with comments) | An Eve-owned system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, which outranks workspace settings) lists the project `.env`'s routing names in `advanced.excludedEnvVars`. **Refused:** routing names in `.gemini/.env`, which Gemini loads whatever the exclusions; a `$NAME` or `${NAME}` reference to a credential or routing name anywhere in `.gemini/settings.json` (an MCP server, a telemetry endpoint, a tool command), since Gemini expands them in every setting; a `.gemini/settings.json` that does not parse once its `//` and `/* */` comments are stripped, as Gemini strips them. |
 | `code`, `pi` | not confirmed | refused |
@@ -442,17 +442,12 @@ Under `strict`, Claude Code's `--setting-sources user` also keeps
 user and per-project servers in the config directory's `.claude.json`,
 which that flag does not.
 
-Under `strict`, Claude Code runs with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`.
-Claude Code keeps its credentials for its own API calls and strips them
-from the environment of the subprocesses it starts: Bash commands, hooks
-and stdio MCP servers. It judges a credential by its name or the shape of
-its value, so job code on a strict project loses more than the harness
-key: `EVE_JOB_TOKEN`, `EVE_APP_LINK_<APP>_TOKEN` and bound secrets with
-credential-like names (`NPM_TOKEN`, `DB_PASSWORD`) or values are gone from
-its shell too. The `eve` CLI still signs in from the job's
-`~/.eve/credentials.json`; `GITHUB_TOKEN`, `GH_TOKEN` and proxy settings
-stay. On Linux Claude Code also runs Bash in its own PID namespace. See
-Claude Code's [subprocess environment scrub](https://code.claude.com/docs/en/env-vars#what-the-subprocess-environment-scrub-removes).
+Eve does not set Claude Code's `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. It
+strips credentials from Bash commands, hooks and stdio MCP servers by name
+and value shape, which would also take `EVE_JOB_TOKEN`, the app link tokens
+and bound secrets from the shell of every strict Claude job, and break the
+app-API calls agents make with them. Egress allow lists cover what it
+would.
 
 **What the rule does not cover.** It keeps checkout settings from
 rerouting model traffic and from handing a credential to a place the
@@ -463,8 +458,7 @@ lists (`egress.allow_hosts`, rule set 3) close it. Eve does not chase every
 config form that leads there. Codex 0.171, for example, already passes its
 whole environment to shell commands by default (`inherit = "all"`,
 `ignore_default_excludes = true`), and Claude Code plugins can start their
-own MCP servers; the subprocess scrub narrows the Claude side, and the
-egress allow lists close the rest.
+own MCP servers; the egress allow lists close these.
 
 The run (worker, or the agent runtime for inline jobs) reads the project's
 profile. Under `audit` it records each run whose checkout supplies routing
@@ -473,8 +467,7 @@ Under `strict` it records them too and sets `EVE_HARNESS_CHECKOUT_SETTINGS=stric
 for `eve-agent-cli`, which applies the mechanism above or fails the run with
 the reason; a harness with no confirmed mechanism is refused before it
 starts. The mechanisms were checked against Claude Code 2.1 (`--settings`,
-`--setting-sources`; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` as documented for
-2.1.251 and later), Codex 0.156 to 0.171 (`-c`, project config layers,
+`--setting-sources`), Codex 0.156 to 0.171 (`-c`, project config layers,
 `shell_environment_policy` defaults) and Gemini CLI 0.23 (system settings
 precedence, `advanced.excludedEnvVars`).
 
