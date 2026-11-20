@@ -41,6 +41,11 @@ POST /projects/{project_id}/workflows/{name}/invoke?wait=true|false
 
 ### Behavior
 
+- A run is written whole or not at all. Every step is resolved first (its
+  agent, app APIs, token permissions, scope, git and inputs); then the root,
+  the steps, their dependencies and their release to `ready` are written in
+  one transaction. A step that cannot be resolved fails the invoke with
+  nothing created, and no one sees the root before its steps.
 - A job is created with:
   - `labels`: `workflow:{name}`
   - `hints.workflow_name`: workflow name
