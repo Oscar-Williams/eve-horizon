@@ -109,6 +109,9 @@ type PreparedAppLinkReconciliation = {
   warnings: string[];
 };
 
+/** Security rule: a manifest may not promise an environment approval gate Eve does not enforce (governed by the project). */
+export const APPROVAL_UNENFORCED_RULE = 'manifest.approval_unenforced';
+
 @Injectable()
 export class ManifestService {
   private projects: ReturnType<typeof projectQueries>;
@@ -330,9 +333,10 @@ export class ManifestService {
     await this.checkEgressHostAddresses(validatedManifest);
     await this.checkReservedEnvOverrides(projectId, validatedManifest, caller);
     const profileWarnings = await this.checkWorkflowHarnessProfiles(projectId, validatedManifest, caller);
+    const approvalWarnings = await this.checkEnvironmentApprovalGates(projectId, validatedManifest, caller);
     const privateDomainWarnings = this.privateServiceDomainWarnings(validatedManifest);
-    if (profileWarnings.length > 0 || privateDomainWarnings.length > 0) {
-      warnings = [...(warnings ?? []), ...profileWarnings, ...privateDomainWarnings];
+    if (profileWarnings.length > 0 || approvalWarnings.length > 0 || privateDomainWarnings.length > 0) {
+      warnings = [...(warnings ?? []), ...profileWarnings, ...approvalWarnings, ...privateDomainWarnings];
     }
 
     // Hash the manifest content
@@ -529,6 +533,39 @@ export class ManifestService {
       detail: { profiles: [...new Set(gaps.map((gap) => gap.name))].sort().join(',') },
     }, `Manifest refused: ${message}`);
     return [message];
+  }
+
+  /**
+   * `environments.<env>.approval` promises that deploys to the environment
+   * wait for a person; Eve does not enforce it (EVE-056). Rule
+   * manifest.approval_unenforced (project): `strict` refuses the sync (400),
+   * `audit` syncs with the warning and records what strict would refuse,
+   * `legacy` gives the warning only.
+   */
+  private async checkEnvironmentApprovalGates(
+    projectId: string,
+    manifest: Manifest,
+    caller?: AuthUser,
+  ): Promise<string[]> {
+    const gated = Object.entries(manifest.environments ?? {})
+      .filter(([, environment]) => environment?.approval !== undefined && environment?.approval !== null)
+      .map(([name]) => name);
+    if (gated.length === 0) return [];
+    const messages = gated.map(
+      (name) => `Environment approval gates are not enforced by Eve. Remove \`approval\` from environments.${name}.`,
+    );
+    const profile = this.security
+      ? await this.security.decide(APPROVAL_UNENFORCED_RULE, {
+          projectId,
+          governing: 'project',
+          actor: caller,
+          detail: { environments: gated.join(',') },
+        })
+      : 'legacy';
+    if (profile === 'strict') {
+      throw new BadRequestException(`Manifest refused: ${messages.join(' ')} (rule ${APPROVAL_UNENFORCED_RULE})`);
+    }
+    return messages;
   }
 
   async getLatestManifest(projectId: string): Promise<ManifestResponse | null> {

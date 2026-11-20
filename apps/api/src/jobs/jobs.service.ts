@@ -1,9 +1,9 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, ConflictException, ForbiddenException, MessageEvent } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import type { Db } from '@eve/db';
-import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
+import { jobQueries, projectQueries, executionLogQueries, gateQueries, projectManifestQueries, threadMessageQueries, environmentQueries, agentQueries, projectApiSourceQueries, orgQueries, agentConfigQueries, appLinkSubscriptionQueries, findJobAgent, ReviewDecidedError, type Job, type JobAttempt, type JobHints, type AttemptResultData, type JobWorkspaceConfig, type JobAttemptGitMeta } from '@eve/db';
 import type { AccessBindingScope, JobGit, JobWorkspace, JobHarnessOptions, JobCompareResponse, JobTarget, ResourceRef, CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, InlineProfileBundle } from '@eve/shared';
-import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
+import { AccessBindingScopeSchema, agentSecretsAllowlist, boundSecretKeys, hasUserActor, isSameActor, narrowSecretsAllowlist, storedActor, deriveNamespace, parseResourceUri, defaultMountPathForUri, isValidMountPath, renderLogText, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, type AppApiCliInfo, type AppApiInfo, type HarnessProfileSource } from '@eve/shared';
 import * as yaml from 'yaml';
 import { buildApiError } from '../system/api-errors.js';
 import { JobLogsService } from './job-logs.service.js';
@@ -15,7 +15,7 @@ import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SecurityService } from '../security/security.service.js';
 import { holdReservedEnvOverrides } from '../security/reserved-env.js';
-import { APPROVE_TOKEN_RULE, DEPENDENCY_CHANGE_RULE, RUN_STEP_CHANGE_RULE, deciderOf, isUserToken, runOfRecord, type RunRef } from './run-steps.js';
+import { APPROVE_TOKEN_RULE, DEPENDENCY_CHANGE_RULE, RUN_STEP_CHANGE_RULE, deciderOf, howToChangeRun, isUserToken, runKind, runOfRecord, type RunRef } from './run-steps.js';
 
 // ============================================================================
 // Request/Response Types (inline - the new model)
@@ -290,6 +290,14 @@ function changesProgress(job: Job, updates: UpdateJobRequest): boolean {
     (updates.phase && updates.phase !== job.phase)
     || (updates.review_required !== undefined && updates.review_required !== job.review_required),
   );
+}
+
+/** A failed review decision as an HTTP error: 409 when the review was already decided, 400 otherwise. */
+function reviewDecisionError(error: unknown): Error {
+  if (error instanceof ReviewDecidedError) {
+    return new ConflictException(`${error.message}; read the job again`);
+  }
+  return new BadRequestException(error instanceof Error ? error.message : String(error));
 }
 
 @Injectable()
@@ -896,7 +904,7 @@ export class JobsService {
       target: data.target ?? null,
       resource_refs: data.resource_refs ?? [],
       content_hash: null,
-      actor_user_id: userId ?? null,
+      actor_user_id: storedActor(userId),
       user_secrets_excluded: options.userSecretsExcluded ?? false,
       secrets_allowlist: options.secretsAllowlist ?? null,
       failure_disposition: null,
@@ -1117,10 +1125,11 @@ export class JobsService {
    * nothing changes when any part fails.
    */
   async changeWhatJobRuns<T>(job: Job, caller: AuthUser, change: (tx: Db) => Promise<T>): Promise<T> {
-    if (!isSameActor(job.actor_user_id, caller.user_id) && await this.isRunJob(job)) {
+    const run = isSameActor(job.actor_user_id, caller.user_id) ? null : await this.runOf(job);
+    if (run) {
       throw new ForbiddenException(
-        `Job ${job.id} belongs to a workflow or pipeline run, and only its actor can change what it runs or its attachments; ` +
-        'retry the workflow (eve workflow retry) or start a new run instead',
+        `Job ${job.id} belongs to a ${runKind(run)} run, and only its actor can change what it runs or its attachments; ` +
+        `${howToChangeRun(run)} instead`,
       );
     }
     await this.guardRunJob(job, caller, 'change what runs in');
@@ -1149,16 +1158,12 @@ export class JobsService {
   }
 
   /**
-   * True for the jobs of a workflow or pipeline run: a step the run compiled
-   * (its step_name column, which only the expanders set) or the root of a run
-   * (a job with such a step under it). The steps of a run feed each other as
-   * their own actors or the run's, so these actors never move to someone else.
+   * The run a job belongs to, judged from its record (see runOfRecord): a
+   * step the run compiled (its step_name column, which only the expanders
+   * set) or the root of a run (a job with such a step under it). The steps of
+   * a run feed each other as their own actors or the run's, so these actors
+   * never move to someone else.
    */
-  private async isRunJob(job: Job): Promise<boolean> {
-    return (await this.runOf(job)) !== null;
-  }
-
-  /** The run a job belongs to, judged from its record (see runOfRecord). */
   private async runOf(job: Job): Promise<RunRef | null> {
     if (job.step_name) {
       return runOfRecord(job, false);
@@ -1384,7 +1389,7 @@ export class JobsService {
         try {
           await txJobs.approveReview(job.id, options.decider.id, undefined, options.decider.type);
         } catch (error) {
-          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+          throw reviewDecisionError(error);
         }
       } else if (job.phase === 'review' && updates.phase === 'active') {
         // A rejection, as the reject route makes it: the caller's allowlist
@@ -1398,7 +1403,7 @@ export class JobsService {
             options.decider.type,
           );
         } catch (error) {
-          throw new BadRequestException(error instanceof Error ? error.message : String(error));
+          throw reviewDecisionError(error);
         }
       } else if (updates.phase === 'cancelled') {
         const cancelled = await txJobs.cancelJob(job.id, updates.close_reason ?? undefined, { cascade: options.cascade });
@@ -2164,7 +2169,8 @@ export class JobsService {
 
   /**
    * Approve a job in review. The decider recorded is the caller (deciderOf),
-   * never a reviewer named in the body.
+   * never a reviewer named in the body. The decision is made once, in a
+   * transaction holding the job's row: a review already decided gets 409.
    */
   async approve(jobId: string, data: ApproveRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
@@ -2175,10 +2181,13 @@ export class JobsService {
     await this.guardRunJob(current, caller, 'approve');
     const decider = deciderOf(caller);
     try {
-      const job = await this.jobs.approveReview(jobId, decider.id, data.comment, decider.type);
-      return this.toJobResponse(job);
+      const job = await this.db.begin(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        return jobQueries(tx).approveReview(jobId, decider.id, data.comment, decider.type);
+      });
+      return this.toJobResponse(job as Job);
     } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : String(error));
+      throw reviewDecisionError(error);
     }
   }
 
@@ -2203,7 +2212,8 @@ export class JobsService {
    * Reject a job in review, which runs it again. The job keeps its actor, but
    * a rejecter with a secrets allowlist (a restricted job's token) narrows the
    * job to it, so rejecting cannot re-run work that receives more secrets. The
-   * decider recorded is the caller, as on approve.
+   * decider recorded is the caller, as on approve, and the decision is made
+   * once: a review already decided gets 409 and no new attempt.
    */
   async reject(jobId: string, data: RejectRequest, caller?: AuthUser): Promise<JobResponse> {
     const current = await this.jobs.findById(jobId);
@@ -2221,7 +2231,7 @@ export class JobsService {
       });
       return this.toJobResponse(job as Job);
     } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : String(error));
+      throw reviewDecisionError(error);
     }
   }
 

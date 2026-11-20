@@ -2,7 +2,7 @@ import { Injectable, Inject, NotFoundException, BadRequestException } from '@nes
 import type { Db } from '@eve/db';
 import { jobQueries, projectQueries, batchJobQueries, type JobHints, type JobGitConfig } from '@eve/db';
 import type { CreateBatchRequest, CreateBatchResponse, BatchValidateResponse, BatchValidationError } from '@eve/shared';
-import { generateBatchId } from '@eve/shared';
+import { generateBatchId, storedActor } from '@eve/shared';
 import type { WorkStartOptions } from '../auth/token-scope.js';
 
 /**
@@ -255,7 +255,7 @@ export class JobBatchService {
         target: node.target ?? null,
         resource_refs: node.resource_refs ?? [],
         content_hash: null,
-        actor_user_id: userId ?? null,
+        actor_user_id: storedActor(userId),
         user_secrets_excluded: options.userSecretsExcluded ?? false,
         secrets_allowlist: options.secretsAllowlist ?? null,
         failure_disposition: null,

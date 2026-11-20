@@ -235,14 +235,20 @@ export function clampServiceTokenPermissions(requested: readonly string[]): stri
 }
 
 /**
- * The user id recorded on work no user started (internal pipeline runs) and
- * carried by job tokens for such jobs. It is never a person.
+ * The user id carried by job tokens for work no user started, and passed by
+ * internal pipeline expansion. It is never a person, and never stored as an
+ * actor (see {@link storedActor}); rows written before 0.1.329 may hold it.
  */
 export const SYSTEM_ACTOR_ID = 'system';
 
 /** True when `userId` names a user who started the work (not empty, not the system actor). */
 export function hasUserActor(userId: string | null | undefined): userId is string {
   return typeof userId === 'string' && userId.length > 0 && userId !== SYSTEM_ACTOR_ID;
+}
+
+/** The actor to store for work started as `userId`: the user, or null when no user started it. */
+export function storedActor(userId: string | null | undefined): string | null {
+  return hasUserActor(userId) ? userId : null;
 }
 
 /**

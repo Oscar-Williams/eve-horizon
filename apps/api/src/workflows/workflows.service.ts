@@ -1,7 +1,7 @@
 import { Injectable, Inject, BadRequestException, NotFoundException, RequestTimeoutException, Optional } from '@nestjs/common';
 import type { Db, Job, JobHints } from '@eve/db';
 import { projectManifestQueries, projectQueries, jobQueries, agentQueries, agentConfigQueries, projectApiSourceQueries, orgQueries, environmentQueries, appLinkSubscriptionQueries } from '@eve/db';
-import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, agentSecretsAllowlist, boundSecretKeys, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
+import { deriveNamespace, ResourceRefSchema, EnvOverridesSchema, StoredEnvOverridesSchema, AccessBindingScopeSchema, WorkflowDefinitionSchema, VALID_TOOLCHAINS, buildIngestUri, buildAppApiInstructionBlock, getServicesFromManifest, resolveHarnessProfile as sharedResolveHarnessProfile, buildWorkflowInputsScope, hasUserActor, narrowSecretsAllowlist, agentSecretsAllowlist, boundSecretKeys, interpolateValue, isAccountLevelPermission, isOrgManagementPermission, isValidPermission, MINIMAL_JOB_TOKEN_PERMISSIONS, mergeEnvOverrides, splitNoActorJobPermissions, storedActor, parseWorkflowStepExecution, findUndeclaredHarnessNames, describeHarnessNameGaps, type AccessBindingScope, type AppApiCliInfo, type AppApiInfo, type EnvOverrides, type EvaluateScope, type HarnessProfileSource, type InlineProfileBundle, type ResourceRef, type StepExecution, type WorkflowListResponse, type WorkflowResponse, type WorkflowInvokeRequest, type WorkflowInvokeResponse, type WorkflowInvokeResult, type WorkflowRetryRequest, type WorkflowRetryResponse, type WorkflowStepJob } from '@eve/shared';
 import { AccessService } from '../auth/access.service.js';
 import { RbacService, SECRETS_USE_RULE } from '../auth/rbac.service.js';
 import { judgeJobScope, type WorkStartOptions } from '../auth/token-scope.js';
@@ -21,6 +21,15 @@ type ResolvedResourceRefsPolicy = {
   selectors: string[];
 };
 type ResourceRefsAccessSummary = NonNullable<WorkflowStepJob['resource_refs']>;
+/** A job of a workflow run, resolved before it is written: everything but its id and parent. */
+type PlannedJobRow = Omit<Parameters<ReturnType<typeof jobQueries>['create']>[0], 'id' | 'parent_id'>;
+/** A workflow step resolved in the first pass of an invoke. */
+type PlannedWorkflowStep = {
+  stepName: string;
+  dependsOn: string[] | undefined;
+  resourceRefs: ResourceRefsAccessSummary;
+  row: PlannedJobRow;
+};
 
 @Injectable()
 export class WorkflowsService {
@@ -988,13 +997,9 @@ export class WorkflowsService {
       event: { payload: eventPayload },
     };
 
-    // 4. Create root/container job
-    const { id: rootJobId } = await this.jobs.generateJobId(project.id);
-
-    await this.jobs.create({
-      id: rootJobId,
+    // 4. The root/container job, written with its steps below
+    const rootRow: PlannedJobRow = {
       project_id: projectId,
-      parent_id: null,
       depth: 0,
       title: `[Workflow] ${workflowName}`,
       description: `Workflow: ${workflowName} (${steps.length} steps)`,
@@ -1039,21 +1044,21 @@ export class WorkflowsService {
       target: null,
       resource_refs: resourceRefs,
       content_hash: null,
-      actor_user_id: userId ?? null,
+      actor_user_id: storedActor(userId),
       user_secrets_excluded: userSecretsExcluded,
       secrets_allowlist: callerSecretsAllowlist,
       failure_disposition: null,
       closed_at: null,
       close_reason: null,
-    });
+    };
 
-    // 5. Create one child job per step
-    const stepNameToJobId = new Map<string, string>();
-    const stepJobSummaries: WorkflowStepJob[] = [];
+    // 5. Resolve every step before anything is written: a step whose agent,
+    // app APIs, token ceiling, scope, git or inputs cannot be resolved leaves
+    // no job behind.
+    const plannedSteps: PlannedWorkflowStep[] = [];
 
     for (const [index, step] of steps.entries()) {
       const stepName = (step.name as string) || `step-${index + 1}`;
-      const { id: stepJobId } = await this.jobs.generateJobId(project.id, rootJobId);
       const stepExecution = stepExecutions[index];
       const stepToolchains = this.parseToolchains(
         step.toolchains,
@@ -1153,116 +1158,131 @@ export class WorkflowsService {
           ? `${agentPrompt}${stepDescription === `Workflow step: ${stepName}` ? '' : `\n\n${stepDescription}`}`
           : stepDescription;
 
-      await this.jobs.create({
-        id: stepJobId,
-        project_id: projectId,
-        parent_id: rootJobId,
-        depth: 1,
-        title: `[${workflowName}] ${stepName}`,
-        description,
-        issue_type: 'task',
-        labels: [`workflow:${workflowName}`, `step:${stepName}`],
-        // Stage every step until the graph exists. Even an independent step can
-        // finish before later children are created, causing premature root completion.
-        phase: 'backlog',
-        priority: Math.min(index, 4),  // Clamp to valid range (0-4); step ordering uses depends_on
-        assignee: agentConfig.agentId,
-        review_required: 'none',
-        review_status: null,
-        reviewer: null,
-        defer_until: null,
-        due_at: null,
-        hints: {
-          ...this.workflowHintsForExecution(workflowHints, stepExecution.executionType),
-          workflow_name: workflowName,
+      plannedSteps.push({
+        stepName,
+        dependsOn: Array.isArray(dependsOn) && dependsOn.length > 0 ? dependsOn : undefined,
+        resourceRefs: stepResourceRefsSummary,
+        row: {
+          project_id: projectId,
+          depth: 1,
+          title: `[${workflowName}] ${stepName}`,
+          description,
+          issue_type: 'task',
+          labels: [`workflow:${workflowName}`, `step:${stepName}`],
+          // Stage every step until the graph exists. Even an independent step can
+          // finish before later children are created, causing premature root completion.
+          phase: 'backlog',
+          priority: Math.min(index, 4),  // Clamp to valid range (0-4); step ordering uses depends_on
+          assignee: agentConfig.agentId,
+          review_required: 'none',
+          review_status: null,
+          reviewer: null,
+          defer_until: null,
+          due_at: null,
+          hints: {
+            ...this.workflowHintsForExecution(workflowHints, stepExecution.executionType),
+            workflow_name: workflowName,
+            step_name: stepName,
+            step_index: index,
+            ...(condition ? { condition } : {}),
+            ...(agentConfig.permission ? { permission_policy: agentConfig.permission } : {}),
+            ...(workflow.db_access ? { db_access: workflow.db_access } : {}),
+            ...(withheldTokenPermissions.length > 0 ? { token_permissions_withheld: withheldTokenPermissions } : {}),
+            ...(request?.input ? { request_json: JSON.stringify(request.input) } : {}),
+            ...(resolvedToolchains.length > 0 ? { toolchains: resolvedToolchains } : {}),
+            ...(stepApis ? { app_apis: stepApis } : {}),
+            ...(resolvedApis.length > 0 ? { resolved_app_apis: resolvedApis } : {}),
+            resource_refs_policy: stepResourceRefsSummary.mode,
+            resource_refs_policy_source: stepResourceRefsSummary.source,
+            resource_refs_count: stepResourceRefsSummary.count,
+            resource_refs_inherited_count: stepResourceRefsSummary.inherited_count,
+            ...(stepResourceRefsSummary.selectors ? { resource_refs_selectors: stepResourceRefsSummary.selectors } : {}),
+            ...(stepResourceRefsSummary.missing_selectors ? { resource_refs_missing_selectors: stepResourceRefsSummary.missing_selectors } : {}),
+          },
+          harness: agentConfig.harness,
+          harness_profile: agentConfig.harnessProfile,
+          harness_options: agentConfig.harnessOptions,
+          harness_profile_override: agentConfig.harnessProfileOverride,
+          env_overrides: stepJobEnvOverrides,
+          token_scope: stepJobTokenScope,
+          token_scope_judged_at: stepScopeJudged ? new Date() : null,
+          token_permissions: stepJobTokenPermissions,
+          harness_profile_source: agentConfig.harnessProfileSource,
+          harness_profile_hash: agentConfig.harnessProfileHash,
+          git_json: stepGit,
+          resolved_git_json: null,
+          workspace_json: null,
+          blocked_on_gates: [],
+          env_name: workflowEnvName,
+          execution_mode: 'ephemeral',
+          execution_type: stepExecution.executionType,
+          run_id: null,
           step_name: stepName,
-          step_index: index,
-          ...(condition ? { condition } : {}),
-          ...(agentConfig.permission ? { permission_policy: agentConfig.permission } : {}),
-          ...(workflow.db_access ? { db_access: workflow.db_access } : {}),
-          ...(withheldTokenPermissions.length > 0 ? { token_permissions_withheld: withheldTokenPermissions } : {}),
-          ...(request?.input ? { request_json: JSON.stringify(request.input) } : {}),
-          ...(resolvedToolchains.length > 0 ? { toolchains: resolvedToolchains } : {}),
-          ...(stepApis ? { app_apis: stepApis } : {}),
-          ...(resolvedApis.length > 0 ? { resolved_app_apis: resolvedApis } : {}),
-          resource_refs_policy: stepResourceRefsSummary.mode,
-          resource_refs_policy_source: stepResourceRefsSummary.source,
-          resource_refs_count: stepResourceRefsSummary.count,
-          resource_refs_inherited_count: stepResourceRefsSummary.inherited_count,
-          ...(stepResourceRefsSummary.selectors ? { resource_refs_selectors: stepResourceRefsSummary.selectors } : {}),
-          ...(stepResourceRefsSummary.missing_selectors ? { resource_refs_missing_selectors: stepResourceRefsSummary.missing_selectors } : {}),
+          action_type: null,
+          action_input: null,
+          script_command: stepExecution.scriptCommand,
+          script_timeout_seconds: stepExecution.scriptTimeoutSeconds,
+          target: null,
+          resource_refs: stepResourceRefs,
+          content_hash: null,
+          actor_user_id: storedActor(userId),
+          user_secrets_excluded: userSecretsExcluded,
+          secrets_allowlist: narrowSecretsAllowlist(callerSecretsAllowlist, stepSecretsAllowlist),
+          failure_disposition: null,
+          closed_at: null,
+          close_reason: null,
         },
-        harness: agentConfig.harness,
-        harness_profile: agentConfig.harnessProfile,
-        harness_options: agentConfig.harnessOptions,
-        harness_profile_override: agentConfig.harnessProfileOverride,
-        env_overrides: stepJobEnvOverrides,
-        token_scope: stepJobTokenScope,
-        token_scope_judged_at: stepScopeJudged ? new Date() : null,
-        token_permissions: stepJobTokenPermissions,
-        harness_profile_source: agentConfig.harnessProfileSource,
-        harness_profile_hash: agentConfig.harnessProfileHash,
-        git_json: stepGit,
-        resolved_git_json: null,
-        workspace_json: null,
-        blocked_on_gates: [],
-        env_name: workflowEnvName,
-        execution_mode: 'ephemeral',
-        execution_type: stepExecution.executionType,
-        run_id: null,
-        step_name: stepName,
-        action_type: null,
-        action_input: null,
-        script_command: stepExecution.scriptCommand,
-        script_timeout_seconds: stepExecution.scriptTimeoutSeconds,
-        target: null,
-        resource_refs: stepResourceRefs,
-        content_hash: null,
-        actor_user_id: userId ?? null,
-        user_secrets_excluded: userSecretsExcluded,
-        secrets_allowlist: narrowSecretsAllowlist(callerSecretsAllowlist, stepSecretsAllowlist),
-        failure_disposition: null,
-        closed_at: null,
-        close_reason: null,
-      });
-
-      stepNameToJobId.set(stepName, stepJobId);
-      stepJobSummaries.push({
-        job_id: stepJobId,
-        step_name: stepName,
-        depends_on: Array.isArray(dependsOn) && dependsOn.length > 0 ? dependsOn : undefined,
-        resource_refs: stepResourceRefsSummary,
       });
     }
 
-    // 6. Wire dependencies via job relations
-    for (const [index, step] of steps.entries()) {
-      const stepName = (step.name as string) || `step-${index + 1}`;
-      const jobId = stepNameToJobId.get(stepName);
-      if (!jobId) continue;
+    // 6. Write the root, the steps, their edges and their releases in one
+    // transaction, as retry does: no other connection sees the root before
+    // its steps, and a failure part way leaves nothing behind (R8-02).
+    const { rootJobId, stepNameToJobId, stepJobSummaries } = await this.db.begin(async (rawTx) => {
+      const txJobs = jobQueries(rawTx as unknown as Db);
+      const { id: rootJobId } = await txJobs.generateJobId(project.id);
+      await txJobs.create({ ...rootRow, id: rootJobId, parent_id: null });
 
-      const dependsOn = step.depends_on as string[] | undefined;
-      if (Array.isArray(dependsOn)) {
-        for (const depName of dependsOn) {
+      const stepNameToJobId = new Map<string, string>();
+      const stepJobSummaries: WorkflowStepJob[] = [];
+      for (const planned of plannedSteps) {
+        const { id: stepJobId } = await txJobs.generateJobId(project.id, rootJobId);
+        await txJobs.create({ ...planned.row, id: stepJobId, parent_id: rootJobId });
+        stepNameToJobId.set(planned.stepName, stepJobId);
+        stepJobSummaries.push({
+          job_id: stepJobId,
+          step_name: planned.stepName,
+          depends_on: planned.dependsOn,
+          resource_refs: planned.resourceRefs,
+        });
+      }
+
+      // Wire dependencies via job relations
+      for (const planned of plannedSteps) {
+        const jobId = stepNameToJobId.get(planned.stepName);
+        if (!jobId) continue;
+        for (const depName of planned.dependsOn ?? []) {
           const depJobId = stepNameToJobId.get(depName);
           if (!depJobId) {
             // Should never happen — validateStepGraph already checked
             throw new BadRequestException(
-              `Step "${stepName}" depends on unknown step "${depName}"`,
+              `Step "${planned.stepName}" depends on unknown step "${depName}"`,
             );
           }
-          await this.jobs.addDependency(jobId, depJobId, 'blocks');
+          await txJobs.addDependency(jobId, depJobId, 'blocks');
         }
       }
-    }
 
-    // 6b. Release steps only after the complete graph and blocking relations exist.
-    for (const stepJob of stepJobSummaries) {
-      const released = await this.jobs.updatePhase(stepJob.job_id, 'ready', 'workflow');
-      if (!released.success) {
-        throw new Error(`Workflow step ${stepJob.step_name} could not be released: ${released.error}`);
+      // Release steps only after the complete graph and blocking relations exist.
+      for (const stepJob of stepJobSummaries) {
+        const released = await txJobs.updatePhase(stepJob.job_id, 'ready', 'workflow');
+        if (!released.success) {
+          throw new Error(`Workflow step ${stepJob.step_name} could not be released: ${released.error}`);
+        }
       }
-    }
+
+      return { rootJobId, stepNameToJobId, stepJobSummaries };
+    });
 
     // 7. Return response
     if (!wait) {
@@ -1480,7 +1500,7 @@ export class WorkflowsService {
           target: source.target,
           resource_refs: source.resource_refs,
           content_hash: source.content_hash,
-          actor_user_id: userId ?? null,
+          actor_user_id: storedActor(userId),
           user_secrets_excluded: options.userSecretsExcluded ?? false,
           secrets_allowlist: narrowSecretsAllowlist(source.secrets_allowlist, options.secretsAllowlist),
           failure_disposition: null,

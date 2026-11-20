@@ -32,9 +32,9 @@ export const SECURITY_NEW_PROJECT_PROFILE_SETTING = 'security.new_project_profil
 
 /**
  * The rule set of each rule: the release step that brought it (P1 is 1, P2
- * is 2, P3 is 3). New behaviour gets a new rule id, never a wider meaning
- * for an old one, so a stamp keeps what it covered. A rule not listed
- * counts as 1.
+ * is 2, P3 is 3, P4 is 4). New behaviour gets a new rule id, never a wider
+ * meaning for an old one, so a stamp keeps what it covered. A rule not
+ * listed counts as 1.
  */
 export const SECURITY_RULESETS: Readonly<Record<string, number>> = {
   // P1
@@ -85,6 +85,8 @@ export const SECURITY_RULESETS: Readonly<Record<string, number>> = {
   'isolation.pod_security_admission': 3,
   'builds.isolated': 3,
   'auth.nip98_public_url': 3,
+  // P4
+  'manifest.approval_unenforced': 4,
 };
 
 /** The rule set a `strict` profile set now is stamped with. */

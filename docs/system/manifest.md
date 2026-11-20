@@ -874,7 +874,6 @@ environments:
     pipeline_inputs:
       smoke_test: true
       timeout: 1800
-    approval: required
     overrides:
       services:
         api:
@@ -890,7 +889,7 @@ environments:
 |-------|-------------|
 | `pipeline` | Pipeline to run for this environment (when set, `eve env deploy` becomes a pipeline alias) |
 | `pipeline_inputs` | Default inputs to pass to the pipeline run (merged with CLI `--inputs`, CLI wins) |
-| `approval` | `required` to gate deploy/job steps |
+| `approval` | **Not enforced by Eve.** Deploys do not wait for a person, whatever it says. Sync refuses it under the project's `strict` profile (400) and warns otherwise (rule `manifest.approval_unenforced`, see [security profiles](security-profiles.md)); remove it. |
 | `overrides.services` | Compose-style service overrides |
 | `workers` | Worker pool selection for this environment |
 
@@ -900,7 +899,7 @@ When `pipeline` is configured for an environment, `eve env deploy <env> --ref <s
 
 - Consistent build/test/deploy workflows across environments
 - Promotion patterns where staging/production reuse releases from test
-- Environment-specific pipeline inputs and approval gates
+- Environment-specific pipeline inputs
 
 To bypass the pipeline and perform a direct deployment, use `--direct`:
 
@@ -920,7 +919,6 @@ environments:
       smoke_test: true
   production:
     pipeline: deploy
-    approval: required
 ```
 
 Deploy flow:
@@ -933,7 +931,7 @@ eve env deploy test --ref 0123456789abcdef0123456789abcdef01234567
 eve release resolve v1.2.3  # Get release_id from test
 eve env deploy staging --ref 0123456789abcdef0123456789abcdef01234567 --inputs '{"release_id":"rel_xxx"}'
 
-# Promote to production (approval required)
+# Promote to production
 eve env deploy production --ref 0123456789abcdef0123456789abcdef01234567 --inputs '{"release_id":"rel_xxx"}'
 ```
 

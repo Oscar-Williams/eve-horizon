@@ -14,6 +14,41 @@ export interface JobLifecycleContext {
   submitForReview(jobId: string, agentId: string, summary: string): Promise<Job>;
 }
 
+/**
+ * A review decision on a job whose review was already decided: approved, or
+ * rejected and sent back to run. The API answers 409.
+ */
+export class ReviewDecidedError extends Error {
+  constructor(readonly jobId: string, readonly reviewStatus?: string) {
+    super(`Job ${jobId}'s review was already decided${reviewStatus ? ` (${reviewStatus})` : ''}`);
+    this.name = 'ReviewDecidedError';
+  }
+}
+
+/**
+ * Lock a job for a review decision and check it is in review. A job that
+ * left review after a decision gets ReviewDecidedError; any other phase the
+ * plain refusal. In a transaction the lock holds until it ends, so a
+ * decision racing this one waits and then finds the review decided.
+ */
+async function lockForDecision(db: Db, jobId: string, verb: 'approve' | 'reject'): Promise<Job> {
+  const [job] = await db<Job[]>`
+    SELECT * FROM jobs WHERE id = ${jobId} FOR UPDATE
+  `;
+  if (!job) {
+    throw new Error(`Job not found: ${jobId}`);
+  }
+  if (job.phase !== 'review') {
+    if (job.review_status === 'approved' || job.review_status === 'rejected') {
+      throw new ReviewDecidedError(jobId, job.review_status);
+    }
+    throw new Error(
+      `Cannot ${verb}. Job must be in 'review' phase, currently: ${job.phase}`,
+    );
+  }
+  return job;
+}
+
 // ============================================================================
 // Review Workflow + Terminal Lifecycle
 // ============================================================================
@@ -120,7 +155,9 @@ export function jobReviewQueries(db: Db) {
     /**
      * Approve a job in review
      *
-     * Validates job is in 'review' phase and transitions to 'done' phase.
+     * Locks the job, validates it is in 'review' phase and transitions it to
+     * 'done'. A review already decided gets ReviewDecidedError. Call it in a
+     * transaction so the decision and its audit entry commit together.
      *
      * @param jobId - Job ID
      * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
@@ -134,22 +171,10 @@ export function jobReviewQueries(db: Db) {
       comment?: string,
       reviewerType = 'user',
     ): Promise<Job> {
-      // 1. Validate job is in 'review' phase
-      const [currentJob] = await db<Job[]>`
-        SELECT * FROM jobs WHERE id = ${jobId}
-      `;
+      // 1. Lock the job and validate it is in 'review' phase
+      const currentJob = await lockForDecision(db, jobId, 'approve');
 
-      if (!currentJob) {
-        throw new Error(`Job not found: ${jobId}`);
-      }
-
-      if (currentJob.phase !== 'review') {
-        throw new Error(
-          `Cannot approve. Job must be in 'review' phase, currently: ${currentJob.phase}`,
-        );
-      }
-
-      // 2. Update job to done with review metadata
+      // 2. Update job to done with review metadata, only while still in review
       const [updatedJob] = await db<Job[]>`
         UPDATE jobs
         SET
@@ -159,9 +184,12 @@ export function jobReviewQueries(db: Db) {
           closed_at = NOW(),
           close_reason = ${comment ?? 'Review approved'},
           updated_at = NOW()
-        WHERE id = ${jobId}
+        WHERE id = ${jobId} AND phase = 'review'
         RETURNING *
       `;
+      if (!updatedJob) {
+        throw new ReviewDecidedError(jobId);
+      }
 
       // 3. Audit log the approval
       await db`
@@ -198,8 +226,10 @@ export function jobReviewQueries(db: Db) {
     /**
      * Reject a job in review
      *
-     * Validates job is in 'review' phase, transitions back to 'active' phase,
-     * and creates a new attempt automatically.
+     * Locks the job, validates it is in 'review' phase, transitions it back to
+     * 'active' and creates a new attempt. A review already decided gets
+     * ReviewDecidedError and no attempt. Call it in a transaction so the
+     * decision, the attempt and the audit entry commit together.
      *
      * @param jobId - Job ID
      * @param reviewerId - Who decided: a user id, or `job:<id>` for a job token
@@ -213,22 +243,10 @@ export function jobReviewQueries(db: Db) {
       reason: string,
       reviewerType = 'user',
     ): Promise<Job> {
-      // 1. Validate job is in 'review' phase
-      const [currentJob] = await db<Job[]>`
-        SELECT * FROM jobs WHERE id = ${jobId}
-      `;
+      // 1. Lock the job and validate it is in 'review' phase
+      const currentJob = await lockForDecision(db, jobId, 'reject');
 
-      if (!currentJob) {
-        throw new Error(`Job not found: ${jobId}`);
-      }
-
-      if (currentJob.phase !== 'review') {
-        throw new Error(
-          `Cannot reject. Job must be in 'review' phase, currently: ${currentJob.phase}`,
-        );
-      }
-
-      // 2. Update job back to active with rejection metadata
+      // 2. Update job back to active with rejection metadata, only while still in review
       const [updatedJob] = await db<Job[]>`
         UPDATE jobs
         SET
@@ -236,9 +254,12 @@ export function jobReviewQueries(db: Db) {
           review_status = 'rejected',
           reviewer = ${reviewerId},
           updated_at = NOW()
-        WHERE id = ${jobId}
+        WHERE id = ${jobId} AND phase = 'review'
         RETURNING *
       `;
+      if (!updatedJob) {
+        throw new ReviewDecidedError(jobId);
+      }
 
       // 3. Create new attempt for retry
       const [nextAttemptNum] = await db<{ next_num: number }[]>`

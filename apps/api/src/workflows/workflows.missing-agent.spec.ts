@@ -3,6 +3,13 @@ import { ForbiddenException } from '@nestjs/common';
 import type { SecurityProfile } from '@eve/shared';
 import { WorkflowsService } from './workflows.service.js';
 
+/** The job queries an invoke's transaction gets: the test's own `jobs` mock. */
+const txJobs = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock('@eve/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@eve/db')>();
+  return { ...actual, jobQueries: vi.fn(() => txJobs.current) };
+});
+
 const MANIFEST = `
 name: test
 workflows:
@@ -27,7 +34,7 @@ function fakeSecurity(profile: SecurityProfile) {
 function createService(profile: SecurityProfile, agents: Array<{ id: string }>) {
   const security = fakeSecurity(profile);
   const service = new WorkflowsService(
-    { begin: vi.fn() } as never,
+    { begin: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work({})) } as never,
     { can: async () => ({ allowed: true, source: 'test' }) } as never,
   );
   const created: Array<Record<string, unknown>> = [];
@@ -53,6 +60,7 @@ function createService(profile: SecurityProfile, agents: Array<{ id: string }>) 
       listWithGrants: vi.fn().mockResolvedValue([]),
     },
   });
+  txJobs.current = (service as unknown as { jobs: unknown }).jobs;
   return { service, security, created };
 }
 

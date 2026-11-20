@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WorkflowsService, validateStepGraph, parseStepCondition } from './workflows.service.js';
 
+/** The job queries an invoke's transaction gets: the test's own `jobs` mock. */
+const txJobs = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock('@eve/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@eve/db')>();
+  return { ...actual, jobQueries: vi.fn(() => txJobs.current) };
+});
+
 /** The step-permission ceiling is covered elsewhere; these tests let every check pass. */
 const allowAllAccess = {
   can: async () => ({ allowed: true, source: 'test' }),
@@ -60,8 +67,8 @@ workflows:
 
 function createMockDb(manifestYaml: string) {
   return {
-    // Postgres tagged template — just return a passthrough so queries don't throw
-    begin: vi.fn(),
+    // A run is written in one transaction; its body runs inline here.
+    begin: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work({})),
   } as unknown;
 }
 
@@ -146,6 +153,7 @@ function createService(
   (service as any).manifests = manifests;
   (service as any).projects = projects;
   (service as any).jobs = jobs;
+  txJobs.current = jobs;
   (service as any).agents = agents;
   (service as any).agentConfigs = agentConfigs;
   (service as any).apiSources = apiSources;

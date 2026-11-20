@@ -329,6 +329,12 @@ job. A `PATCH` is applied only to the job state it was judged on: when the
 job's phase, review requirement or actor changes before it is applied, it is
 refused with 409.
 
+A review is decided once. An approve, a reject or a `PATCH` that settles a
+review holds the job's row while it decides; a second decision, made after the
+first or racing it, finds the review decided and gets 409 ("already
+decided"). It changes nothing: a reject that loses creates no new attempt. A
+decision on a job that was never sent for review still gets 400.
+
 Under the project's `strict` security profile (rule `jobs.approve_token`), only
 a person's own token may approve or reject: job, service, service-principal and
 app-link tokens get 403 (under `audit` they are allowed and recorded). On a
@@ -365,12 +371,16 @@ The jobs of a workflow or pipeline run never change actor: the run's root (a
 job with steps the run compiled under it) and each compiled step (its
 `step_name` is set by the workflow or pipeline expander, which no route can
 change). Only their actor can change what they run or their attachments;
-anyone else is refused with 403 and should retry the workflow
-(`eve workflow retry`) or start a new run, which runs as them. Cosmetic edits by
+anyone else is refused with 403, which names the way on: retry the workflow
+(`eve workflow retry`) for a workflow's jobs, or start a new pipeline run
+(`eve pipeline run`) for a pipeline step. Either runs as them. Cosmetic edits by
 others still apply.
 
 No actor and the `system` actor that job tokens carry for work no user started
-are the same actor. An edit by such a token to a job no user started keeps the
+are the same actor. Jobs that such work creates (job and batch create, workflow
+invoke and retry, pipeline expansion) store no actor (`actor_user_id` null),
+never the text `system`; rows written before 0.1.329 may still hold it, and
+read the same. An edit by such a token to a job no user started keeps the
 job as it is, and work no user started that becomes the actor of a person's job
 is recorded as no actor, never as `system`.
 
