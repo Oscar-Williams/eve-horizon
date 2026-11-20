@@ -1,4 +1,4 @@
--- 00124_environment_service_tokens_not_before.sql
+-- 00123_environment_service_tokens_not_before.sql
 -- `service_tokens_not_before`: the API refuses an environment's service
 -- tokens, and the app-link tokens injected into its services, issued before
 -- this time (whole seconds, like a token's `iat`). Null: no floor.
