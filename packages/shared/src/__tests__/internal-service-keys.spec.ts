@@ -198,8 +198,29 @@ describe('legacyInternalKeyJudge', () => {
     expect(decide).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps today\'s behaviour when the profile cannot be read', async () => {
+  it('keeps today\'s behaviour when the profile cannot be read and it has never had an answer', async () => {
     const judge = legacyInternalKeyJudge(async () => { throw new Error('database unavailable'); });
     expect(await judge('/invoke')).toBe(true);
+  });
+
+  it('reuses its last answer when the profile cannot be read, refusing if that was strict, however long it lasts', async () => {
+    let now = 1_000;
+    const decide = vi.fn(async (): Promise<'legacy' | 'audit' | 'strict'> => 'strict');
+    const judge = legacyInternalKeyJudge(decide, { cacheMs: 30_000, now: () => now });
+    expect(await judge('/internal/deliver')).toBe(false);
+
+    decide.mockRejectedValue(new Error('404 Not Found'));
+    now += 30_001;
+    expect(await judge('/internal/deliver')).toBe(false);
+    now += 3_600_000;
+    expect(await judge('/internal/deliver')).toBe(false);
+    // A failure is not cached: each call past the window asks again.
+    expect(decide).toHaveBeenCalledTimes(3);
+
+    decide.mockResolvedValue('audit');
+    expect(await judge('/internal/deliver')).toBe(true);
+    decide.mockRejectedValue(new Error('401 Unauthorized'));
+    now += 30_001;
+    expect(await judge('/internal/deliver')).toBe(true);
   });
 });

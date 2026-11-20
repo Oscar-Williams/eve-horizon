@@ -75,10 +75,10 @@ function idToken(account: string, extra: Record<string, unknown> = {}): string {
 const accessToken = (account: string, refresh = '1') =>
   idToken(account, { exp: Math.floor(Date.now() / 1000) + 3600, jti: `at-${refresh}` });
 
-function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string; accessAccount?: string; apiKey?: string | null } = {}): string {
+function codexAuth(account: string, opts: { plainAccount?: string; refresh?: string; accessAccount?: string; apiKey?: string | null; opaqueAccess?: string } = {}): string {
   return Buffer.from(JSON.stringify({
     ...(opts.apiKey !== undefined ? { OPENAI_API_KEY: opts.apiKey } : {}),
-    tokens: { access_token: accessToken(opts.accessAccount ?? account, opts.refresh), refresh_token: 'rt',
+    tokens: { access_token: opts.opaqueAccess ?? accessToken(opts.accessAccount ?? account, opts.refresh), refresh_token: 'rt',
       account_id: opts.plainAccount ?? account, id_token: idToken(account) },
   })).toString('base64');
 }
@@ -256,6 +256,14 @@ describe('runner routes: the Codex credential write-back', () => {
     expect(secrets.updateIfExists).toHaveBeenCalledWith('org', 'org_acme', 'CODEX_AUTH_JSON_B64', refreshed);
     expect(secrets.mayJobWriteSecret).toHaveBeenCalledWith(
       expect.objectContaining({ is_job_token: true, job_id: 'shop-1', project_id: 'proj_shop' }), 'org', 'CODEX_AUTH_JSON_B64');
+  });
+
+  it('writes back an auth.json whose access token is not a JWT, on its signed id_token', async () => {
+    profiles = { 'secrets.job_org_write': 'audit' };
+    const { controller: c } = controller();
+    const refreshed = codexAuth('acct_acme', { opaqueAccess: 'at-opaque-2' });
+    await c.writeBackCredential('shop-1', 'att-a', 'Bearer token-a', { key: 'CODEX_AUTH_JSON_B64', value: refreshed });
+    expect(secrets.updateIfExists).toHaveBeenCalledWith('org', 'org_acme', 'CODEX_AUTH_JSON_B64', refreshed);
   });
 
   it('writes it to project scope only under strict', async () => {

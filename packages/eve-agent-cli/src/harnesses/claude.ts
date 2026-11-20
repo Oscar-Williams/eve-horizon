@@ -32,9 +32,10 @@ function buildClaudeFamilyCommand(
   args.push('--add-dir', ctx.workspace);
 
   // Rule harness.checkout_settings under strict: a cleaned copy of the
-  // checkout's project and local settings, and only user settings besides.
+  // checkout's project and local settings, and only user settings besides;
+  // a checkout MCP server that names a credential is refused.
   if (env[CHECKOUT_SETTINGS_ENV] === 'strict') {
-    args.push(...strictClaudeSettingsArgs(ctx.workspace, env.CLAUDE_CONFIG_DIR));
+    args.push(...strictClaudeSettingsArgs(ctx.workspace, env.CLAUDE_CONFIG_DIR, opts.name));
   }
 
   // zai models (glm-*) must not go through the Claude Code alias normalizer

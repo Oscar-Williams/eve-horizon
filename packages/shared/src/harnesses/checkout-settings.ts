@@ -3,13 +3,22 @@
  *
  * A harness reads settings from the job's checkout as well as from Eve:
  * Claude Code from `.claude/settings.json` and `settings.local.json`, Codex
- * from a trusted project's `.codex/config.toml` (and from its config home
- * when that is the checkout's `.agent/harnesses/codex/`), Gemini from the
- * `.env` files it finds, and every Claude-family harness from Eve's copy of
+ * from a trusted project's `.codex/config.toml` (and from its config home,
+ * `config.toml` and the `.env` Codex loads over its own environment, when
+ * that is the checkout's `.agent/harnesses/codex/`), Gemini from the `.env`
+ * files it finds, and every Claude-family harness from Eve's copy of
  * `.agent/harnesses/<harness>/`. A setting there can send model traffic,
  * with the job's provider key, somewhere the job's own routing does not:
  * a base URL, a proxy, a TLS trust store, code loaded before the harness
  * starts, or a key helper.
+ *
+ * An MCP server the checkout defines can also be handed a credential by
+ * name and send it where the checkout chooses: Codex's `env_vars`,
+ * `bearer_token_env_var` and `env_http_headers`, and the `$NAME` or
+ * `${NAME}` references Claude Code (`.mcp.json`, the config directory's
+ * `.claude.json`) and Gemini (`.gemini/settings.json`) expand. A server that
+ * names a credential (`isCheckoutCredentialEnvKey`) or a routing name is a
+ * finding, as is a Codex server whose `auth` is not `oauth`.
  *
  * Under `audit` the run records what it finds (names, never values). Under
  * `strict` the harness proxy keeps those settings away from the harness,
@@ -21,21 +30,26 @@
  *   read; Eve's copy of the config directory is cleaned in place.
  * - **Codex** is refused when a checkout config (the project's
  *   `.codex/config.toml`, or a config home inside the checkout, the default
- *   `CODEX_HOME`) sets any routing setting, since the file cannot be edited
- *   and `-c` cannot undo a profile the file chooses. Otherwise it gets
+ *   `CODEX_HOME`, with its `.env`) sets any routing setting or hands an MCP
+ *   server a credential, since the file cannot be edited and `-c` cannot
+ *   undo a profile the file chooses. Otherwise it gets
  *   `-c model_provider="openai"` (and the same for the variant profile).
  * - **Gemini** gets a per-job, Eve-owned system settings file, which outranks
  *   workspace settings, excluding the routing names from the project `.env`;
  *   routing names in `.gemini/.env`, which Gemini loads whatever the
  *   exclusions, are refused.
+ * - A checkout MCP server that names a credential or routing variable is
+ *   refused for every harness.
  * - A harness with no confirmed mechanism is refused.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { CLAUDE_AUTH_ENV_KEYS } from '../invoke/claude-auth.js';
 import { isUserSecretWithheldKey } from '../schemas/job.js';
 import type { SecurityProfile } from '../security/profile.js';
+import { isHarnessCredentialKey } from './auth.js';
 import { parseToml, type TomlTable, type TomlValue } from './toml.js';
 
 /** The rule's id (rule set 2). */
@@ -78,6 +92,20 @@ export function isCheckoutRoutingEnvKey(key: string): boolean {
   return isUserSecretWithheldKey(key);
 }
 
+/**
+ * Env names that hold a credential a checkout MCP server may not be handed:
+ * every harness's provider keys and auth names (`isHarnessCredentialKey`),
+ * Claude Code's auth names, Codex's own `CODEX_` names and Eve's `EVE_`
+ * names (the job token among them).
+ */
+export function isCheckoutCredentialEnvKey(key: string): boolean {
+  const name = key.toUpperCase();
+  return name.startsWith('EVE_')
+    || name.startsWith('CODEX_')
+    || (CLAUDE_AUTH_ENV_KEYS as readonly string[]).includes(name)
+    || isHarnessCredentialKey(undefined, name);
+}
+
 /** One checkout file and the routing settings it sets (names only). */
 export interface CheckoutRoutingFinding {
   file: string;
@@ -109,6 +137,7 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
       if (configDir) {
         add(configLabel(workspace, harness, configDir, 'settings.json'), claudeRoutingSettings(readJson(path.join(configDir, 'settings.json'))));
       }
+      found.push(...checkoutMcpFindings(workspace, harness, configDir));
       break;
     }
     case 'codex':
@@ -117,6 +146,8 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
       // A config home inside the checkout is the checkout's; Eve's own is not.
       if (configDir && isInside(workspace, configDir)) {
         add(configLabel(workspace, harness, configDir, 'config.toml'), codexRoutingSettings(readText(path.join(configDir, 'config.toml'))));
+        // Codex loads CODEX_HOME/.env over its own environment; it keeps out only CODEX_ names.
+        add(configLabel(workspace, harness, configDir, '.env'), envFileRoutingNames(readText(path.join(configDir, '.env'))));
       }
       break;
     }
@@ -124,6 +155,7 @@ export function findCheckoutRouting(params: { workspace: string; harness: string
       for (const name of GEMINI_ENV_FILES) {
         add(name, envFileRoutingNames(readText(path.join(workspace, name))));
       }
+      found.push(...checkoutMcpFindings(workspace, harness));
       break;
     }
     default:
@@ -148,9 +180,12 @@ export function cleanClaudeSettings(value: unknown): Record<string, unknown> {
  * and local settings to a file of Eve's, and clean Eve's copy of the config
  * directory. Returns the flags that make Claude Code read only those and its
  * user settings. A config directory inside the checkout that sets routing is
- * refused: it would have to be edited.
+ * refused: it would have to be edited. So is an MCP server, in `.mcp.json`
+ * or the config directory's `.claude.json`, that names a credential or
+ * routing variable.
  */
-export function strictClaudeSettingsArgs(workspace: string, configDir: string | undefined): string[] {
+export function strictClaudeSettingsArgs(workspace: string, configDir: string | undefined, harness = 'claude'): string[] {
+  refuseMcpHandoffs(checkoutMcpFindings(workspace, harness, configDir));
   if (configDir) {
     const userSettingsPath = path.join(configDir, 'settings.json');
     const user = readJson(userSettingsPath);
@@ -195,9 +230,11 @@ export function strictCodexArgs(workspace: string, codexHome: string | undefined
  * Gemini under `strict`: the settings to put in Eve's system settings file
  * (which outranks workspace settings) so the project `.env` cannot set a
  * routing name. Routing names in `.gemini/.env`, which Gemini loads whatever
- * the exclusions, are refused.
+ * the exclusions, are refused, as is a workspace MCP server that names a
+ * credential or routing variable.
  */
 export function strictGeminiSystemSettings(workspace: string): { advanced: { excludedEnvVars: string[] } } {
+  refuseMcpHandoffs(checkoutMcpFindings(workspace, 'gemini'));
   const pinned = envFileRoutingNames(readText(path.join(workspace, '.gemini', '.env')));
   if (pinned.length > 0) {
     throw new Error(checkoutSettingsRefusal(`The checkout's .gemini/.env sets ${pinned.join(', ')}`));
@@ -267,7 +304,8 @@ function claudeRoutingSettings(value: unknown): string[] {
  * each `model_providers` entry, any key ending `base_url`, and any env
  * override (an upper-case key with a value, such as
  * `shell_environment_policy.set.OPENAI_BASE_URL` or an MCP server's `env`)
- * that sets a routing name. A file it cannot read is `(unreadable)`.
+ * that sets a routing name; then the MCP servers it hands a credential
+ * (`codexMcpHandoffs`). A file it cannot read is `(unreadable)`.
  */
 function codexRoutingSettings(text: string | null): string[] {
   if (!text) return [];
@@ -298,7 +336,99 @@ function codexRoutingSettings(text: string | null): string[] {
     }
   };
   walk(doc, []);
-  return [...settings];
+  return [...settings, ...codexMcpHandoffs(doc)];
+}
+
+/**
+ * Codex MCP servers that take a credential or routing variable from Codex's
+ * environment by name: a stdio server's `env_vars` (a stdio server otherwise
+ * gets only a few basic names), an HTTP server's `bearer_token_env_var` and
+ * `env_http_headers` values (sent to the server's URL; header names are any
+ * case, so only the values count), and an `auth` other than `oauth` (the
+ * ChatGPT session, which Codex itself keeps to ChatGPT's origin, or an IdP
+ * token exchange). `http_headers_helper` runs with only the basic names.
+ */
+function codexMcpHandoffs(doc: TomlTable): string[] {
+  const servers = doc.mcp_servers;
+  if (!isTable(servers)) return [];
+  const found: string[] = [];
+  const named = (envName: TomlValue | undefined, at: string) => {
+    if (typeof envName === 'string' && namesHarnessSecret(envName)) found.push(`${at}=$${envName}`);
+  };
+  for (const [name, server] of Object.entries(servers)) {
+    if (!isTable(server)) continue;
+    const at = `mcp_servers.${name}`;
+    for (const [field, value] of Object.entries(server)) {
+      if (field === 'bearer_token_env_var') {
+        named(value, `${at}.${field}`);
+      } else if (field === 'env_http_headers' && isTable(value)) {
+        for (const [header, envName] of Object.entries(value)) named(envName, `${at}.${field}.${header}`);
+      } else if (field === 'env_vars' && Array.isArray(value)) {
+        value.forEach((entry, i) => (isTable(entry) ? named(entry.name, `${at}.${field}.${i}.name`) : named(entry, `${at}.${field}.${i}`)));
+      } else if (field === 'auth' && value !== 'oauth') {
+        found.push(`${at}.auth`);
+      }
+    }
+  }
+  return found;
+}
+
+/** Whether a checkout MCP server may not be handed this env name: a credential or a routing name. */
+function namesHarnessSecret(name: string): boolean {
+  return isCheckoutCredentialEnvKey(name) || isCheckoutRoutingEnvKey(name);
+}
+
+/** `$NAME` and `${NAME}` (with or without `:-default`) references in a string. */
+const ENV_REFERENCE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/**
+ * The MCP server definitions a checkout supplies to Claude Code or Gemini,
+ * file by file: Claude Code's project `.mcp.json` and the config directory's
+ * `.claude.json` (user and per-project servers), and Gemini's workspace
+ * `.gemini/settings.json`. Each string a server holds (command, args, env,
+ * url, headers, headersHelper) that references a credential or routing
+ * name, as `$NAME` or `${NAME}`, is named. Both harnesses expand those
+ * references, and a header helper runs in a shell that can.
+ */
+function checkoutMcpFindings(workspace: string, harness: string, configDir?: string): CheckoutRoutingFinding[] {
+  const files: Array<[string, string]> = checkoutSettingsMechanism(harness) === 'gemini'
+    ? [['.gemini/settings.json', path.join(workspace, '.gemini', 'settings.json')]]
+    : [
+      ['.mcp.json', path.join(workspace, '.mcp.json')],
+      ...(configDir ? [[configLabel(workspace, harness, configDir, '.claude.json'), path.join(configDir, '.claude.json')] as [string, string]] : []),
+    ];
+  return files
+    .map(([file, full]) => ({ file, settings: jsonMcpHandoffs(readJson(full)) }))
+    .filter((finding) => finding.settings.length > 0);
+}
+
+function jsonMcpHandoffs(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const found: string[] = [];
+  const scan = (item: unknown, at: string) => {
+    if (typeof item === 'string') {
+      for (const [, name] of item.matchAll(ENV_REFERENCE)) {
+        if (namesHarnessSecret(name)) found.push(`${at}=$${name}`);
+      }
+    } else if (Array.isArray(item)) {
+      item.forEach((entry, i) => scan(entry, `${at}.${i}`));
+    } else if (isRecord(item)) {
+      for (const [key, entry] of Object.entries(item)) scan(entry, `${at}.${key}`);
+    }
+  };
+  scan(value.mcpServers, 'mcpServers');
+  if (isRecord(value.projects)) {
+    for (const [project, entry] of Object.entries(value.projects)) {
+      if (isRecord(entry)) scan(entry.mcpServers, `projects.${project}.mcpServers`);
+    }
+  }
+  return [...new Set(found)];
+}
+
+function refuseMcpHandoffs(findings: CheckoutRoutingFinding[]): void {
+  if (findings.length === 0) return;
+  const named = findings.flatMap((finding) => finding.settings.map((setting) => `${finding.file}: ${setting}`));
+  throw new Error(checkoutSettingsRefusal(`A checkout MCP server takes a credential or routing variable: ${named.join(', ')}`));
 }
 
 function isTable(value: TomlValue | undefined): value is TomlTable {

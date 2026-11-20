@@ -7,7 +7,7 @@ import { egressSelfCheck } from './runner-self-check.js';
  * strict isolation.runner_mode) a reachable one fails the job; under audit
  * it is recorded and the job runs; off skips the check.
  */
-const submit = (mode: 'enforce' | 'audit' | 'off') => ({
+const submit = (mode: 'enforce' | 'audit' | 'off' | undefined) => ({
   kind: 'agent' as const, job_id: 'shop-1', attempt_id: 'att-1', project_id: 'proj_shop',
   job_token: 't', api_url: 'http://api.test', self_check: mode,
 });
@@ -46,5 +46,23 @@ describe('runner egress self-check', () => {
     probe.mockClear();
     expect(await egressSelfCheck({ probe, kubernetesHost: '10.0.0.1' })(submit('off'), client() as never)).toBeNull();
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('records the mode before job code runs when the check is off or unset, so job code has no slot to fill', async () => {
+    const probe = vi.fn(async () => true);
+    for (const mode of ['off', undefined] as const) {
+      const c = client();
+      expect(await egressSelfCheck({ probe, kubernetesHost: '10.0.0.1' })(submit(mode), c as never)).toBeNull();
+      expect(c.updateRuntimeMeta).toHaveBeenCalledWith({ self_check: expect.objectContaining({ mode: 'off' }) });
+    }
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each(['enforce', 'audit', 'off'] as const)('fails the job under %s when the self-check cannot be recorded', async (mode) => {
+    const probe = vi.fn(async () => false);
+    const c = client();
+    c.updateRuntimeMeta.mockRejectedValue(new Error('409 Conflict'));
+    const refusal = await egressSelfCheck({ probe, kubernetesHost: '10.0.0.1' })(submit(mode), c as never);
+    expect(refusal).toMatchObject({ success: false, error_code: 'self_check_not_recorded', error: expect.stringMatching(/could not record its self-check/) });
   });
 });

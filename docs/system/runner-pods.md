@@ -122,7 +122,7 @@ Another attempt's routes get 403. None returns platform data.
 | `events` | `system.resource.hydration.{started,completed,failed}` only, on the job's project. |
 | `runtime-meta` | Only `orgfs_mount`, `resource_hydration`, `resource_index_path`, `browser`, `toolchains`, `self_check` (400 otherwise); toolchain image IDs the worker recorded are kept. `self_check` is written once per attempt (a second gets 409), so job code cannot overwrite the runner's report. |
 | `thread-messages` | Outbound messages to the job's own chat thread or its parent's coordination thread, only when the thread belongs to the job's project. Each is posted as the job's own agent (`actor_type: agent`, its assignee, else the job id); the actor the body names is ignored. With `chat_progress: true`, a chat job's `eve-message` progress, delivered to its chat thread and provider through the same chat delivery the inline path uses; only for a chat job's own chat thread, at most 10 per job and 30 s apart (429 otherwise), 500 characters. |
-| `credential` | A refreshed `CODEX_AUTH_JSON_B64` only. Accepted when the account claims (`https://api.openai.com/auth`.`chatgpt_account_id`) of its `id_token` and its `access_token`, each verified against the issuer's published keys (`https://auth.openai.com/.well-known/jwks.json`, or `EVE_CODEX_JWKS_URL`), name the stored credential's account; the access token must not have expired; the plain `tokens.account_id`, when present, must name the same account; and its `OPENAI_API_KEY` must be the stored file's (or absent, as there). The refresh token is opaque and is not checked: a job holds the stored session anyway. It goes to the secret's own scope, or, under the project's strict `secrets.job_org_write`, to project scope only. A mismatch is refused (409) and logged; the job does not fail. |
+| `credential` | A refreshed `CODEX_AUTH_JSON_B64` only. Accepted when the account claim (`https://api.openai.com/auth`.`chatgpt_account_id`) of its `id_token`, verified against the issuer's published keys (`https://auth.openai.com/.well-known/jwks.json`, or `EVE_CODEX_JWKS_URL`), names the stored credential's account; when its `access_token` is a JWT, its claim names the same account (its signature verified when it names the issuer and a published key, otherwise only decoded) and it has not expired; the plain `tokens.account_id`, when present, names the same account; and its `OPENAI_API_KEY` is the stored file's (or absent, as there). An access token that is not a JWT is not checked, and that is logged. The refresh token is opaque and is not checked, an accepted residual: a job can write back a refresh token of its choosing, which the next refresh follows. It goes to the secret's own scope, or, under the project's strict `secrets.job_org_write`, to project scope only, so under `strict` that reaches only the job's own project. A mismatch is refused (409) and logged; the job does not fail. |
 | `result` | The attempt's result, once (`job_attempt_runner_results`); a second gets 409. |
 
 Job code holds the same token, so it can push only to its own attempt: it can
@@ -198,6 +198,12 @@ metadata server (`169.254.169.254:80`) and the Kubernetes API
 | `enforce` | the project's profile is `strict` | fails the job: "egress policy not enforced" (`error_code: egress_not_enforced`) |
 | `audit` | `audit`, or the instance switch | is recorded; the job runs |
 | `off` | `legacy` without the switch | no check |
+
+The runner writes `self_check` in every mode, `off` included (`{ mode: "off" }`),
+before job code starts. The API takes it once per attempt, so job code, which
+holds the same token, cannot fill the slot with a report of its own. When the
+write fails (an API error, or a report already there), the job does not run:
+"The runner could not record its self-check" (`error_code: self_check_not_recorded`).
 
 ### Rules a runner applies itself
 
