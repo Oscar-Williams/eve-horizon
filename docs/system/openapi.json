@@ -33,7 +33,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Effective profiles per org and project, and findings by rule"
+            "description": "Effective profiles per org and project, findings by rule, and every level on the deprecated legacy profile (legacy_levels, with warnings)"
           }
         },
         "security": [
@@ -64,7 +64,7 @@
         },
         "responses": {
           "200": {
-            "description": "The profile now set, and what the network reconcile did (network)"
+            "description": "The profile now set, what the network reconcile did (network), and warnings when the level is now on legacy, which is deprecated and removed in 0.1.331"
           }
         },
         "security": [
