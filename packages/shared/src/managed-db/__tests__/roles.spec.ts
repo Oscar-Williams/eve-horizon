@@ -241,7 +241,11 @@ describe('schema-owner roles', () => {
       ],
       create: 'CREATE SCHEMA "auth" AUTHORIZATION "acme-shop-staging-u-1a2b3c-gotrue"',
       handOver: 'ALTER SCHEMA "auth" OWNER TO "acme-shop-staging-u-1a2b3c-gotrue"',
-      handBack: [
+      // The schema goes back first: its objects then move into a schema the
+      // owner may create in, which a platform login that is not a superuser
+      // needs.
+      handBack: 'ALTER SCHEMA "auth" OWNER TO "acme-shop-staging-u-1a2b3c"',
+      release: [
         'REASSIGN OWNED BY "acme-shop-staging-u-1a2b3c-gotrue" TO "acme-shop-staging-u-1a2b3c"',
         'DROP OWNED BY "acme-shop-staging-u-1a2b3c-gotrue"',
       ],
