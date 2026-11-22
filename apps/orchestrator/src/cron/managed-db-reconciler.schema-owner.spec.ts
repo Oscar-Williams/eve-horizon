@@ -62,7 +62,7 @@ const instance = {
 const OWNER = 'acme-shop-test-u-1a2b3c';
 const DB = 'acme-shop-test-1a2b3c';
 const GOTRUE = `${OWNER}-gotrue`;
-const SCHEMA_OWNER_QUERY = 'SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1';
+const SCHEMA_OWNER_QUERY = 'SELECT pg_catalog.pg_get_userbyid(nspowner) AS owner FROM pg_catalog.pg_namespace WHERE nspname = $1';
 
 const gotrueDeclared = { name: 'gotrue', grants: { schema: 'auth', owner: true } };
 const appDeclared = { name: 'app', grants: 'readwrite' };
@@ -151,7 +151,7 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
     let owner = schemaOwner;
     tenantSql = createFakeSql('tenant', log, (text) => {
       if (text === SCHEMA_OWNER_QUERY) return owner === null ? [] : [{ owner }];
-      if (text.includes('FROM pg_class c')) return objects;
+      if (text.includes('FROM pg_catalog.pg_class c')) return objects;
       if (text.includes('FROM pg_catalog.pg_operator o')) return unmovable.map((object) => ({ object }));
       const moved = /^(?:CREATE SCHEMA "auth" AUTHORIZATION|ALTER SCHEMA "auth" OWNER TO) "([^"]+)"$/.exec(text);
       if (moved) owner = moved[1];
@@ -255,7 +255,7 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       "SET LOCAL lock_timeout = '5s'",
       'SET LOCAL search_path = pg_catalog',
       SCHEMA_OWNER_QUERY,
-      expect.stringContaining('FROM pg_class c'),
+      expect.stringContaining('FROM pg_catalog.pg_class c'),
       expect.stringContaining('FROM pg_catalog.pg_operator o'),
       `ALTER SCHEMA "auth" OWNER TO "${GOTRUE}"`,
       `ALTER ROUTINE auth.uid() OWNER TO "${GOTRUE}"`,

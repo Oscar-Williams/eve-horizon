@@ -38,6 +38,14 @@ const LOCK_TIMEOUT = '5s';
 /** How long a hand-back waits for each session of the role to end (Postgres 14 and later). */
 const SESSION_END_WAIT_MS = 5000;
 
+/**
+ * Every transaction here resolves names in pg_catalog only, whatever the
+ * session's search path: catalog names are also written in full, and
+ * tenant objects are always named with their schema. Operators resolve
+ * through the search path, so this is what keeps a tenant-made `=` out.
+ */
+const CATALOG_SEARCH_PATH = 'SET LOCAL search_path = pg_catalog';
+
 /** The object kinds a hand-over moves, and the ALTER keyword for each. */
 const OBJECT_KEYWORDS: Record<string, string> = {
   table: 'TABLE',
@@ -56,10 +64,14 @@ interface SchemaObject {
   owner: string;
 }
 
-/** The owner of a schema of the connected database, or null when there is no such schema. */
+/**
+ * The owner of a schema of the connected database, or null when there is no
+ * such schema. Catalog names are written in full; the helpers below also
+ * pin the search path to pg_catalog around it.
+ */
 export async function managedDbSchemaOwner(tenantSql: Db, schema: string): Promise<string | null> {
   const [row] = await tenantSql<{ owner: string }[]>`
-    SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = ${schema}
+    SELECT pg_catalog.pg_get_userbyid(nspowner) AS owner FROM pg_catalog.pg_namespace WHERE nspname = ${schema}
   `;
   return row?.owner ?? null;
 }
@@ -80,40 +92,40 @@ async function schemaObjects(tx: Db, schema: string): Promise<SchemaObject[]> {
              WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'foreign_table'
              ELSE 'type'
            END AS kind,
-           format('%I.%I', n.nspname, c.relname) AS identity,
-           pg_get_userbyid(c.relowner) AS owner
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+           pg_catalog.format('%I.%I', n.nspname, c.relname) AS identity,
+           pg_catalog.pg_get_userbyid(c.relowner) AS owner
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = ${schema}
       AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'c')
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-          AND (d.deptype = 'e' OR (c.relkind = 'S' AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objid = c.oid
+          AND (d.deptype = 'e' OR (c.relkind = 'S' AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.deptype IN ('a', 'i')))
       )
     UNION ALL
     SELECT 'routine',
-           format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
-           pg_get_userbyid(p.proowner)
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
+           pg_catalog.format('%I.%I(%s)', n.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid)),
+           pg_catalog.pg_get_userbyid(p.proowner)
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = ${schema}
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e'
       )
     UNION ALL
     SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END,
-           format('%I.%I', n.nspname, t.typname),
-           pg_get_userbyid(t.typowner)
-    FROM pg_type t
-    JOIN pg_namespace n ON n.oid = t.typnamespace
+           pg_catalog.format('%I.%I', n.nspname, t.typname),
+           pg_catalog.pg_get_userbyid(t.typowner)
+    FROM pg_catalog.pg_type t
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = ${schema}
       AND t.typtype IN ('b', 'd', 'e', 'r')
-      AND NOT EXISTS (SELECT 1 FROM pg_type e WHERE e.typarray = t.oid)
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type e WHERE e.typarray = t.oid)
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e'
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND d.objid = t.oid AND d.deptype = 'e'
       )
     ORDER BY 1, 2
   `;
@@ -243,7 +255,7 @@ export async function checkManagedDbSchemaClaim(
 ): Promise<void> {
   await tenantSql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Db;
-    await tx.unsafe('SET LOCAL search_path = pg_catalog');
+    await tx.unsafe(CATALOG_SEARCH_PATH);
     const { conflict } = await claimProblem(tx, target, options.releasing);
     if (conflict) throw conflict;
   });
@@ -273,8 +285,7 @@ export async function claimManagedDbSchema(
   return tenantSql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Db;
     await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
-    // Catalog names come out schema-qualified whatever the login's path.
-    await tx.unsafe('SET LOCAL search_path = pg_catalog');
+    await tx.unsafe(CATALOG_SEARCH_PATH);
 
     const { owner, objects, conflict } = await claimProblem(tx, target);
     if (conflict) throw conflict;
@@ -316,14 +327,19 @@ export async function releaseManagedDbSchema(tenantSql: Db, target: ManagedDbSch
   // Committed on its own, so no session of the role starts after it.
   await tenantSql.unsafe(`ALTER ROLE ${role} NOLOGIN`);
   try {
-    await tenantSql`
-      SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
-      FROM pg_catalog.pg_stat_activity
-      WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
-    `;
+    await tenantSql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.unsafe(CATALOG_SEARCH_PATH);
+      await tx`
+        SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
+        FROM pg_catalog.pg_stat_activity
+        WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
+      `;
+    });
     await tenantSql.begin(async (rawTx) => {
       const tx = rawTx as unknown as Db;
       await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
+      await tx.unsafe(CATALOG_SEARCH_PATH);
       if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
         await tx.unsafe(sql.handBack);
       }
