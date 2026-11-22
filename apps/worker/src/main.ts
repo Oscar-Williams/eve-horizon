@@ -11,7 +11,7 @@ import {
   legacyInternalKeyJudge,
   registerInternalAuthHook,
 } from '@eve/shared';
-import { internalLegacyKeyDecider, type Db } from '@eve/db';
+import { instanceLegacyProfileWarning, internalLegacyKeyDecider, type Db } from '@eve/db';
 import { AppModule } from './app.module';
 import { checkProcessIsolation } from '@eve/shared';
 import { AllExceptionsFilter } from './all-exceptions.filter';
@@ -42,6 +42,12 @@ async function bootstrap() {
   // Opt-in per service — only the worker registers it today (XAP-4); see
   // all-exceptions.filter.ts for the adoption note.
   app.useGlobalFilters(new AllExceptionsFilter());
+
+  // The legacy profile is removed in 0.1.331: say so once at start while the
+  // instance resolves to it.
+  void instanceLegacyProfileWarning(app.get<Db>('DB'))
+    .then((warning) => { if (warning) logger.warn(warning); })
+    .catch(() => undefined);
 
   registerCorrelationIdHook(app.getHttpAdapter().getInstance());
   // The core key passes; a call with only the legacy key follows the

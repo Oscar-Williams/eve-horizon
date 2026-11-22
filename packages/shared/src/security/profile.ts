@@ -1,7 +1,8 @@
 /**
  * Security profiles decide what a hardening rule does:
  *
- * - `legacy`: today's behaviour; the rule is not checked.
+ * - `legacy`: today's behaviour; the rule is not checked. Deprecated in
+ *   0.1.330 and removed in 0.1.331 (stored `legacy` becomes `audit`).
  * - `audit`: today's behaviour, plus a finding recording what `strict`
  *   would refuse.
  * - `strict`: the rule is enforced (403), and the refusal is recorded.
@@ -18,6 +19,9 @@
 export const SECURITY_PROFILES = ['legacy', 'audit', 'strict'] as const;
 
 export type SecurityProfile = (typeof SECURITY_PROFILES)[number];
+
+/** Given wherever a level is set to, or resolves to, `legacy` (0.1.330). */
+export const SECURITY_LEGACY_DEPRECATION = 'legacy is deprecated and is removed in 0.1.331; use audit';
 
 export type SecurityGoverningScope = 'instance' | 'org' | 'project';
 

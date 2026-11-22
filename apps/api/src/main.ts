@@ -10,6 +10,7 @@ import {
   registerCorrelationIdHook,
   registerRawBodyJsonParser,
 } from '@eve/shared';
+import { instanceLegacyProfileWarning, type Db } from '@eve/db';
 import { AppModule } from './app.module';
 import { attachRegisteredSchemas } from './openapi.js';
 import {
@@ -32,6 +33,12 @@ async function bootstrap() {
   );
 
   await app.init();
+
+  // The legacy profile is removed in 0.1.331: say so once at start while the
+  // instance resolves to it.
+  void instanceLegacyProfileWarning(app.get<Db>('DB'))
+    .then((warning) => { if (warning) logger.warn(warning); })
+    .catch(() => undefined);
 
   // CORS — allow any origin by default; override with EVE_CORS_ORIGIN
   const corsOrigin = process.env.EVE_CORS_ORIGIN || '*';

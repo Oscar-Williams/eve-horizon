@@ -13,6 +13,7 @@ import { auditQueries, environmentQueries, securityQueries, systemSettingsQuerie
 import {
   NETWORK_POLICY_ENFORCED_SETTING,
   SECURITY_CURRENT_RULESET,
+  SECURITY_LEGACY_DEPRECATION,
   SECURITY_NEW_PROJECT_PROFILE_SETTING,
   SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
@@ -141,6 +142,8 @@ export class SecurityService {
     ruleset: number | null;
     /** What the worker's network reconcile of the scope did, or why it could not run. */
     network?: unknown;
+    /** Present when the level is now on `legacy`, which is removed in 0.1.331. */
+    warnings?: string[];
   }> {
     if (profile !== null && !isSecurityProfile(profile)) {
       throw new BadRequestException(`Security profile must be legacy, audit or strict, not "${String(profile)}"`);
@@ -224,7 +227,10 @@ export class SecurityService {
     } else {
       this.scopeCache.clear();
     }
-    if (result.scope === 'new_projects') return result;
+    // legacy is set, or the instance is cleared, which leaves it on legacy.
+    const deprecated = profile === 'legacy' || (profile === null && target.scope === 'instance');
+    const warnings = deprecated ? { warnings: [SECURITY_LEGACY_DEPRECATION] } : {};
+    if (result.scope === 'new_projects') return { ...result, ...warnings };
     // egress.default_deny: the scope's companions go (or come back) now, not
     // at the next deploy. The change stands if this fails.
     const scope = result.scope === 'project' ? { project_id: result.id } : result.scope === 'org' ? { org_id: result.id } : {};
@@ -238,7 +244,7 @@ export class SecurityService {
         error: `${message}. The profile is set; run eve system security reconcile to bring the network policies in line.`,
       };
     }
-    return { ...result, network };
+    return { ...result, network, ...warnings };
   }
 
   /**
@@ -357,12 +363,35 @@ export class SecurityService {
     const registryKeyVersion = currentRegistryKeyVersion();
     const staleRegistry = await environmentQueries(this.db).countStaleRegistryKeys(registryKeyVersion);
 
+    // Every level on legacy, which 0.1.331 removes (stored legacy becomes
+    // audit there, and no profile means audit): set there, inherited, or the
+    // instance with no profile.
+    const legacyLevels: LegacyLevel[] = [];
+    const source = (own: string | null): LegacyLevel['source'] => (own === 'legacy' ? 'set' : 'inherited');
+    if (instanceLevel.profile === 'legacy') {
+      legacyLevels.push({ scope: 'instance', id: null, slug: null, source: instance === 'legacy' ? 'set' : 'unset' });
+    }
+    if (newProjects === 'legacy') legacyLevels.push({ scope: 'new_projects', id: null, slug: null, source: 'set' });
+    for (const o of orgRows) {
+      if (governingSecurityLevel({ org: o.security_profile, instance }).profile === 'legacy') {
+        legacyLevels.push({ scope: 'org', id: o.id, slug: o.slug, source: source(o.security_profile) });
+      }
+    }
+    for (const p of projectRows) {
+      const org = p.org_id ? orgById.get(p.org_id) : undefined;
+      if (governingSecurityLevel({ project: p.security_profile, org: org?.security_profile, instance }).profile === 'legacy') {
+        legacyLevels.push({ scope: 'project', id: p.id, slug: p.slug, source: source(p.security_profile) });
+      }
+    }
+
     return {
       days,
       current_ruleset: SECURITY_CURRENT_RULESET,
       instance_profile: instanceLevel.profile,
       instance_ruleset: instanceLevel.ruleset,
       new_project_profile: isSecurityProfile(newProjects) ? newProjects : null,
+      legacy_levels: legacyLevels,
+      warnings: legacyLevels.length > 0 ? [SECURITY_LEGACY_DEPRECATION] : [],
       // Environments whose pull secret is not on the current registry key
       // version: the instance's strict, and removing the legacy internal
       // key, wait for none (eve system security reconcile re-signs them).
@@ -486,6 +515,14 @@ export class SecurityService {
       this.logger.warn(`Could not record security finding ${rule}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+}
+
+/** A level the report lists as on `legacy`: set there, inherited, or (the instance) no profile at all. */
+export interface LegacyLevel {
+  scope: 'instance' | 'new_projects' | 'org' | 'project';
+  id: string | null;
+  slug: string | null;
+  source: 'set' | 'inherited' | 'unset';
 }
 
 /** What kind of principal acted, and its id, for a finding. */

@@ -2271,7 +2271,7 @@ Requires Docker Desktop; k3d and kubectl are auto-managed by the CLI.`,
         description: 'Set the security profile of the instance, new projects, an org or a project, or bring environments in line with the profiles (system admins only)',
         usage: 'eve system security <profile <legacy|audit|strict|clear> [--org <id> | --project <id> | --new-projects] [--force] | reconcile>',
         options: [
-          'legacy        Today\'s behaviour; hardening rules are not checked',
+          'legacy        Today\'s behaviour; hardening rules are not checked (deprecated; removed in 0.1.331, use audit)',
           'audit         Today\'s behaviour, plus a finding for what strict would refuse',
           'strict        Hardening rules are enforced: those of the current rule set; rules from later releases run under audit until strict is set again',
           'clear         Remove an override so the level above applies; on the instance, the profile becomes legacy',

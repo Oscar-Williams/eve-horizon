@@ -29,7 +29,11 @@ export class SecurityController {
   @ApiQuery({ name: 'org_id', required: false })
   @ApiQuery({ name: 'project_id', required: false })
   @ApiQuery({ name: 'days', required: false, description: 'Findings window in days (1-90, default 14)' })
-  @ApiOkResponse({ description: 'Effective profiles per org and project, and findings by rule' })
+  @ApiOkResponse({
+    description:
+      'Effective profiles per org and project, findings by rule, and every level on the deprecated legacy profile ' +
+      '(legacy_levels, with warnings)',
+  })
   async report(
     @CurrentUser() caller: AuthUser | undefined,
     @Query('org_id') orgId?: string,
@@ -55,7 +59,11 @@ export class SecurityController {
       'in scope, so the allow-all companions go or return at once; the profile stands if that fails.',
   })
   @ApiBody({ schema: zodSchemaToOpenApi(SetSecurityProfileRequestSchema, 'SetSecurityProfileRequest') })
-  @ApiOkResponse({ description: 'The profile now set, and what the network reconcile did (network)' })
+  @ApiOkResponse({
+    description:
+      'The profile now set, what the network reconcile did (network), and warnings when the level is now on legacy, ' +
+      'which is deprecated and removed in 0.1.331',
+  })
   async setProfile(
     @Body(new ZodValidationPipe(SetSecurityProfileRequestSchema)) body: SetSecurityProfileRequest,
     @CurrentUser() caller: AuthUser | undefined,

@@ -20,12 +20,23 @@ type ScopeProfile = {
 
 type NetworkStatus = { policy_enforced: boolean | null; egress_effective: boolean };
 
+/** A level on `legacy` (removed in 0.1.331): set there, inherited, or the instance with no profile. */
+type LegacyLevel = {
+  scope: 'instance' | 'new_projects' | 'org' | 'project';
+  id: string | null;
+  slug: string | null;
+  source: 'set' | 'inherited' | 'unset';
+};
+
 interface SecurityReport {
   days: number;
   current_ruleset?: number;
   instance_profile: string;
   instance_ruleset?: number | null;
   new_project_profile: string | null;
+  /** Absent from an API before 0.1.330. */
+  legacy_levels?: LegacyLevel[];
+  warnings?: string[];
   registry?: { key_version: string | null; stale_environments: number };
   network?: NetworkStatus;
   orgs: ScopeProfile[];
@@ -77,6 +88,11 @@ export async function handleDoctor(
   }
   const network = describePolicyEnforcement(report.network);
   if (network) console.log(`Network policy:   ${network}`);
+  const legacy = describeLegacyLevels(report.legacy_levels, report.warnings);
+  if (legacy.length > 0) {
+    console.log('');
+    for (const line of legacy) console.log(line);
+  }
   console.log('');
   console.log('Orgs:');
   for (const org of report.orgs) {
@@ -115,6 +131,23 @@ export function describeStampedProfile(profile: string, ruleset: number | null |
   if (profile !== 'strict' || !ruleset || ruleset >= current) return profile;
   const newer = Array.from({ length: current - ruleset }, (_, i) => `P${ruleset + 1 + i}`).join(', ');
   return `strict (${ruleset === 1 ? 'P1' : `P1-P${ruleset}`} rules); ${newer} rules on audit`;
+}
+
+/** The report's legacy section: the deprecation warning and each level on legacy. */
+export function describeLegacyLevels(levels: LegacyLevel[] | undefined, warnings: string[] | undefined): string[] {
+  if (!levels || levels.length === 0) return [];
+  const name = (level: LegacyLevel) =>
+    level.scope === 'instance' ? 'instance'
+      : level.scope === 'new_projects' ? 'new projects'
+        : `${level.scope} ${level.slug ?? level.id} (${level.id})`;
+  const how = (level: LegacyLevel) =>
+    level.source === 'unset' ? 'no profile set, which means legacy'
+      : level.source === 'set' ? 'set to legacy' : 'inherits legacy';
+  return [
+    ...(warnings ?? []).map((warning) => `Warning: ${warning}`),
+    'Levels on legacy:',
+    ...levels.map((level) => `  ${name(level)}: ${how(level)}`),
+  ];
 }
 
 /** The report's network line: whether the cluster enforces NetworkPolicy. */
@@ -259,6 +292,7 @@ export async function handleSystemSecurity(
     profile: string | null;
     ruleset?: number | null;
     network?: NetworkReconcileReport | { error: string };
+    warnings?: string[];
   }>(
     context,
     '/system/security/profile',
@@ -278,6 +312,7 @@ export async function handleSystemSecurity(
     ? ` (rule set ${result.ruleset}: ${result.ruleset === 1 ? 'P1' : `P1-P${result.ruleset}`} rules)`
     : '';
   console.log(`Security profile for ${target}: ${result.profile ?? cleared}${covers}`);
+  for (const warning of result.warnings ?? []) console.log(`Warning: ${warning}`);
   if (result.network && 'error' in result.network) {
     console.log(`Network policies not reconciled: ${result.network.error}`);
   } else if (result.network) {

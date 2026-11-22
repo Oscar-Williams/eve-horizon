@@ -1,8 +1,10 @@
 import type { Db } from '../client.js';
 import {
+  SECURITY_LEGACY_DEPRECATION,
   SECURITY_PROFILE_RULESET_SETTING,
   SECURITY_PROFILE_SETTING,
   generateSecurityFindingId,
+  governingSecurityLevel,
   resolveSecurityProfile,
   type SecurityGoverningScope,
   type SecurityProfile,
@@ -190,6 +192,22 @@ export function securityQueries(db: Db) {
       `;
     },
   };
+}
+
+/**
+ * The warning a service logs at start while the instance profile resolves to
+ * `legacy` (no `security.profile`, or `legacy`), else null. `legacy` is
+ * removed in 0.1.331.
+ */
+export async function instanceLegacyProfileWarning(db: Db): Promise<string | null> {
+  const [row] = await db<{ value: string }[]>`
+    SELECT value FROM system_settings WHERE key = ${SECURITY_PROFILE_SETTING}
+  `;
+  const value = row?.value ?? null;
+  if (governingSecurityLevel({ instance: value }).profile !== 'legacy') return null;
+  const why = value === null ? `no ${SECURITY_PROFILE_SETTING} is set` : `${SECURITY_PROFILE_SETTING} is "${value}"`;
+  return `The instance security profile resolves to legacy (${why}). ${SECURITY_LEGACY_DEPRECATION}: ` +
+    'eve system security profile audit';
 }
 
 /**
