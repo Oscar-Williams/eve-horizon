@@ -334,6 +334,22 @@ describe('schema-owner roles in a tenant database', () => {
       }
     }, 20_000);
 
+    it('moves nothing and lets the login sign in again when the hand-back fails', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      const before = await owners();
+      // A snapshot holds a lock on a table for longer than the hand-back waits.
+      await as(owner, async (tx) => {
+        await tx.unsafe('SELECT count(*) FROM auth.users');
+        await expect(releaseManagedDbSchema(tenant, target)).rejects.toThrow(/lock timeout/);
+      });
+      expect(await owners()).toEqual(before);
+      const [{ can_login }] = await superTenant<{ can_login: boolean }[]>`
+        SELECT rolcanlogin AS can_login FROM pg_roles WHERE rolname = ${gotrue}
+      `;
+      expect(can_login).toBe(true);
+    }, 20_000);
+
     it('drops nothing when the role has no schema', async () => {
       await expect(releaseManagedDbSchema(tenant, target)).resolves.toBeUndefined();
       expect(await managedDbSchemaOwner(tenant, 'auth')).toBeNull();

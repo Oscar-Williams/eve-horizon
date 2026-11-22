@@ -1033,9 +1033,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   }
 
   /**
-   * Drop a schema-owner role: its schema and everything else it owns in the
-   * tenant database go back to the tenant owner and its privileges there are
-   * revoked (one transaction), then its sessions end and the login goes.
+   * Drop a schema-owner role: the login stops signing in and its sessions
+   * end, its schema and everything else it owns in the tenant database go
+   * back to the tenant owner and its privileges there are revoked (one
+   * transaction), then the login goes.
    */
   private async dropLocalSchemaOwnerRole(
     adminSql: Db,
@@ -1053,11 +1054,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       });
       this.logger.log(`[managed-db-reconciler] Handed schema ${schema} of tenant ${tenant.id} back from ${role.name}`);
     }
-    await adminSql`
-      SELECT pg_terminate_backend(pid)
-      FROM pg_stat_activity
-      WHERE usename = ${role.db_user} AND pid != pg_backend_pid()
-    `;
+    // The hand-back already ended the login's sessions and refuses new ones.
     await adminSql.unsafe(`DROP ROLE IF EXISTS ${quotePostgresIdentifier(role.db_user)}`);
     await this.managedDb.deleteTenantRole(tenant.id, role.name);
   }
