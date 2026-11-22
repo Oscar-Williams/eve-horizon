@@ -117,6 +117,66 @@ async function schemaObjects(tx: Db, schema: string): Promise<SchemaObject[]> {
 }
 
 /**
+ * Why the role cannot be given its schema now, as a ManagedDbSchemaConflictError,
+ * or nothing: the schema is new, the role's, or the tenant owner's with every
+ * object in it the owner's (or the role's). Owners in `releasing` count as
+ * the tenant owner: their schema is handed back before the claim.
+ */
+async function claimProblem(
+  tx: Db,
+  target: ManagedDbSchemaTarget,
+  releasing: readonly string[] = [],
+): Promise<{ owner: string | null; objects: SchemaObject[]; conflict: ManagedDbSchemaConflictError | null }> {
+  const asOwner = (name: string) => (releasing.includes(name) ? target.ownerUser : name);
+  const found = await managedDbSchemaOwner(tx, target.schema);
+  const owner = found === null ? null : asOwner(found);
+  if (owner === null || owner === target.roleUser) return { owner, objects: [], conflict: null };
+  if (owner !== target.ownerUser) {
+    return {
+      owner,
+      objects: [],
+      conflict: new ManagedDbSchemaConflictError(
+        `Schema "${target.schema}" is owned by "${owner}", not by the tenant owner; ` +
+        'a role is given only a schema that is new or that the tenant owner owns',
+      ),
+    };
+  }
+  const objects = await schemaObjects(tx, target.schema);
+  const foreign = [...new Set(
+    objects.map((object) => asOwner(object.owner))
+      .filter((name) => name !== target.ownerUser && name !== target.roleUser),
+  )];
+  if (foreign.length === 0) return { owner, objects, conflict: null };
+  return {
+    owner,
+    objects,
+    conflict: new ManagedDbSchemaConflictError(
+      `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
+      'not by the tenant owner; nothing was handed over',
+    ),
+  };
+}
+
+/**
+ * Check, changing nothing, that the role can be given its schema: throws
+ * ManagedDbSchemaConflictError when another role holds the schema or an
+ * object in it. Owners in `releasing` (roles whose schema this run hands back
+ * first) count as the tenant owner.
+ */
+export async function checkManagedDbSchemaClaim(
+  tenantSql: Db,
+  target: ManagedDbSchemaTarget,
+  options: { releasing?: readonly string[] } = {},
+): Promise<void> {
+  await tenantSql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Db;
+    await tx.unsafe('SET LOCAL search_path = pg_catalog');
+    const { conflict } = await claimProblem(tx, target, options.releasing);
+    if (conflict) throw conflict;
+  });
+}
+
+/**
  * Give the role its schema, in one transaction:
  * - no such schema: create it, owned by the role;
  * - owned by the role: nothing;
@@ -139,29 +199,13 @@ export async function claimManagedDbSchema(
     // Catalog names come out schema-qualified whatever the login's path.
     await tx.unsafe('SET LOCAL search_path = pg_catalog');
 
-    const owner = await managedDbSchemaOwner(tx, target.schema);
+    const { owner, objects, conflict } = await claimProblem(tx, target);
+    if (conflict) throw conflict;
     if (owner === null) {
       await tx.unsafe(sql.create);
       return { action: 'created' } as const;
     }
     if (owner === target.roleUser) return { action: 'unchanged' } as const;
-    if (owner !== target.ownerUser) {
-      throw new ManagedDbSchemaConflictError(
-        `Schema "${target.schema}" is owned by "${owner}", not by the tenant owner; ` +
-        'a role is given only a schema that is new or that the tenant owner owns',
-      );
-    }
-
-    const objects = await schemaObjects(tx, target.schema);
-    const foreign = [...new Set(
-      objects.map((object) => object.owner).filter((name) => name !== target.ownerUser && name !== target.roleUser),
-    )];
-    if (foreign.length > 0) {
-      throw new ManagedDbSchemaConflictError(
-        `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
-        'not by the tenant owner; nothing was handed over',
-      );
-    }
 
     await tx.unsafe(sql.handOver);
     const counts: Record<string, number> = {};

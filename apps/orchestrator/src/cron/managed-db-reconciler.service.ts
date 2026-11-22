@@ -4,7 +4,12 @@ import {
   managedDbQueries,
   managedDbSnapshotQueries,
   createDb,
+  checkManagedDbSchemaClaim,
+  claimManagedDbSchema,
+  releaseManagedDbSchema,
+  ManagedDbSchemaConflictError,
   type Db,
+  type ManagedDbSchemaTarget,
   type ManagedDbTenantRole,
   orgQueries,
   projectQueries,
@@ -31,9 +36,12 @@ import {
   sharedPreloadLibrariesContains,
   buildManagedDbRoleGrantSql,
   buildManagedDbRoleRevokeSql,
+  buildManagedDbSchemaOwnerSql,
   diffManagedDbRoles,
   hasManagedDbRoleChanges,
   isManagedDbRoleGrants,
+  managedDbRoleOwnedSchema,
+  MANAGED_DB_SCHEMA_OWNER_GRANTS,
   normalizeManagedDbRoles,
   type ManagedDbRoleDeclaration,
   type ManagedDbRoleDiff,
@@ -391,7 +399,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     }
 
     const rolePlan = await this.planTenantRoleChanges(tenant);
-    if (hasManagedDbRoleChanges(rolePlan.diff)) {
+    // Schema-owner roles are checked on every run, not only when roles change.
+    if (hasManagedDbRoleChanges(rolePlan.diff) || ownsSchemas(rolePlan.desired)) {
       const instance = await this.managedDb.findInstanceById(tenant.instance_id);
       if (!instance) {
         throw new ManagedDbProvisioningError('instance_not_found', `Instance ${tenant.instance_id} not found`);
@@ -403,10 +412,12 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         );
       }
 
-      this.logger.log(
-        `[managed-db-reconciler] Reconciling role(s) for tenant ${tenant.id}: ` +
-        this.describeRolePlan(rolePlan.diff),
-      );
+      if (hasManagedDbRoleChanges(rolePlan.diff)) {
+        this.logger.log(
+          `[managed-db-reconciler] Reconciling role(s) for tenant ${tenant.id}: ` +
+          this.describeRolePlan(rolePlan.diff),
+        );
+      }
       await this.applyLocalTenantRoleChanges(instance, tenant, rolePlan);
     }
 
@@ -864,10 +875,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
   private async planTenantRoleChanges(
     tenant: { id: string; desired_roles: ManagedDbRoleDeclaration[] },
-  ): Promise<{ diff: ManagedDbRoleDiff<ManagedDbTenantRole>; provisioned: ManagedDbTenantRole[] }> {
+  ): Promise<TenantRolePlan> {
     const desired = normalizeManagedDbRoles(tenant.desired_roles);
     const provisioned = await this.managedDb.listTenantRoles(tenant.id);
-    return { diff: diffManagedDbRoles(desired, provisioned), provisioned };
+    return { desired, diff: diffManagedDbRoles(desired, provisioned), provisioned };
   }
 
   private describeRolePlan(diff: ManagedDbRoleDiff<ManagedDbTenantRole>): string {
@@ -880,31 +891,40 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
   /**
    * Bring the tenant's Postgres login roles in line with the manifest:
-   * drop roles that are no longer declared, re-grant roles whose grant set
-   * changed, then create newly declared roles with fresh credentials.
-   * No-op (and no connections opened) when nothing changed.
+   * drop roles that are no longer declared (a schema-owner role hands its
+   * schema back first), re-grant roles whose grant set changed, then create
+   * newly declared roles with fresh credentials. Then each schema-owner role
+   * is given its schema (created, or handed over from the tenant owner) on
+   * every run. A schema another role holds fails the tenant before anything
+   * changes. No-op (and no connections opened) when nothing changed and no
+   * role owns a schema.
    */
   private async applyLocalTenantRoleChanges(
     instance: { host: string; port: number },
     tenant: { id: string; db_name: string; db_user: string; class: string },
-    plan: { diff: ManagedDbRoleDiff<ManagedDbTenantRole>; provisioned: ManagedDbTenantRole[] },
+    plan: TenantRolePlan,
   ): Promise<void> {
-    const { diff, provisioned } = plan;
-    if (!hasManagedDbRoleChanges(diff)) return;
-    const ownerRole = [...diff.create, ...diff.regrant].find((role) => !isManagedDbRoleGrants(role.grants));
-    if (ownerRole) {
-      throw new ManagedDbProvisioningError(
-        'schema_owner_unsupported',
-        `Managed DB role "${ownerRole.name}" owns a schema; schema-owner roles are not provisioned by this release`,
-      );
-    }
+    const { desired, diff, provisioned } = plan;
+    if (!hasManagedDbRoleChanges(diff) && !ownsSchemas(desired)) return;
 
     const adminSql = this.connectToInstance(instance);
     const tenantSql = this.connectToTenantDb(instance, tenant);
 
     try {
+      // Owner roles dropped in this run hand their schema back before any
+      // claim, so their schema counts as the tenant owner's.
+      const releasing = diff.drop.filter((role) => managedDbRoleOwnedSchema(role) !== null).map((role) => role.db_user);
+      for (const role of desired) {
+        const target = this.schemaTarget(tenant, role);
+        if (target) await this.withSchemaConflict(() => checkManagedDbSchemaClaim(tenantSql, target, { releasing }));
+      }
+
       for (const role of diff.drop) {
-        await this.dropLocalTenantRole(adminSql, tenantSql, tenant, role);
+        if (managedDbRoleOwnedSchema(role) !== null) {
+          await this.dropLocalSchemaOwnerRole(adminSql, tenantSql, tenant, role);
+        } else {
+          await this.dropLocalTenantRole(adminSql, tenantSql, tenant, role);
+        }
       }
 
       for (const role of diff.regrant) {
@@ -924,16 +944,31 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       }
 
       for (const role of diff.create) {
-        if (!isManagedDbRoleGrants(role.grants)) continue;
         const roleUser = generateManagedDbRoleUser(tenant.db_user, role.name);
         const password = crypto.randomBytes(16).toString('hex');
+        const schema = managedDbRoleOwnedSchema(role);
         await this.ensureLocalRoleLogin(adminSql, roleUser, password, connectionLimitFor(tenant.class));
-        await this.grantLocalTenantRole(adminSql, tenantSql, tenant, roleUser, role.grants);
+        if (schema !== null) {
+          // CONNECT, and the platform login's membership (as for the owner
+          // role), which it needs to give the schema and take it back.
+          const sql = buildManagedDbSchemaOwnerSql({
+            dbName: tenant.db_name,
+            ownerUser: tenant.db_user,
+            roleUser,
+            schema,
+          });
+          for (const statement of sql.instance) {
+            await adminSql.unsafe(statement);
+          }
+        } else if (isManagedDbRoleGrants(role.grants)) {
+          await this.grantLocalTenantRole(adminSql, tenantSql, tenant, roleUser, role.grants);
+        }
         await this.managedDb.upsertTenantRole({
           id: generateManagedDbTenantRoleId(),
           tenant_id: tenant.id,
           name: role.name,
-          grants: role.grants,
+          grants: schema !== null ? MANAGED_DB_SCHEMA_OWNER_GRANTS : String(role.grants),
+          schema_name: schema,
           db_user: roleUser,
           credential_secret_ref: this.buildTenantConnectionUrl(
             instance,
@@ -942,10 +977,88 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           ),
         });
       }
+
+      for (const role of desired) {
+        const target = this.schemaTarget(tenant, role);
+        if (!target) continue;
+        // The tenant's other logins get nothing in the schema.
+        const others = [tenant.db_user, ...desired
+          .filter((other) => other.name !== role.name)
+          .map((other) => generateManagedDbRoleUser(tenant.db_user, other.name))];
+        const claim = await this.withSchemaConflict(() => claimManagedDbSchema(tenantSql, target, { revokeFrom: others }));
+        if (claim.action === 'created') {
+          this.logger.log(`[managed-db-reconciler] Created schema ${target.schema} of tenant ${tenant.id} for ${role.name}`);
+        } else if (claim.action === 'handed_over') {
+          const moved = Object.entries(claim.objects)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([kind, count]) => `${count} ${kind}`)
+            .join(', ');
+          this.logger.log(
+            `[managed-db-reconciler] Handed schema ${target.schema} of tenant ${tenant.id} to ${role.name}: ${moved || 'no objects'}`,
+          );
+        }
+      }
     } finally {
       await tenantSql.end();
       await adminSql.end();
     }
+  }
+
+  /** The schema a declared role owns, as the helpers name it; null for `public` data roles. */
+  private schemaTarget(
+    tenant: { db_name: string; db_user: string },
+    role: ManagedDbRoleDeclaration,
+  ): ManagedDbSchemaTarget | null {
+    const schema = managedDbRoleOwnedSchema(role);
+    if (schema === null) return null;
+    return {
+      dbName: tenant.db_name,
+      schema,
+      roleUser: generateManagedDbRoleUser(tenant.db_user, role.name),
+      ownerUser: tenant.db_user,
+    };
+  }
+
+  /** A schema another role holds fails the tenant with schema_owner_conflict. */
+  private async withSchemaConflict<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      return await work();
+    } catch (err) {
+      if (err instanceof ManagedDbSchemaConflictError) {
+        throw new ManagedDbProvisioningError(err.code, err.message);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Drop a schema-owner role: its schema and everything else it owns in the
+   * tenant database go back to the tenant owner and its privileges there are
+   * revoked (one transaction), then its sessions end and the login goes.
+   */
+  private async dropLocalSchemaOwnerRole(
+    adminSql: Db,
+    tenantSql: Db,
+    tenant: { id: string; db_name: string; db_user: string },
+    role: ManagedDbTenantRole,
+  ): Promise<void> {
+    const schema = managedDbRoleOwnedSchema(role);
+    if (schema !== null) {
+      await releaseManagedDbSchema(tenantSql, {
+        dbName: tenant.db_name,
+        schema,
+        roleUser: role.db_user,
+        ownerUser: tenant.db_user,
+      });
+      this.logger.log(`[managed-db-reconciler] Handed schema ${schema} of tenant ${tenant.id} back from ${role.name}`);
+    }
+    await adminSql`
+      SELECT pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE usename = ${role.db_user} AND pid != pg_backend_pid()
+    `;
+    await adminSql.unsafe(`DROP ROLE IF EXISTS ${quotePostgresIdentifier(role.db_user)}`);
+    await this.managedDb.deleteTenantRole(tenant.id, role.name);
   }
 
   /**
@@ -1191,6 +1304,18 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     }
     return '16';
   }
+}
+
+/** Declared roles, and how the provisioned ones must change to match them. */
+interface TenantRolePlan {
+  desired: ManagedDbRoleDeclaration[];
+  diff: ManagedDbRoleDiff<ManagedDbTenantRole>;
+  provisioned: ManagedDbTenantRole[];
+}
+
+/** Whether any declared role owns a schema (checked on every run). */
+function ownsSchemas(desired: ManagedDbRoleDeclaration[]): boolean {
+  return desired.some((role) => managedDbRoleOwnedSchema(role) !== null);
 }
 
 /** The class's per-login connection limit, or null for an unknown class. */
