@@ -6,7 +6,7 @@ what would change before anything does.
 
 | Profile | What a rule does |
 |---|---|
-| `legacy` | Nothing: the old behaviour. |
+| `legacy` | Nothing: the old behaviour. **Deprecated in 0.1.330 and removed in 0.1.331**: see [the `legacy` deprecation](#the-legacy-deprecation). |
 | `audit` | The old behaviour, plus a finding recording what `strict` would refuse. |
 | `strict` | The rule is enforced: the request gets 403, and a finding is recorded. |
 
@@ -30,10 +30,42 @@ eve system security profile strict --new-projects          # default for new pro
 ```
 
 Clearing an org or project profile makes it inherit again. Clearing the
-instance profile leaves no instance profile, which means `legacy`; set
-`audit` instead to keep recording. Each change is written to the audit log
+instance profile leaves no instance profile, which means `legacy` until
+0.1.331 (with a warning, see [the `legacy` deprecation](#the-legacy-deprecation));
+set `audit` instead to keep recording. Each change is written to the audit log
 (entity type `security_profile`) with the system admin who made it and the
 old and new profile; the change and its record commit together.
+
+## The `legacy` deprecation
+
+`legacy` is deprecated in 0.1.330 and removed in 0.1.331. Use `audit`: it
+keeps today's behaviour and records what `strict` would refuse.
+
+**In 0.1.330**, `legacy` still works, and Eve says it is going:
+- Setting `legacy` at any level (instance, new projects, an org, a project)
+  succeeds, and the response carries `warnings`: "legacy is deprecated and is
+  removed in 0.1.331; use audit". `eve system security profile legacy`
+  prints it. Clearing the instance profile gives the same warning, because
+  an instance with no profile resolves to `legacy`.
+- `eve doctor security` lists every level that resolves to `legacy`
+  (`legacy_levels` in `--json`): the instance when it has no profile or
+  `legacy`, the new-project default when it is `legacy`, and each org and
+  project on `legacy`, set there or inherited.
+- The API and the worker log one warning at start while the instance
+  resolves to `legacy`.
+
+**In 0.1.331**, a migration turns every stored `legacy` into `audit` (orgs,
+projects, the instance setting and `security.new_project_profile`), with an
+audit-log entry for each; an instance with no profile resolves to `audit`;
+and the API and CLI refuse `legacy` (400, naming `audit`). Such a level then
+records findings, writes the `audit` NetworkPolicy pairs (nothing blocked),
+reads each image's config once per service per deploy, and runs the runner
+self-check in `audit` mode. Otherwise it behaves as before.
+
+**What to do before 0.1.331:** run `eve doctor security`, and set each level
+it lists to `audit` (for the instance, `eve system security profile audit`).
+Rolling back from 0.1.331 to 0.1.330 is code only: 0.1.330 knows `audit`, and
+former `legacy` levels stay `audit`.
 
 ## Rule sets and stamps
 
