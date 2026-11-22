@@ -222,7 +222,7 @@ describe('ManagedDbReconcilerService tenant roles', () => {
     ]);
     expect(adminSql.statements).toEqual(expect.arrayContaining([
       `REVOKE ALL ON DATABASE "${DB}" FROM "${OWNER}-old_role"`,
-      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1 AND pid != pg_backend_pid()',
+      'SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE usename = $1 AND pid != pg_catalog.pg_backend_pid()',
       `DROP ROLE IF EXISTS "${OWNER}-old_role"`,
     ]));
     expect(managedDb.deleteTenantRole).toHaveBeenCalledWith('mdbt_1', 'old_role');
@@ -295,7 +295,7 @@ describe('ManagedDbReconcilerService tenant roles', () => {
     await service.reconcile();
 
     expect(adminSql.statements).toEqual([
-      'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid != pg_backend_pid()',
+      'SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE datname = $1 AND pid != pg_catalog.pg_backend_pid()',
       `DROP DATABASE IF EXISTS "${DB}"`,
       `DROP ROLE IF EXISTS "${OWNER}"`,
       `DROP ROLE IF EXISTS "${OWNER}-app"`,
