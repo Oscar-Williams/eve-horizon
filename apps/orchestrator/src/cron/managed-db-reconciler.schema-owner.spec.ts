@@ -143,11 +143,16 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
    * The tenant database's answers: who owns `auth` (following the CREATE and
    * ALTER SCHEMA statements run), and the objects in it.
    */
-  function tenantDb(schemaOwner: string | null, objects: Array<{ kind: string; identity: string; owner: string }> = []) {
+  function tenantDb(
+    schemaOwner: string | null,
+    objects: Array<{ kind: string; identity: string; owner: string }> = [],
+    unmovable: string[] = [],
+  ) {
     let owner = schemaOwner;
     tenantSql = createFakeSql('tenant', log, (text) => {
       if (text === SCHEMA_OWNER_QUERY) return owner === null ? [] : [{ owner }];
       if (text.includes('FROM pg_class c')) return objects;
+      if (text.includes('FROM pg_catalog.pg_operator o')) return unmovable.map((object) => ({ object }));
       const moved = /^(?:CREATE SCHEMA "auth" AUTHORIZATION|ALTER SCHEMA "auth" OWNER TO) "([^"]+)"$/.exec(text);
       if (moved) owner = moved[1];
       return [];
@@ -319,6 +324,24 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       message: expect.stringMatching(/holds objects owned by "stranger"/),
     });
     expect(adminSql.statements.some((statement) => /^(CREATE|ALTER|GRANT|DROP)/.test(statement))).toBe(false);
+    expect(managedDb.upsertTenantRole).not.toHaveBeenCalled();
+  });
+
+  it('marks the tenant failed and changes nothing when the schema holds an object a hand-over does not move', async () => {
+    tenantDb(OWNER, [{ kind: 'table', identity: 'auth.users', owner: OWNER }], ['operator auth.===(integer,integer)']);
+    const { service, managedDb } = createService(
+      buildTenant({ status: 'modifying', desired_roles: [gotrueDeclared] }),
+    );
+    wireConnections(service);
+
+    await service.reconcile();
+
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), {
+      code: 'schema_owner_conflict',
+      message: expect.stringMatching(/does not move: operator auth\.===\(integer,integer\); nothing was handed over/),
+    });
+    expect(adminSql.statements.some((statement) => /^(CREATE|ALTER|GRANT|DROP)/.test(statement))).toBe(false);
+    expect(tenantSql.statements.some((statement) => /^(CREATE|ALTER|GRANT|REVOKE)/.test(statement))).toBe(false);
     expect(managedDb.upsertTenantRole).not.toHaveBeenCalled();
   });
 

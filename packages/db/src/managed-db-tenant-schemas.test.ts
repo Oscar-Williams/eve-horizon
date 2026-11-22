@@ -13,6 +13,7 @@ import type { Readable } from 'stream';
 import { executeSnapshot, type SnapshotUploadTarget } from '@eve/shared';
 import {
   ManagedDbSchemaConflictError,
+  checkManagedDbSchemaClaim,
   claimManagedDbSchema,
   managedDbSchemaOwner,
   releaseManagedDbSchema,
@@ -34,6 +35,43 @@ const stranger = `stranger_${suffix}`;
 const platform = `platform_${suffix}`;
 
 const target = { dbName, schema: 'auth', roleUser: gotrue, ownerUser: owner };
+
+/**
+ * Objects of kinds a hand-over does not move, each owned by the tenant owner
+ * (made as the superuser where Postgres requires it): [kind, statements].
+ */
+const UNMOVABLE: Array<[string, string]> = [
+  ['operator', `
+    CREATE FUNCTION auth.int_eq(int, int) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT $1 = $2';
+    CREATE OPERATOR auth.=== (LEFTARG = int, RIGHTARG = int, FUNCTION = auth.int_eq);
+    ALTER FUNCTION auth.int_eq(int, int) OWNER TO "${owner}";
+    ALTER OPERATOR auth.=== (int, int) OWNER TO "${owner}";`],
+  ['operator class', `
+    CREATE OPERATOR CLASS auth.int_hash FOR TYPE int USING hash AS OPERATOR 1 =, FUNCTION 1 hashint4(int);
+    ALTER OPERATOR CLASS auth.int_hash USING hash OWNER TO "${owner}";`],
+  ['operator family', `
+    CREATE OPERATOR FAMILY auth.int_ops USING btree;
+    ALTER OPERATOR FAMILY auth.int_ops USING btree OWNER TO "${owner}";`],
+  ['collation', `
+    CREATE COLLATION auth.c_copy FROM "C";
+    ALTER COLLATION auth.c_copy OWNER TO "${owner}";`],
+  ['text search configuration', `
+    CREATE TEXT SEARCH CONFIGURATION auth.simple_copy (COPY = pg_catalog.simple);
+    ALTER TEXT SEARCH CONFIGURATION auth.simple_copy OWNER TO "${owner}";`],
+  ['text search dictionary', `
+    CREATE TEXT SEARCH DICTIONARY auth.simple_dict (TEMPLATE = pg_catalog.simple);
+    ALTER TEXT SEARCH DICTIONARY auth.simple_dict OWNER TO "${owner}";`],
+  ['conversion', `
+    CREATE CONVERSION auth.latin1_utf8 FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
+    ALTER CONVERSION auth.latin1_utf8 OWNER TO "${owner}";`],
+  ['statistics object', `
+    CREATE STATISTICS auth.users_stats ON id, email FROM auth.users;
+    ALTER STATISTICS auth.users_stats OWNER TO "${owner}";`],
+  ['ordered-set aggregate', `
+    CREATE AGGREGATE auth.pct(float8 ORDER BY float8) (
+      SFUNC = ordered_set_transition, STYPE = internal, FINALFUNC = percentile_disc_final, FINALFUNC_EXTRA);
+    ALTER AGGREGATE auth.pct(float8 ORDER BY float8) OWNER TO "${owner}";`],
+];
 
 function urlFor(user: string | null, database: string): string {
   const url = new URL(testDbUrl!);
@@ -267,6 +305,18 @@ describe('schema-owner roles in a tenant database', () => {
       const before = await owners();
       await expect(claimManagedDbSchema(tenant, target)).rejects.toBeInstanceOf(ManagedDbSchemaConflictError);
       await expect(claimManagedDbSchema(tenant, target)).rejects.toThrow(new RegExp(stranger));
+      expect(await owners()).toEqual(before);
+    });
+
+    it.each(UNMOVABLE)('refuses, and changes nothing, when it holds an object a hand-over does not move: %s', async (kind, statements) => {
+      await ownerMadeAuth();
+      await superTenant.unsafe(statements);
+      const before = await owners();
+      const refusal = new RegExp(`does not move: .*${kind} auth\\.`);
+      await expect(checkManagedDbSchemaClaim(tenant, target)).rejects.toThrow(refusal);
+      const claim = claimManagedDbSchema(tenant, target);
+      await expect(claim).rejects.toBeInstanceOf(ManagedDbSchemaConflictError);
+      await expect(claim).rejects.toThrow(refusal);
       expect(await owners()).toEqual(before);
     });
   });
