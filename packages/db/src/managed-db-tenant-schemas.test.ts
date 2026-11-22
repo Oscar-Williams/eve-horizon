@@ -6,7 +6,7 @@
  * helpers run as that platform login.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import postgres from 'postgres';
 import { spawn } from 'child_process';
 import type { Readable } from 'stream';
@@ -412,6 +412,50 @@ describe('schema-owner roles in a tenant database', () => {
     it('drops nothing when the role has no schema', async () => {
       await expect(releaseManagedDbSchema(tenant, target)).resolves.toBeUndefined();
       expect(await managedDbSchemaOwner(tenant, 'auth')).toBeNull();
+    });
+  });
+
+  describe('a session whose search path puts a tenant schema before pg_catalog', () => {
+    // A session Eve did not pin: the tenant owner may set its database's
+    // search_path and name a function like a built-in, which would then run
+    // as the platform login. The decoy records each call.
+    let shadowed: Db;
+
+    async function decoyCalls(): Promise<number> {
+      const [row] = await superTenant<{ n: number }[]>`SELECT count(*)::int AS n FROM decoy.calls`;
+      return row.n;
+    }
+
+    beforeEach(async () => {
+      await superTenant.unsafe('DROP SCHEMA IF EXISTS decoy CASCADE');
+      await as(owner, (tx) => tx.unsafe(`
+        CREATE SCHEMA decoy;
+        CREATE TABLE decoy.calls (called_by name);
+        CREATE FUNCTION decoy.pg_get_userbyid(oid) RETURNS name LANGUAGE sql AS $$
+          INSERT INTO decoy.calls VALUES (current_user);
+          SELECT 'decoy'::name;
+        $$;
+      `));
+      shadowed = postgres(urlFor(platform, dbName), { fetch_types: false, connection: { search_path: 'decoy, pg_catalog' } });
+    });
+
+    afterEach(async () => {
+      await shadowed.end();
+      await superTenant.unsafe('DROP SCHEMA IF EXISTS decoy CASCADE');
+    });
+
+    it('reads the owner of a schema from the catalog', async () => {
+      await claimManagedDbSchema(tenant, target);
+      expect(await managedDbSchemaOwner(shadowed, 'auth')).toBe(gotrue);
+      expect(await decoyCalls()).toBe(0);
+    });
+
+    it('hands the schema back to the tenant owner', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      await releaseManagedDbSchema(shadowed, target);
+      expect(new Set(Object.values(await owners()))).toEqual(new Set([owner]));
+      expect(await decoyCalls()).toBe(0);
     });
   });
 });
