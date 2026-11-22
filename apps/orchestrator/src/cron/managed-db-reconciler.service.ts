@@ -3,7 +3,7 @@ import { CronJob } from 'cron';
 import {
   managedDbQueries,
   managedDbSnapshotQueries,
-  createDb,
+  createPinnedSearchPathDb,
   type Db,
   type ManagedDbTenantRole,
   orgQueries,
@@ -533,6 +533,11 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   /**
    * Connect to the system Postgres as admin (using DATABASE_URL).
    * Returns a short-lived sql connection for admin DDL operations.
+   *
+   * This connection and connectToTenantDb's are Eve's platform login on
+   * databases tenants can reach (a tenant owns its own database), so both
+   * pin search_path to pg_catalog at startup; statements on them name
+   * catalog objects, and the schemas they create in, in full.
    */
   private connectToInstance(instance: { host: string; port: number }): Db {
     const databaseUrl = process.env.DATABASE_URL;
@@ -545,9 +550,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     url.hostname = instance.host;
     url.port = String(instance.port);
     url.pathname = '/postgres';
-    return createDb(url.toString());
+    return createPinnedSearchPathDb(url.toString());
   }
 
+  /** The platform login on the tenant's own database (see connectToInstance). */
   private connectToTenantDb(
     instance: { host: string; port: number },
     tenant: { db_name: string },
@@ -560,7 +566,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     url.hostname = instance.host;
     url.port = String(instance.port);
     url.pathname = `/${tenant.db_name}`;
-    return createDb(url.toString());
+    return createPinnedSearchPathDb(url.toString());
   }
 
   private getMissingExtensions(
@@ -626,7 +632,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
         const [available] = await sql<{ name: string }[]>`
           SELECT name
-          FROM pg_available_extensions
+          FROM pg_catalog.pg_available_extensions
           WHERE name = ${definition.extname}
         `;
         if (!available) {
@@ -641,7 +647,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         if (definition.mode === 'preload') {
           const [preloadSetting] = await sql<{ setting: string }[]>`
             SELECT setting
-            FROM pg_settings
+            FROM pg_catalog.pg_settings
             WHERE name = 'shared_preload_libraries'
           `;
           if (!sharedPreloadLibrariesContains(preloadSetting?.setting, definition.preloadName)) {
@@ -656,9 +662,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           }
         }
 
+        // A tenant database's extensions go into "public", by name (the
+        // pinned search_path would otherwise choose pg_catalog). An
+        // instance-scope extension (pg_cron) takes its control file's schema.
+        const schemaClause = definition.installScope === 'tenant_db' ? ' SCHEMA "public"' : '';
         try {
           await sql.unsafe(
-            `CREATE EXTENSION IF NOT EXISTS ${quotePostgresIdentifier(definition.extname)}`,
+            `CREATE EXTENSION IF NOT EXISTS ${quotePostgresIdentifier(definition.extname)}${schemaClause}`,
           );
         } catch (err) {
           throw new ManagedDbProvisioningError(
@@ -670,8 +680,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
         const [schema] = await sql<{ schema_name: string }[]>`
           SELECT n.nspname AS schema_name
-          FROM pg_extension e
-          JOIN pg_namespace n ON n.oid = e.extnamespace
+          FROM pg_catalog.pg_extension e
+          JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
           WHERE e.extname = ${definition.extname}
         `;
         if (schema && !['public', 'pg_catalog', 'information_schema'].includes(schema.schema_name)) {
@@ -723,7 +733,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     try {
       // Create role (idempotent)
       const [existingRole] = await adminSql`
-        SELECT 1 FROM pg_roles WHERE rolname = ${tenant.db_user}
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${tenant.db_user}
       `;
       if (!existingRole) {
         await adminSql.unsafe(
@@ -744,7 +754,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
 
       // Create database (idempotent)
       const [existingDb] = await adminSql`
-        SELECT 1 FROM pg_database WHERE datname = ${tenant.db_name}
+        SELECT 1 FROM pg_catalog.pg_database WHERE datname = ${tenant.db_name}
       `;
       if (!existingDb) {
         await adminSql.unsafe(
@@ -771,9 +781,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
     try {
       // Terminate connections to the database
       await adminSql`
-        SELECT pg_terminate_backend(pid)
-        FROM pg_stat_activity
-        WHERE datname = ${tenant.db_name} AND pid != pg_backend_pid()
+        SELECT pg_catalog.pg_terminate_backend(pid)
+        FROM pg_catalog.pg_stat_activity
+        WHERE datname = ${tenant.db_name} AND pid != pg_catalog.pg_backend_pid()
       `;
 
       await adminSql.unsafe(`DROP DATABASE IF EXISTS "${tenant.db_name}"`);
@@ -880,7 +890,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    */
   private async ensureLocalRoleLogin(adminSql: Db, roleUser: string, password: string): Promise<void> {
     const [existingRole] = await adminSql`
-      SELECT 1 FROM pg_roles WHERE rolname = ${roleUser}
+      SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${roleUser}
     `;
     const attributes = `WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD '${password}'`;
     await adminSql.unsafe(
@@ -927,9 +937,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       await adminSql.unsafe(statement);
     }
     await adminSql`
-      SELECT pg_terminate_backend(pid)
-      FROM pg_stat_activity
-      WHERE usename = ${role.db_user} AND pid != pg_backend_pid()
+      SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE usename = ${role.db_user} AND pid != pg_catalog.pg_backend_pid()
     `;
     await adminSql.unsafe(`DROP ROLE IF EXISTS ${quotePostgresIdentifier(role.db_user)}`);
     await this.managedDb.deleteTenantRole(tenant.id, role.name);
