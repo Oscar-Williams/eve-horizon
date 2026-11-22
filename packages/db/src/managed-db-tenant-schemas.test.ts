@@ -45,6 +45,15 @@ function urlFor(user: string | null, database: string): string {
   return url.toString();
 }
 
+/**
+ * A tenant database session as Eve opens one: search_path pinned to
+ * pg_catalog at startup, and no startup type query, so arrays come back as
+ * text.
+ */
+function pinnedTenantSession(user: string): Db {
+  return postgres(urlFor(user, dbName), { fetch_types: false, connection: { search_path: 'pg_catalog' } });
+}
+
 /** A session of a role in the tenant database, through psql, that runs `script`; resolves to psql's exit code. */
 function roleSession(user: string, script: string): Promise<number> {
   const url = new URL(testDbUrl!);
@@ -145,7 +154,7 @@ describe('schema-owner roles in a tenant database', () => {
     superTenant = postgres(urlFor(null, dbName));
     // Postgres 15 and later: public grants CREATE to no one by default.
     await superTenant.unsafe('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
-    tenant = postgres(urlFor(platform, dbName));
+    tenant = pinnedTenantSession(platform);
   });
 
   afterAll(async () => {
