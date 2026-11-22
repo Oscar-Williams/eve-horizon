@@ -341,7 +341,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           this.mergeEnabledExtensions(tenant.enabled_extensions, desiredExtensions),
         );
       }
-      await this.applyLocalTenantRoleChanges(instance, tenant, await this.planTenantRoleChanges(tenant));
+      await this.applyLocalTenantRoleChanges(instance, tenant, withOwnerRolesSetUpAgain(await this.planTenantRoleChanges(tenant)));
       await this.completeOperation(tenant.id, token, 'ready', {
         providerTenantId: `local:${tenant.db_name}`,
         credentialSecretRef: connectionUrl,
@@ -1311,6 +1311,18 @@ interface TenantRolePlan {
   desired: ManagedDbRoleDeclaration[];
   diff: ManagedDbRoleDiff<ManagedDbTenantRole>;
   provisioned: ManagedDbTenantRole[];
+}
+
+/**
+ * At provisioning, owner roles already recorded are created again (login,
+ * password, CONNECT, the platform login's membership): the database may be
+ * new (a tenant revived after a destroy, or retried after a failure), and a
+ * release before 0.1.330 can drop the database and leave such a record.
+ */
+function withOwnerRolesSetUpAgain(plan: TenantRolePlan): TenantRolePlan {
+  const creating = new Set(plan.diff.create.map((role) => role.name));
+  const again = plan.desired.filter((role) => managedDbRoleOwnedSchema(role) !== null && !creating.has(role.name));
+  return again.length === 0 ? plan : { ...plan, diff: { ...plan.diff, create: [...plan.diff.create, ...again] } };
 }
 
 /** Whether any declared role owns a schema (checked on every run). */

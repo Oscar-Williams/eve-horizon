@@ -256,7 +256,9 @@ environment:
   counts towards the 8 roles and gets the class's connection limit.
 - The login is created like any declared role and granted `CONNECT`. Eve's
   platform login is made a member of it, as of the owner role, so it can give
-  the role its schema and take it back.
+  the role its schema and take it back. When the tenant is provisioned again
+  (retried after a failure, or revived after a destroy), the login is set up
+  again with a new password, as the owner credential is.
 - On every provisioning or modifying run (a deploy that changes the tenant),
   inside the tenant database:
   - **no such schema:** `CREATE SCHEMA <schema> AUTHORIZATION <role>`;
