@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { decideSecurityRule, governingSecurityProfile, securityQueries } from './security.js';
+import { decideSecurityRule, governingSecurityProfile, instanceLegacyProfileWarning, securityQueries } from './security.js';
 import type { Db } from '../client.js';
 
 const testDbUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -167,6 +167,18 @@ describe('security profile stamps', () => {
     expect(await governingSecurityProfile(db, { governing: 'instance', rule: 'sso.app_access' })).toBe('strict');
     await putSetting('security.profile_ruleset', '2');
     expect(await governingSecurityProfile(db, { governing: 'instance', rule: P2_INSTANCE_RULE })).toBe('strict');
+  });
+
+  it('warns at start while the instance resolves to legacy (no profile, or legacy), and not otherwise', async () => {
+    const warning = /instance security profile resolves to legacy.*legacy is deprecated and is removed in 0\.1\.331; use audit/;
+    await putSetting('security.profile', null);
+    expect(await instanceLegacyProfileWarning(db)).toMatch(warning);
+    await putSetting('security.profile', 'legacy');
+    expect(await instanceLegacyProfileWarning(db)).toMatch(warning);
+    await putSetting('security.profile', 'audit');
+    expect(await instanceLegacyProfileWarning(db)).toBeNull();
+    await putSetting('security.profile', 'strict');
+    expect(await instanceLegacyProfileWarning(db)).toBeNull();
   });
 
   it('migration 00116 stamps profiles already strict with rule set 1', async () => {

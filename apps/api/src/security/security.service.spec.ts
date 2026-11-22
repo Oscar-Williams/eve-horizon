@@ -267,6 +267,76 @@ describe('SecurityService', () => {
     });
   });
 
+  describe('legacy deprecation (removed in 0.1.331)', () => {
+    const WARNING = 'legacy is deprecated and is removed in 0.1.331; use audit';
+
+    it('sets legacy at any level, and says it is deprecated', async () => {
+      const svc = build();
+      for (const target of [
+        { scope: 'instance' as const },
+        { scope: 'new_projects' as const },
+        { scope: 'org' as const, id: ORG },
+        { scope: 'project' as const, id: PROJECT },
+      ]) {
+        const result = await svc.setProfile(target, 'legacy', 'user_admin');
+        expect(result.profile).toBe('legacy');
+        expect(result.warnings).toEqual([WARNING]);
+      }
+      expect(db.state.settings.get('security.profile')).toBe('legacy');
+      expect(db.state.settings.get('security.new_project_profile')).toBe('legacy');
+      expect(db.state.orgProfiles.get(ORG)).toBe('legacy');
+      expect(db.state.projectProfiles.get(PROJECT)).toBe('legacy');
+    });
+
+    it('says so when clearing the instance, which leaves it on legacy', async () => {
+      db.state.settings.set('security.profile', 'audit');
+      const result = await build().setProfile({ scope: 'instance' }, null, 'user_admin');
+      expect(result.warnings).toEqual([WARNING]);
+    });
+
+    it('gives no warning for audit, strict or clearing an org or project', async () => {
+      const svc = build();
+      expect((await svc.setProfile({ scope: 'instance' }, 'audit', 'user_admin')).warnings).toBeUndefined();
+      expect((await svc.setProfile({ scope: 'project', id: PROJECT }, 'strict', 'user_admin')).warnings).toBeUndefined();
+      expect((await svc.setProfile({ scope: 'org', id: ORG }, null, 'user_admin')).warnings).toBeUndefined();
+      expect((await svc.setProfile({ scope: 'new_projects' }, null, 'user_admin')).warnings).toBeUndefined();
+    });
+
+    it('lists every level that resolves to legacy in the report, an instance with no profile included', async () => {
+      db.state.settings.set('security.new_project_profile', 'legacy');
+      db.state.orgProfiles.set(ORG, 'legacy');
+      db.state.orgProfiles.set('org_b', null);
+      db.state.projectProfiles.set(PROJECT, null);
+      db.state.projectProfiles.set('proj_b', 'audit');
+      db.state.projectProfiles.set('proj_c', 'legacy');
+      db.state.projectOrgs.set('proj_b', ORG);
+      db.state.projectOrgs.set('proj_c', 'org_b');
+
+      const report = await build().report({});
+
+      expect(report.legacy_levels).toEqual([
+        { scope: 'instance', id: null, slug: null, source: 'unset' },
+        { scope: 'new_projects', id: null, slug: null, source: 'set' },
+        { scope: 'org', id: ORG, slug: ORG, source: 'set' },
+        { scope: 'org', id: 'org_b', slug: 'org_b', source: 'inherited' },
+        { scope: 'project', id: PROJECT, slug: PROJECT, source: 'inherited' },
+        { scope: 'project', id: 'proj_c', slug: 'proj_c', source: 'set' },
+      ]);
+      expect(report.warnings).toEqual([WARNING]);
+    });
+
+    it('lists none, and warns of nothing, once every level is audit or strict', async () => {
+      db.state.settings.set('security.profile', 'audit');
+      db.state.orgProfiles.set(ORG, 'strict');
+      db.state.projectProfiles.set(PROJECT, null);
+
+      const report = await build().report({});
+
+      expect(report.legacy_levels).toEqual([]);
+      expect(report.warnings).toEqual([]);
+    });
+  });
+
   describe('applyNewProjectProfile', () => {
     it('writes the instance default for new projects onto a new project', async () => {
       db.state.settings.set('security.new_project_profile', 'strict');
