@@ -346,6 +346,7 @@ describe.skipIf(!testDbUrl)('a tenant database that shadows built-ins (real Post
 
     await service.installTenantExtensions(target, tenant, ['pg_trgm']);
     await service.applyLocalTenantRoleChanges(target, tenant, {
+      desired: [{ name: 'app', grants: 'readonly' }],
       diff: { create: [{ name: 'app', grants: 'readonly' }], regrant: [], drop: [] },
       provisioned: [],
     });
