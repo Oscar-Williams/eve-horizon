@@ -229,6 +229,76 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
 - Roles are supported on the local provider; cloud providers reject them with
   `provider_unsupported` until provider support lands.
 
+### Schema-owner roles
+
+A declared role may own one named schema of the tenant database instead of
+holding `public` grants (from 0.1.330). It can create, change and drop
+objects in that schema, and has nothing in `public`. This suits a service
+that runs its own migrations in a schema of its own, such as GoTrue in
+`auth`, without the owner credential.
+
+```yaml
+roles:
+  - name: app
+    grants: readwrite
+  - name: gotrue
+    grants: { schema: auth, owner: true }
+```
+
+```yaml
+environment:
+  GOTRUE_DB_DATABASE_URL: postgres://${managed.db.roles.gotrue.username}:${managed.db.roles.gotrue.password}@${managed.db.host}:${managed.db.port}/${managed.db.database}?search_path=auth
+```
+
+- The schema is a plain lower-case identifier (`[a-z_][a-z0-9_]*`, at most 63
+  characters, no quotes or dots). Manifest sync refuses `public`, `pg_*`,
+  `information_schema` and two owner roles for one schema. An owner role
+  counts towards the 8 roles and gets the class's connection limit.
+- The login is created like any declared role and granted `CONNECT`. Eve's
+  platform login is made a member of it, as of the owner role, so it can give
+  the role its schema and take it back.
+- On every provisioning or modifying run (a deploy that changes the tenant),
+  inside the tenant database:
+  - **no such schema:** `CREATE SCHEMA <schema> AUTHORIZATION <role>`;
+  - **owned by the tenant owner:** Eve hands it over in one transaction: the
+    schema, then every table, view, materialised view, sequence, foreign
+    table, type, domain, function, procedure and aggregate in it that the
+    owner owns (indexes and column sequences follow their table, array types
+    their element, extension members their extension), and it revokes what
+    `PUBLIC` and the tenant's other logins held on the schema. The
+    orchestrator logs the counts. Each change takes an exclusive lock on its
+    object, so the transaction waits at most 5 seconds for a lock and fails
+    otherwise: hand over a busy schema in a quiet hour;
+  - **owned by the role:** nothing;
+  - **owned by any other role, or holding an object another role owns:** the
+    tenant goes `failed` with `schema_owner_conflict`, and nothing changes.
+    The check runs before any role is created or dropped.
+- The role gets nothing in `public`, and the tenant's other logins (the owner
+  included) get nothing in its schema. Postgres 14 and older grant `CREATE` on
+  `public` to every role by default; from 15 they do not.
+- Removing the role from the manifest hands its schema and everything else it
+  owns in the database back to the tenant owner and revokes its privileges
+  there (`ALTER SCHEMA ... OWNER TO`, `REASSIGN OWNED`, `DROP OWNED`, in one
+  transaction), then ends its sessions and drops the login. The data stays.
+  Changing a role between `public` grants and an owned schema, or to another
+  schema, drops it this way and creates it again with a new password.
+- `eve db rotate-credentials` rotates its password with the others;
+  `eve db destroy` drops it with the database; `eve db reset` resets `public`
+  only, so an owned schema is kept.
+- Owner roles are stored in `managed_db_tenant_schema_owners` (migration
+  00124), apart from `managed_db_tenant_roles`.
+
+**Rollback below 0.1.330.** Remove the owner role from the manifest and
+deploy under 0.1.330 first: the schema goes back to the tenant owner and the
+login is dropped. Then roll back, and point the service at a credential the
+older release provides. If the release is rolled back with an owner role
+still in place, the older release neither drops nor changes the role: it
+reads only `managed_db_tenant_roles`, so the login keeps its schema and
+password and running services keep working. It cannot deploy or sync the
+manifest (it refuses the object grant) until 0.1.330 is back, and an
+`eve db destroy` there leaves the owner login behind for the operator to
+drop (`DROP ROLE`).
+
 ## Admin APIs (Managed DB Instances)
 
 Managed DB instances are registered via admin endpoints:

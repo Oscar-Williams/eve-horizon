@@ -453,7 +453,9 @@ logins for application runtimes:
 ```yaml
 roles:
   - name: app          # ^[a-z][a-z0-9_]{0,15}$, unique per service
-    grants: readwrite  # readwrite | readonly
+    grants: readwrite  # readwrite | readonly | { schema: <name>, owner: true }
+  - name: gotrue
+    grants: { schema: auth, owner: true }
 ```
 
 - `readwrite` grants `SELECT, INSERT, UPDATE, DELETE` on tables and
@@ -461,13 +463,22 @@ roles:
   on both. Both include `CONNECT` on the database and `USAGE` on `public`.
 - Grants cover existing objects and, via default privileges on the owner role,
   objects the owner creates later (for example through migration jobs).
-- Roles cannot create objects; run migrations with the owner credential.
+- `readwrite` and `readonly` roles cannot create objects; run migrations with
+  the owner credential, or give the service a schema-owner role.
 - The Postgres login is `<owner user>-<name>`, truncated with a short hash to
   stay within the 63-character identifier limit.
 - Roles declared later are created on the next deploy. Roles removed from the
   manifest are revoked and dropped on the next deploy.
 - `eve db rotate-credentials` rotates role passwords along with the owner
   password; destroying the managed DB drops its roles.
+- `grants: { schema: <name>, owner: true }` makes a role that owns that one
+  schema (from 0.1.330): DDL there, nothing in `public`, and the other roles
+  get nothing in it. A new schema is created owned by the role; one the owner
+  already owns is handed over with its objects at the next deploy; removing
+  the role hands the schema back before the login is dropped. The schema is a
+  plain lower-case identifier, never `public`, `pg_*` or
+  `information_schema`, and has one owner role. See
+  [schema-owner roles](db.md#schema-owner-roles), including rollback.
 - `roles` is currently supported on the local provider only.
 
 ### Managed DB interpolation fields
