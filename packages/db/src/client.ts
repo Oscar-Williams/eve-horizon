@@ -10,6 +10,33 @@ export function createDb(connectionString: string) {
 
 export type Db = ReturnType<typeof createDb>;
 
+/** The only schema Eve's sessions on other owners' databases resolve names in. */
+const PINNED_SEARCH_PATH = 'pg_catalog';
+
+/**
+ * A client for Eve's own login on a database someone else owns, such as a
+ * managed tenant database. The owner may set that database's search_path
+ * and create objects named like built-ins, so the session's search_path is
+ * sent as pg_catalog in the startup message (ahead of any per-database
+ * setting, and of the first query); a search_path in the connection
+ * string's query is dropped. The client's startup type query is not sent,
+ * so arrays come back as text: use built-in scalar types only. Statements
+ * should still name catalog objects, and the schemas they create in, in full.
+ */
+export function createPinnedSearchPathDb(connectionString: string): Db {
+  const url = new URL(connectionString);
+  for (const name of [...url.searchParams.keys()]) {
+    if (name.toLowerCase() === 'search_path') url.searchParams.delete(name);
+  }
+  return postgres(url.toString(), {
+    max: 10,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    fetch_types: false,
+    connection: { search_path: PINNED_SEARCH_PATH },
+  });
+}
+
 export type ConnectionTarget = {
   /** Servers in the order the client tries them. */
   endpoints: Array<{ host: string; port: number }>;
