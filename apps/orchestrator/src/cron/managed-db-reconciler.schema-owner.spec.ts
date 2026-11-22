@@ -200,6 +200,30 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
     expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', expect.objectContaining({ setReady: true }));
   });
 
+  it('sets an owner role up again when its database is provisioned again', async () => {
+    // A tenant revived after a destroy, or retried after a failure, whose
+    // owner role is still recorded: the database may be new, so the login,
+    // its CONNECT and the platform login's membership are set up again.
+    const { service, managedDb } = createService(
+      buildTenant({ desired_roles: [gotrueDeclared] }),
+      { listTenantRoles: vi.fn().mockResolvedValue([provisionedRole('gotrue', 'owner', 'auth')]) },
+    );
+    wireConnections(service);
+
+    await service.reconcile();
+
+    expect(adminSql.statements).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^CREATE ROLE "${GOTRUE}" WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 25 PASSWORD '[0-9a-f]{32}'$`)),
+      `GRANT CONNECT ON DATABASE "${DB}" TO "${GOTRUE}"`,
+      `GRANT "${GOTRUE}" TO CURRENT_USER`,
+    ]));
+    expect(tenantSql.statements).toContain(`CREATE SCHEMA "auth" AUTHORIZATION "${GOTRUE}"`);
+    expect(managedDb.upsertTenantRole).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'gotrue', grants: 'owner', schema_name: 'auth', credential_secret_ref: expect.stringMatching(/^postgres:\/\//),
+    }));
+    expect(managedDb.deleteTenantRole).not.toHaveBeenCalled();
+  });
+
   it('hands over a schema the tenant owner owns, object by object, and logs what moved', async () => {
     tenantDb(OWNER, [
       { kind: 'routine', identity: 'auth.uid()', owner: OWNER },
