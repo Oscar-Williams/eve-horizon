@@ -8,6 +8,8 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
+import type { Readable } from 'stream';
+import { executeSnapshot, type SnapshotUploadTarget } from '@eve/shared';
 import {
   ManagedDbSchemaConflictError,
   claimManagedDbSchema,
@@ -40,6 +42,24 @@ function urlFor(user: string | null, database: string): string {
   }
   url.pathname = `/${database}`;
   return url.toString();
+}
+
+/** A snapshot of the tenant database as Eve takes one: pg_dump as the tenant owner, into a store that counts the bytes. */
+async function snapshotAsOwner(): Promise<number> {
+  const url = new URL(testDbUrl!);
+  const store = {
+    async uploadStream(_bucket: string, _key: string, body: Readable): Promise<number> {
+      let size = 0;
+      for await (const chunk of body) size += (chunk as Buffer).length;
+      return size;
+    },
+  } as unknown as SnapshotUploadTarget['client'];
+  const result = await executeSnapshot(
+    { host: url.hostname, port: Number(url.port) || 5432, username: owner, password: 'pw', database: dbName },
+    { client: store, bucket: 'snapshots', key: 'tenant.dump' },
+    { timeoutMs: 60_000 },
+  );
+  return result.sizeBytes;
 }
 
 describe('schema-owner roles in a tenant database', () => {
@@ -141,11 +161,24 @@ describe('schema-owner roles in a tenant database', () => {
         .rejects.toThrow(/permission denied/);
     });
 
-    it('gives the other roles nothing in the schema', async () => {
+    it('gives the other roles nothing in the schema, and the tenant owner read access only', async () => {
       await claimManagedDbSchema(tenant, target);
-      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id int)'));
+      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id int); INSERT INTO auth.sessions VALUES (1)'));
       await expect(as(app, (tx) => tx.unsafe('SELECT * FROM auth.sessions'))).rejects.toThrow(/permission denied/);
-      await expect(as(owner, (tx) => tx.unsafe('SELECT * FROM auth.sessions'))).rejects.toThrow(/permission denied/);
+      const rows = await as(owner, (tx) => tx.unsafe('SELECT id FROM auth.sessions'));
+      expect(rows.map((row) => row.id)).toEqual([1]);
+      await expect(as(owner, (tx) => tx.unsafe('INSERT INTO auth.sessions VALUES (2)'))).rejects.toThrow(/permission denied/);
+      await expect(as(owner, (tx) => tx.unsafe('CREATE TABLE auth.extra (id int)'))).rejects.toThrow(/permission denied/);
+    });
+
+    it('lets a snapshot, which runs as the tenant owner, dump what the role makes in the schema', async () => {
+      await claimManagedDbSchema(tenant, target);
+      await as(gotrue, (tx) => tx.unsafe(`
+        CREATE TABLE auth.sessions (id serial PRIMARY KEY, token text);
+        INSERT INTO auth.sessions (token) VALUES ('t1');
+        CREATE SEQUENCE auth.audit_seq;
+      `));
+      await expect(snapshotAsOwner()).resolves.toBeGreaterThan(0);
     });
   });
 
@@ -173,6 +206,15 @@ describe('schema-owner roles in a tenant database', () => {
       expect(rows.map((row) => row.email)).toEqual(['alice@eve.example', 'bob@eve.example']);
       // The role can now change what it owns.
       await as(gotrue, (tx) => tx.unsafe('ALTER TABLE auth.users ADD COLUMN phone text'));
+    });
+
+    it('lets a snapshot as the tenant owner dump the schema after the hand-over, and what the role adds later', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target, { revokeFrom: [owner, app] });
+      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id serial PRIMARY KEY); INSERT INTO auth.sessions DEFAULT VALUES'));
+      const rows = await as(owner, (tx) => tx.unsafe('SELECT count(*)::int AS n FROM auth.users'));
+      expect(rows[0].n).toBe(2);
+      await expect(snapshotAsOwner()).resolves.toBeGreaterThan(0);
     });
 
     it('takes back what the other roles of the tenant were given in the schema', async () => {

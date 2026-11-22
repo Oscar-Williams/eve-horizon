@@ -186,7 +186,13 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       `GRANT CONNECT ON DATABASE "${DB}" TO "${GOTRUE}"`,
       `GRANT "${GOTRUE}" TO CURRENT_USER`,
     ]));
-    expect(tenantSql.statements).toContain(`CREATE SCHEMA "auth" AUTHORIZATION "${GOTRUE}"`);
+    const created = tenantSql.statements.indexOf(`CREATE SCHEMA "auth" AUTHORIZATION "${GOTRUE}"`);
+    expect(created).toBeGreaterThanOrEqual(0);
+    // Snapshots run as the tenant owner: it may read the new schema.
+    expect(tenantSql.statements.slice(created + 1, created + 3)).toEqual([
+      `GRANT USAGE ON SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "auth" TO "${OWNER}"`,
+    ]);
     expect(tenantSql.statements.filter((statement) => statement.includes(`TO "${GOTRUE}"`) && statement.includes('"public"'))).toEqual([]);
     // app keeps its public grants.
     expect(tenantSql.statements).toContain(`GRANT USAGE ON SCHEMA "public" TO "${OWNER}-app"`);
@@ -250,6 +256,12 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       `ALTER TABLE auth.users OWNER TO "${GOTRUE}"`,
       `ALTER TYPE auth.factor_type OWNER TO "${GOTRUE}"`,
       `REVOKE ALL ON SCHEMA "auth" FROM PUBLIC, "${OWNER}", "${OWNER}-app"`,
+      // Snapshots run as the tenant owner, which keeps read access.
+      `GRANT USAGE ON SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL SEQUENCES IN SCHEMA "auth" TO "${OWNER}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${GOTRUE}" IN SCHEMA "auth" GRANT SELECT ON TABLES TO "${OWNER}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${GOTRUE}" IN SCHEMA "auth" GRANT SELECT ON SEQUENCES TO "${OWNER}"`,
       'COMMIT',
     ]);
     expect(logs.join('\n')).toMatch(/Handed schema auth of tenant mdbt_1 to gotrue: 1 routine, 1 table, 1 type/);
