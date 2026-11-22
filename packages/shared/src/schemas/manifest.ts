@@ -17,6 +17,7 @@ import {
   MANAGED_DB_ROLE_GRANTS,
   MANAGED_DB_MAX_ROLES,
   MANAGED_DB_ROLE_NAME_PATTERN,
+  managedDbOwnedSchemaError,
 } from '../managed-db/roles.js';
 import { IngressByteSizeSchema, IngressDurationSchema } from './ingress-units.js';
 import { EGRESS_HOSTS_MAX, egressHostProblem } from '../k8s/egress-hosts.js';
@@ -168,12 +169,42 @@ export const ManagedDbExtensionsSchema = z.array(z.string())
   })
   .transform((extensions) => normalizeManagedDbExtensions(extensions));
 
+/**
+ * `grants`: `readwrite` or `readonly` on schema `public`, or
+ * `{ schema: <name>, owner: true }` for a role that owns that one schema
+ * (DDL there only). A schema is a plain identifier, never `public` or one
+ * Postgres reserves.
+ */
+export const ManagedDbRoleGrantsSchema = z
+  .union(
+    [
+      z.enum(MANAGED_DB_ROLE_GRANTS),
+      z.object({ schema: z.string(), owner: z.literal(true) }).strict(),
+    ],
+    {
+      errorMap: () => ({
+        message: 'Managed DB role grants must be readwrite, readonly or { schema: <name>, owner: true }',
+      }),
+    },
+  )
+  .superRefine((grants, ctx) => {
+    if (typeof grants === 'string') return;
+    const problem = managedDbOwnedSchemaError(grants.schema);
+    if (problem) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['schema'],
+        message: `Managed DB role schema "${grants.schema}" ${problem}`,
+      });
+    }
+  });
+
 export const ManagedDbRoleSchema = z.object({
   name: z.string().regex(
     MANAGED_DB_ROLE_NAME_PATTERN,
     'Managed DB role name must be 1-16 characters of [a-z0-9_] and start with a letter',
   ),
-  grants: z.enum(MANAGED_DB_ROLE_GRANTS),
+  grants: ManagedDbRoleGrantsSchema,
 });
 
 export type ManagedDbRole = z.infer<typeof ManagedDbRoleSchema>;
@@ -188,6 +219,7 @@ export const ManagedDbRolesSchema = z.array(ManagedDbRoleSchema)
       });
     }
     const seen = new Set<string>();
+    const owners = new Map<string, string>();
     for (const [index, role] of roles.entries()) {
       if (seen.has(role.name)) {
         ctx.addIssue({
@@ -197,6 +229,17 @@ export const ManagedDbRolesSchema = z.array(ManagedDbRoleSchema)
         });
       }
       seen.add(role.name);
+      if (typeof role.grants === 'string') continue;
+      const owner = owners.get(role.grants.schema);
+      if (owner !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, 'grants', 'schema'],
+          message: `Managed DB schema "${role.grants.schema}" has two owner roles (${owner}, ${role.name})`,
+        });
+      } else {
+        owners.set(role.grants.schema, role.name);
+      }
     }
   });
 

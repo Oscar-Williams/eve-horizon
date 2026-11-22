@@ -10,11 +10,15 @@ import { quotePostgresIdentifier } from './extensions.js';
 //   x-eve.managed.roles:
 //     - { name: app,     grants: readwrite }
 //     - { name: reports, grants: readonly }
+//     - { name: gotrue,  grants: { schema: auth, owner: true } }
 //
 // Each declared role becomes a Postgres LOGIN role named
-// `<tenant db_user>-<name>` with grants scoped to the tenant database's
-// `public` schema. The helpers below are pure so the reconciler's SQL can be
-// unit-tested without a database.
+// `<tenant db_user>-<name>`. `readwrite` and `readonly` grant data access in
+// the tenant database's `public` schema. A schema-owner role owns one named
+// schema instead (DDL there, nothing in `public`): provisioned roles of that
+// kind are stored with `grants = 'owner'` and the schema in `schema_name`.
+// The helpers below are pure so the reconciler's SQL can be unit-tested
+// without a database.
 
 export const MANAGED_DB_ROLE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,15}$/;
 
@@ -29,30 +33,81 @@ export const MANAGED_DB_ROLE_GRANTS = ['readwrite', 'readonly'] as const;
 
 export type ManagedDbRoleGrants = (typeof MANAGED_DB_ROLE_GRANTS)[number];
 
+/** `grants` of a role that owns one schema of the tenant database. */
+export interface ManagedDbSchemaOwnerGrant {
+  schema: string;
+  owner: true;
+}
+
+/** What a declared role is granted: data access in `public`, or one schema of its own. */
+export type ManagedDbRoleGrantSpec = ManagedDbRoleGrants | ManagedDbSchemaOwnerGrant;
+
 export interface ManagedDbRoleDeclaration {
   name: string;
-  grants: ManagedDbRoleGrants;
+  grants: ManagedDbRoleGrantSpec;
 }
+
+/** The stored `grants` of a provisioned schema-owner role; its schema is in `schema_name`. */
+export const MANAGED_DB_SCHEMA_OWNER_GRANTS = 'owner';
+
+/** A schema a role may own: a plain, unquoted Postgres identifier. */
+export const MANAGED_DB_SCHEMA_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
 export function isManagedDbRoleGrants(value: unknown): value is ManagedDbRoleGrants {
   return typeof value === 'string' && (MANAGED_DB_ROLE_GRANTS as readonly string[]).includes(value);
 }
 
 /**
+ * Why a role cannot own the named schema, or null when it can. `public` is
+ * shared by every role; `pg_*` and `information_schema` belong to Postgres.
+ */
+export function managedDbOwnedSchemaError(schema: unknown): string | null {
+  if (typeof schema !== 'string' || !MANAGED_DB_SCHEMA_NAME_PATTERN.test(schema)) {
+    return 'must be a plain lower-case identifier: [a-z_][a-z0-9_]*, at most 63 characters, no quotes or dots';
+  }
+  if (schema === 'public') return 'cannot be owned by a role: every role of the database shares public';
+  if (schema.startsWith('pg_') || schema === 'information_schema') return 'is reserved for Postgres';
+  return null;
+}
+
+export function isManagedDbSchemaOwnerGrant(value: unknown): value is ManagedDbSchemaOwnerGrant {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  const grant = value as { schema?: unknown; owner?: unknown };
+  return keys.length === 2 && grant.owner === true && managedDbOwnedSchemaError(grant.schema) === null;
+}
+
+/**
+ * The schema a declared role (an owner grant) or a provisioned role
+ * (`grants = 'owner'`, `schema_name`) owns; null for `public` data roles.
+ */
+export function managedDbRoleOwnedSchema(role: { grants: unknown; schema_name?: string | null }): string | null {
+  if (isManagedDbSchemaOwnerGrant(role.grants)) return role.grants.schema;
+  if (role.grants === MANAGED_DB_SCHEMA_OWNER_GRANTS) return role.schema_name ?? null;
+  return null;
+}
+
+/**
  * Normalize a list of role declarations (manifest input or the JSONB
  * `desired_roles` column): drop malformed entries, dedupe by name (first
- * wins), and sort by name so persisted intent is stable.
+ * wins) and by owned schema (first owner wins), and sort by name so
+ * persisted intent is stable.
  */
 export function normalizeManagedDbRoles(input: unknown): ManagedDbRoleDeclaration[] {
   if (!Array.isArray(input)) return [];
   const byName = new Map<string, ManagedDbRoleDeclaration>();
+  const ownedSchemas = new Set<string>();
   for (const entry of input) {
     if (!entry || typeof entry !== 'object') continue;
     const { name, grants } = entry as { name?: unknown; grants?: unknown };
     if (typeof name !== 'string' || !MANAGED_DB_ROLE_NAME_PATTERN.test(name)) continue;
-    if (!isManagedDbRoleGrants(grants)) continue;
     if (byName.has(name)) continue;
-    byName.set(name, { name, grants });
+    if (isManagedDbRoleGrants(grants)) {
+      byName.set(name, { name, grants });
+    } else if (isManagedDbSchemaOwnerGrant(grants) && !ownedSchemas.has(grants.schema)) {
+      ownedSchemas.add(grants.schema);
+      byName.set(name, { name, grants: { schema: grants.schema, owner: true } });
+    }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -64,17 +119,31 @@ export function normalizeManagedDbRoles(input: unknown): ManagedDbRoleDeclaratio
 export interface ManagedDbProvisionedRole {
   name: string;
   grants: string;
+  /** The owned schema of a schema-owner role (`grants = 'owner'`). */
+  schema_name?: string | null;
 }
 
 export interface ManagedDbRoleDiff<TProvisioned extends ManagedDbProvisionedRole = ManagedDbProvisionedRole> {
-  /** Declared in the manifest but not yet provisioned. */
+  /** Declared in the manifest but not yet provisioned (or provisioned as another kind). */
   create: ManagedDbRoleDeclaration[];
-  /** Provisioned with a different grant set than declared. */
+  /** Provisioned with different `public` grants than declared. */
   regrant: ManagedDbRoleDeclaration[];
-  /** Provisioned but no longer declared. */
+  /** Provisioned but no longer declared (or declared as another kind). */
   drop: TProvisioned[];
 }
 
+/** One string per grant: `readwrite`, `readonly`, or `owner:<schema>`. */
+function grantKey(role: { grants: unknown; schema_name?: string | null }): string {
+  const schema = managedDbRoleOwnedSchema(role);
+  return schema === null ? String(role.grants) : `${MANAGED_DB_SCHEMA_OWNER_GRANTS}:${schema}`;
+}
+
+/**
+ * Roles to create, regrant and drop. A role whose grant changes between
+ * `public` grants is regranted in place; one that becomes, stops being or
+ * changes the schema it owns is dropped (its schema handed back) and created
+ * again, so a login never holds both kinds.
+ */
 export function diffManagedDbRoles<TProvisioned extends ManagedDbProvisionedRole>(
   desired: ManagedDbRoleDeclaration[],
   provisioned: TProvisioned[],
@@ -84,16 +153,22 @@ export function diffManagedDbRoles<TProvisioned extends ManagedDbProvisionedRole
 
   const create: ManagedDbRoleDeclaration[] = [];
   const regrant: ManagedDbRoleDeclaration[] = [];
+  const replaced = new Set<string>();
   for (const role of desired) {
     const existing = provisionedByName.get(role.name);
     if (!existing) {
       create.push(role);
-    } else if (existing.grants !== role.grants) {
-      regrant.push(role);
+    } else if (grantKey(existing) !== grantKey(role)) {
+      if (isManagedDbRoleGrants(role.grants) && isManagedDbRoleGrants(existing.grants)) {
+        regrant.push(role);
+      } else {
+        replaced.add(role.name);
+        create.push(role);
+      }
     }
   }
 
-  const drop = provisioned.filter((role) => !desiredByName.has(role.name));
+  const drop = provisioned.filter((role) => !desiredByName.has(role.name) || replaced.has(role.name));
   return { create, regrant, drop };
 }
 
@@ -181,6 +256,36 @@ export function buildManagedDbRoleRevokeSql(target: ManagedDbRoleSqlTarget): Man
     ],
     instance: [
       `REVOKE ALL ON DATABASE ${db} FROM ${role}`,
+    ],
+  };
+}
+
+/**
+ * Statements for a role that owns one schema. `instance`: CONNECT on the
+ * database, and the platform login's membership of the role, which it needs
+ * to give the role a schema and take it back (as for the owner role).
+ * `create` makes the schema with the role as owner; `handOver` moves an
+ * existing schema to it (its objects are moved one by one after it);
+ * `handBack` returns everything the role owns in the database to the tenant
+ * owner and revokes what it was granted there, so the login can be dropped.
+ */
+export function buildManagedDbSchemaOwnerSql(
+  target: ManagedDbRoleSqlTarget & { schema: string },
+): { instance: string[]; create: string; handOver: string; handBack: string[] } {
+  const db = quotePostgresIdentifier(target.dbName);
+  const owner = quotePostgresIdentifier(target.ownerUser);
+  const role = quotePostgresIdentifier(target.roleUser);
+  const schema = quotePostgresIdentifier(target.schema);
+  return {
+    instance: [
+      `GRANT CONNECT ON DATABASE ${db} TO ${role}`,
+      `GRANT ${role} TO CURRENT_USER`,
+    ],
+    create: `CREATE SCHEMA ${schema} AUTHORIZATION ${role}`,
+    handOver: `ALTER SCHEMA ${schema} OWNER TO ${role}`,
+    handBack: [
+      `REASSIGN OWNED BY ${role} TO ${owner}`,
+      `DROP OWNED BY ${role}`,
     ],
   };
 }

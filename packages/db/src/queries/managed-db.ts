@@ -39,10 +39,14 @@ export interface CreateManagedDbInstanceInput {
 // Tenant types
 // ---------------------------------------------------------------------------
 
-/** Manifest intent for one declared tenant role (stored in managed_db_tenants.desired_roles). */
+/**
+ * Manifest intent for one declared tenant role (stored in
+ * managed_db_tenants.desired_roles): `public` grants, or one schema the role
+ * owns.
+ */
 export interface ManagedDbDesiredRole {
   name: string;
-  grants: 'readwrite' | 'readonly';
+  grants: 'readwrite' | 'readonly' | { schema: string; owner: true };
 }
 
 export interface ManagedDbTenant {

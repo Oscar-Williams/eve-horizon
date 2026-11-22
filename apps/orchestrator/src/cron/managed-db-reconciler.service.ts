@@ -33,6 +33,7 @@ import {
   buildManagedDbRoleRevokeSql,
   diffManagedDbRoles,
   hasManagedDbRoleChanges,
+  isManagedDbRoleGrants,
   normalizeManagedDbRoles,
   type ManagedDbRoleDeclaration,
   type ManagedDbRoleDiff,
@@ -890,6 +891,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   ): Promise<void> {
     const { diff, provisioned } = plan;
     if (!hasManagedDbRoleChanges(diff)) return;
+    const ownerRole = [...diff.create, ...diff.regrant].find((role) => !isManagedDbRoleGrants(role.grants));
+    if (ownerRole) {
+      throw new ManagedDbProvisioningError(
+        'schema_owner_unsupported',
+        `Managed DB role "${ownerRole.name}" owns a schema; schema-owner roles are not provisioned by this release`,
+      );
+    }
 
     const adminSql = this.connectToInstance(instance);
     const tenantSql = this.connectToTenantDb(instance, tenant);
@@ -910,11 +918,13 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
         for (const statement of revoke.tenant) {
           await tenantSql.unsafe(statement);
         }
+        if (!isManagedDbRoleGrants(role.grants)) continue;
         await this.grantLocalTenantRole(adminSql, tenantSql, tenant, existing.db_user, role.grants);
         await this.managedDb.updateTenantRoleGrants(tenant.id, role.name, role.grants);
       }
 
       for (const role of diff.create) {
+        if (!isManagedDbRoleGrants(role.grants)) continue;
         const roleUser = generateManagedDbRoleUser(tenant.db_user, role.name);
         const password = crypto.randomBytes(16).toString('hex');
         await this.ensureLocalRoleLogin(adminSql, roleUser, password, connectionLimitFor(tenant.class));
