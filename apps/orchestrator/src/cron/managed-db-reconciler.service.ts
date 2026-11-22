@@ -1003,7 +1003,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   /** Sets a database's connection limit only when it has none (-1); a limit already set is the operator's. */
   private async applyDatabaseConnectionLimit(adminSql: Db, dbName: string, limit: number): Promise<void> {
     const [row] = await adminSql`
-      SELECT datconnlimit FROM pg_database WHERE datname = ${dbName}
+      SELECT datconnlimit FROM pg_catalog.pg_database WHERE datname = ${dbName}
     `;
     if (!row) return;
     const current = Number((row as { datconnlimit: unknown }).datconnlimit);
@@ -1015,7 +1015,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   /** Sets a login's connection limit only when it has none (-1). */
   private async applyConnectionLimit(adminSql: Db, login: string, limit: number): Promise<void> {
     const [row] = await adminSql`
-      SELECT rolconnlimit FROM pg_roles WHERE rolname = ${login}
+      SELECT rolconnlimit FROM pg_catalog.pg_roles WHERE rolname = ${login}
     `;
     if (!row || Number((row as { rolconnlimit: unknown }).rolconnlimit) !== -1) return;
     await adminSql.unsafe(`ALTER ROLE ${quotePostgresIdentifier(login)} CONNECTION LIMIT ${limit}`);
