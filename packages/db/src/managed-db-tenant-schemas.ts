@@ -185,6 +185,9 @@ export async function checkManagedDbSchemaClaim(
  *   other logins) were granted on the schema;
  * - owned by any other role, or holding an object another role owns:
  *   refused with ManagedDbSchemaConflictError, and nothing changes.
+ * A created or handed-over schema stays readable by the tenant owner, which
+ * snapshots run as: the schema, its tables and sequences, and those the role
+ * creates later.
  */
 export async function claimManagedDbSchema(
   tenantSql: Db,
@@ -203,6 +206,7 @@ export async function claimManagedDbSchema(
     if (conflict) throw conflict;
     if (owner === null) {
       await tx.unsafe(sql.create);
+      for (const statement of sql.snapshotRead) await tx.unsafe(statement);
       return { action: 'created' } as const;
     }
     if (owner === target.roleUser) return { action: 'unchanged' } as const;
@@ -218,6 +222,7 @@ export async function claimManagedDbSchema(
       .filter((name) => name !== target.roleUser)
       .map(quotePostgresIdentifier)];
     await tx.unsafe(`REVOKE ALL ON SCHEMA ${quotePostgresIdentifier(target.schema)} FROM ${grantees.join(', ')}`);
+    for (const statement of sql.snapshotRead) await tx.unsafe(statement);
     return { action: 'handed_over', objects: counts } as const;
   }) as Promise<ManagedDbSchemaClaim>;
 }

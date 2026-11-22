@@ -269,6 +269,12 @@ describe('schema-owner roles in a tenant database', () => {
           AND dbid = (SELECT oid FROM pg_database WHERE datname = ${dbName})
       `;
       expect(dependents).toBe(0);
+      // The default privileges that kept the schema readable for snapshots went with it.
+      const [{ defaults }] = await superTenant<{ defaults: number }[]>`
+        SELECT count(*)::int AS defaults FROM pg_default_acl
+        WHERE defaclrole = (SELECT oid FROM pg_roles WHERE rolname = ${gotrue})
+      `;
+      expect(defaults).toBe(0);
     });
 
     it('drops nothing when the role has no schema', async () => {

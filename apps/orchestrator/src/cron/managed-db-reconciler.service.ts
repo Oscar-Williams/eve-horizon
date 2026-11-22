@@ -981,7 +981,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       for (const role of desired) {
         const target = this.schemaTarget(tenant, role);
         if (!target) continue;
-        // The tenant's other logins get nothing in the schema.
+        // The tenant's other logins get nothing in the schema, except the
+        // owner's read access for snapshots.
         const others = [tenant.db_user, ...desired
           .filter((other) => other.name !== role.name)
           .map((other) => generateManagedDbRoleUser(tenant.db_user, other.name))];
