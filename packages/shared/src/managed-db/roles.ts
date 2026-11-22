@@ -265,13 +265,16 @@ export function buildManagedDbRoleRevokeSql(target: ManagedDbRoleSqlTarget): Man
  * database, and the platform login's membership of the role, which it needs
  * to give the role a schema and take it back (as for the owner role).
  * `create` makes the schema with the role as owner; `handOver` moves an
- * existing schema to it (its objects are moved one by one after it);
- * `handBack` returns everything the role owns in the database to the tenant
- * owner and revokes what it was granted there, so the login can be dropped.
+ * existing schema to it (its objects are moved one by one after it).
+ * Removal runs `handBack` (the schema to the tenant owner) and then
+ * `release`: everything else the role owns in the database goes to the
+ * tenant owner and what it was granted there is revoked, so the login can
+ * be dropped. The schema moves first so its objects land in a schema the
+ * owner may create in, which a platform login that is not a superuser needs.
  */
 export function buildManagedDbSchemaOwnerSql(
   target: ManagedDbRoleSqlTarget & { schema: string },
-): { instance: string[]; create: string; handOver: string; handBack: string[] } {
+): { instance: string[]; create: string; handOver: string; handBack: string; release: string[] } {
   const db = quotePostgresIdentifier(target.dbName);
   const owner = quotePostgresIdentifier(target.ownerUser);
   const role = quotePostgresIdentifier(target.roleUser);
@@ -283,7 +286,8 @@ export function buildManagedDbSchemaOwnerSql(
     ],
     create: `CREATE SCHEMA ${schema} AUTHORIZATION ${role}`,
     handOver: `ALTER SCHEMA ${schema} OWNER TO ${role}`,
-    handBack: [
+    handBack: `ALTER SCHEMA ${schema} OWNER TO ${owner}`,
+    release: [
       `REASSIGN OWNED BY ${role} TO ${owner}`,
       `DROP OWNED BY ${role}`,
     ],

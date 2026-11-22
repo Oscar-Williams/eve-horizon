@@ -1,3 +1,4 @@
+import { MANAGED_DB_SCHEMA_OWNER_GRANTS } from '@eve/shared';
 import type { Db } from '../client.js';
 
 // ---------------------------------------------------------------------------
@@ -94,12 +95,18 @@ export interface CreateManagedDbTenantInput {
   desired_roles?: ManagedDbDesiredRole[];
 }
 
-/** A provisioned tenant role login with its stored credential. */
+/**
+ * A provisioned tenant role login with its stored credential. A
+ * schema-owner role has `grants = 'owner'` and the schema it owns in
+ * `schema_name` (stored in managed_db_tenant_schema_owners, which releases
+ * before 0.1.330 do not read); `public` data roles have `schema_name` null.
+ */
 export interface ManagedDbTenantRole {
   id: string;
   tenant_id: string;
   name: string;
   grants: string;
+  schema_name: string | null;
   db_user: string;
   credential_secret_ref: string | null;
   created_at: Date;
@@ -110,7 +117,9 @@ export interface UpsertManagedDbTenantRoleInput {
   id: string;
   tenant_id: string;
   name: string;
+  /** `readwrite`, `readonly`, or `owner` with `schema_name`. */
   grants: string;
+  schema_name?: string | null;
   db_user: string;
   credential_secret_ref: string | null;
 }
@@ -701,19 +710,48 @@ export function managedDbQueries(db: Db) {
     // Tenant roles (declared least-privilege logins)
     // -----------------------------------------------------------------------
 
+    /** Every provisioned role of the tenant, both kinds, by name. */
     async listTenantRoles(tenantId: string): Promise<ManagedDbTenantRole[]> {
       return db<ManagedDbTenantRole[]>`
-        SELECT * FROM managed_db_tenant_roles
+        SELECT id, tenant_id, name, grants, NULL::text AS schema_name, db_user,
+               credential_secret_ref, created_at, updated_at
+        FROM managed_db_tenant_roles
+        WHERE tenant_id = ${tenantId}
+        UNION ALL
+        SELECT id, tenant_id, name, ${MANAGED_DB_SCHEMA_OWNER_GRANTS} AS grants, schema_name, db_user,
+               credential_secret_ref, created_at, updated_at
+        FROM managed_db_tenant_schema_owners
         WHERE tenant_id = ${tenantId}
         ORDER BY name ASC
       `;
     },
 
     /**
-     * Insert or refresh a provisioned role. A null credential keeps the
-     * stored one so callers can update grants without touching secrets.
+     * Insert or refresh a provisioned role: a schema-owner role (`grants =
+     * 'owner'` with `schema_name`) in managed_db_tenant_schema_owners, any
+     * other in managed_db_tenant_roles. A null credential keeps the stored
+     * one so callers can update grants without touching secrets.
      */
     async upsertTenantRole(input: UpsertManagedDbTenantRoleInput): Promise<ManagedDbTenantRole> {
+      if (input.grants === MANAGED_DB_SCHEMA_OWNER_GRANTS) {
+        if (!input.schema_name) throw new Error(`Schema-owner role ${input.name} needs the schema it owns`);
+        const [owned] = await db<ManagedDbTenantRole[]>`
+          INSERT INTO managed_db_tenant_schema_owners (
+            id, tenant_id, name, schema_name, db_user, credential_secret_ref
+          )
+          VALUES (
+            ${input.id}, ${input.tenant_id}, ${input.name}, ${input.schema_name}, ${input.db_user}, ${input.credential_secret_ref}
+          )
+          ON CONFLICT (tenant_id, name) DO UPDATE
+          SET schema_name = EXCLUDED.schema_name,
+              db_user = EXCLUDED.db_user,
+              credential_secret_ref = COALESCE(EXCLUDED.credential_secret_ref, managed_db_tenant_schema_owners.credential_secret_ref),
+              updated_at = NOW()
+          RETURNING id, tenant_id, name, ${MANAGED_DB_SCHEMA_OWNER_GRANTS} AS grants, schema_name, db_user,
+                    credential_secret_ref, created_at, updated_at
+        `;
+        return owned;
+      }
       const [row] = await db<ManagedDbTenantRole[]>`
         INSERT INTO managed_db_tenant_roles (
           id, tenant_id, name, grants, db_user, credential_secret_ref
@@ -726,7 +764,7 @@ export function managedDbQueries(db: Db) {
             db_user = EXCLUDED.db_user,
             credential_secret_ref = COALESCE(EXCLUDED.credential_secret_ref, managed_db_tenant_roles.credential_secret_ref),
             updated_at = NOW()
-        RETURNING *
+        RETURNING *, NULL::text AS schema_name
       `;
       return row;
     },
@@ -741,11 +779,12 @@ export function managedDbQueries(db: Db) {
         SET grants = ${grants},
             updated_at = NOW()
         WHERE tenant_id = ${tenantId} AND name = ${name}
-        RETURNING *
+        RETURNING *, NULL::text AS schema_name
       `;
       return row ?? null;
     },
 
+    /** New credential for a role of either kind. */
     async updateTenantRoleCredentialSecretRef(
       tenantId: string,
       name: string,
@@ -756,25 +795,42 @@ export function managedDbQueries(db: Db) {
         SET credential_secret_ref = ${credentialSecretRef},
             updated_at = NOW()
         WHERE tenant_id = ${tenantId} AND name = ${name}
-        RETURNING *
+        RETURNING *, NULL::text AS schema_name
       `;
-      return row ?? null;
-    },
-
-    async deleteTenantRole(tenantId: string, name: string): Promise<boolean> {
-      const [row] = await db<{ id: string }[]>`
-        DELETE FROM managed_db_tenant_roles
+      if (row) return row;
+      const [owned] = await db<ManagedDbTenantRole[]>`
+        UPDATE managed_db_tenant_schema_owners
+        SET credential_secret_ref = ${credentialSecretRef},
+            updated_at = NOW()
         WHERE tenant_id = ${tenantId} AND name = ${name}
-        RETURNING id
+        RETURNING id, tenant_id, name, ${MANAGED_DB_SCHEMA_OWNER_GRANTS} AS grants, schema_name, db_user,
+                  credential_secret_ref, created_at, updated_at
       `;
-      return !!row;
+      return owned ?? null;
     },
 
+    /** Forget a role of either kind. */
+    async deleteTenantRole(tenantId: string, name: string): Promise<boolean> {
+      const rows = await db<{ id: string }[]>`
+        WITH roles AS (
+          DELETE FROM managed_db_tenant_roles WHERE tenant_id = ${tenantId} AND name = ${name} RETURNING id
+        ), owners AS (
+          DELETE FROM managed_db_tenant_schema_owners WHERE tenant_id = ${tenantId} AND name = ${name} RETURNING id
+        )
+        SELECT id FROM roles UNION ALL SELECT id FROM owners
+      `;
+      return rows.length > 0;
+    },
+
+    /** Forget every role of the tenant, both kinds. */
     async deleteTenantRoles(tenantId: string): Promise<number> {
       const rows = await db<{ id: string }[]>`
-        DELETE FROM managed_db_tenant_roles
-        WHERE tenant_id = ${tenantId}
-        RETURNING id
+        WITH roles AS (
+          DELETE FROM managed_db_tenant_roles WHERE tenant_id = ${tenantId} RETURNING id
+        ), owners AS (
+          DELETE FROM managed_db_tenant_schema_owners WHERE tenant_id = ${tenantId} RETURNING id
+        )
+        SELECT id FROM roles UNION ALL SELECT id FROM owners
       `;
       return rows.length;
     },
