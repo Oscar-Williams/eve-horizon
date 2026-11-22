@@ -337,14 +337,18 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
 
     await service.reconcile();
 
+    // The login stops signing in and its sessions end before anything moves,
+    // so nothing it commits meanwhile is dropped or keeps the login.
+    const noLogin = log.indexOf(`tenant: ALTER ROLE "${GOTRUE}" NOLOGIN`);
+    const terminate = log.findIndex((entry) => entry.startsWith('tenant: SELECT pg_catalog.pg_terminate_backend(pid'));
     const handBack = log.indexOf(`tenant: ALTER SCHEMA "auth" OWNER TO "${OWNER}"`);
     const reassign = log.indexOf(`tenant: REASSIGN OWNED BY "${GOTRUE}" TO "${OWNER}"`);
     const dropOwned = log.indexOf(`tenant: DROP OWNED BY "${GOTRUE}"`);
-    const terminate = log.findIndex((entry) => entry.startsWith('admin: SELECT pg_terminate_backend(pid)'));
     const dropRole = log.indexOf(`admin: DROP ROLE IF EXISTS "${GOTRUE}"`);
-    expect(handBack).toBeGreaterThanOrEqual(0);
-    expect([handBack, reassign, dropOwned, terminate, dropRole]).toEqual([...[handBack, reassign, dropOwned, terminate, dropRole]].sort((a, b) => a - b));
-    expect(new Set([handBack, reassign, dropOwned, terminate, dropRole]).size).toBe(5);
+    const steps = [noLogin, terminate, handBack, reassign, dropOwned, dropRole];
+    expect(noLogin).toBeGreaterThanOrEqual(0);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    expect(new Set(steps).size).toBe(6);
     // No public revokes for a role that never had public grants.
     expect(tenantSql.statements.some((statement) => statement.includes('"public"') && statement.includes(GOTRUE))).toBe(false);
     expect(managedDb.deleteTenantRole).toHaveBeenCalledWith('mdbt_1', 'gotrue');

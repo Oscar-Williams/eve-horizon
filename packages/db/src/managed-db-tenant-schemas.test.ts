@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
+import { spawn } from 'child_process';
 import type { Readable } from 'stream';
 import { executeSnapshot, type SnapshotUploadTarget } from '@eve/shared';
 import {
@@ -42,6 +43,24 @@ function urlFor(user: string | null, database: string): string {
   }
   url.pathname = `/${database}`;
   return url.toString();
+}
+
+/** A session of a role in the tenant database, through psql, that runs `script`; resolves to psql's exit code. */
+function roleSession(user: string, script: string): Promise<number> {
+  const url = new URL(testDbUrl!);
+  const child = spawn('psql', [
+    `--host=${url.hostname}`, `--port=${url.port || '5432'}`, `--username=${user}`, '--no-password',
+    '--quiet', '--set=ON_ERROR_STOP=1', '--command', script, dbName,
+  ], { env: { ...process.env, PGPASSWORD: 'pw' }, stdio: 'ignore' });
+  return new Promise((resolve) => child.on('exit', (code) => resolve(code ?? -1)));
+}
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('timed out waiting');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /** A snapshot of the tenant database as Eve takes one: pg_dump as the tenant owner, into a store that counts the bytes. */
@@ -141,6 +160,8 @@ describe('schema-owner roles in a tenant database', () => {
 
   beforeEach(async () => {
     await superTenant.unsafe('DROP SCHEMA IF EXISTS auth CASCADE');
+    // A hand-back leaves the role unable to sign in.
+    await admin.unsafe(`ALTER ROLE "${gotrue}" LOGIN`);
   });
 
   it('runs as a platform login that is not a superuser', async () => {
@@ -276,6 +297,42 @@ describe('schema-owner roles in a tenant database', () => {
       `;
       expect(defaults).toBe(0);
     });
+
+    it('closes the role\'s sessions and refuses new ones first, so nothing it commits meanwhile is lost or keeps the login', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      // GoTrue mid-migration, in a session of its own (psql, so the server
+      // ending it is seen plainly): a table made, not yet committed, while
+      // the hand-back starts.
+      const session = roleSession(gotrue, 'BEGIN; CREATE TABLE auth.late (id int); SELECT pg_sleep(2); COMMIT;');
+      await waitFor(async () => {
+        const [row] = await superTenant<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = ${gotrue} AND wait_event = 'PgSleep'
+        `;
+        return row.n === 1;
+      });
+
+      await releaseManagedDbSchema(tenant, target);
+
+      // Only a session that outlived the hand-back could commit its table.
+      expect(await session).not.toBe(0);
+
+      const [state] = await superTenant<{ late: string | null; can_login: boolean; sessions: number; dependents: number }[]>`
+        SELECT to_regclass('auth.late')::text AS late,
+               (SELECT rolcanlogin FROM pg_roles WHERE rolname = ${gotrue}) AS can_login,
+               (SELECT count(*)::int FROM pg_stat_activity WHERE usename = ${gotrue}) AS sessions,
+               (SELECT count(*)::int FROM pg_shdepend
+                WHERE refobjid = (SELECT oid FROM pg_roles WHERE rolname = ${gotrue})
+                  AND dbid = (SELECT oid FROM pg_database WHERE datname = ${dbName})) AS dependents
+      `;
+      expect(state).toEqual({ late: null, can_login: false, sessions: 0, dependents: 0 });
+      const again = postgres(urlFor(gotrue, dbName), { max: 1, onnotice: () => {} });
+      try {
+        await expect(again`SELECT 1`).rejects.toThrow(/not permitted to log in/);
+      } finally {
+        await again.end({ timeout: 0 }).catch(() => {});
+      }
+    }, 20_000);
 
     it('drops nothing when the role has no schema', async () => {
       await expect(releaseManagedDbSchema(tenant, target)).resolves.toBeUndefined();
