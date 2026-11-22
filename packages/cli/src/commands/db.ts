@@ -897,14 +897,17 @@ async function handleStatus(
     if (Array.isArray(tenant.declared_roles)) {
       const declared = tenant.declared_roles as Array<{ name?: unknown; grants?: unknown }>;
       const label = declared.length > 0
-        ? declared.map((role) => `${role.name ?? '?'} (${role.grants ?? '?'})`).join(', ')
+        ? declared.map((role) => `${role.name ?? '?'} (${describeRoleGrants(role.grants)})`).join(', ')
         : '(none)';
       console.log(`  Declared Roles:      ${label}`);
     }
     if (Array.isArray(tenant.roles)) {
-      const roles = tenant.roles as Array<{ name?: unknown; grants?: unknown; username?: unknown }>;
+      const roles = tenant.roles as Array<{ name?: unknown; grants?: unknown; schema?: unknown; username?: unknown }>;
       const label = roles.length > 0
-        ? roles.map((role) => `${role.name ?? '?'} (${role.grants ?? '?'}) as ${role.username ?? '?'}`).join(', ')
+        ? roles.map((role) => {
+          const grants = role.grants === 'owner' ? { schema: role.schema, owner: true } : role.grants;
+          return `${role.name ?? '?'} (${describeRoleGrants(grants)}) as ${role.username ?? '?'}`;
+        }).join(', ')
         : '(none)';
       console.log(`  Provisioned Roles:   ${label}`);
     }
@@ -1222,4 +1225,13 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+/** A role's grants as `eve db status` prints them: readwrite, readonly, or "owner of <schema>". */
+function describeRoleGrants(grants: unknown): string {
+  if (grants && typeof grants === 'object') {
+    const { schema, owner } = grants as { schema?: unknown; owner?: unknown };
+    if (owner === true) return `owner of ${typeof schema === 'string' ? schema : '?'}`;
+  }
+  return typeof grants === 'string' ? grants : '?';
 }

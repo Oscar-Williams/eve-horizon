@@ -267,7 +267,7 @@ export class ManagedDbService {
   }, extensions?: {
     installed_extensions?: Array<{ name: string; version: string }>;
     installed_extensions_error?: string | null;
-  }, roles: Pick<ManagedDbTenantRole, 'name' | 'grants' | 'db_user'>[] = []) {
+  }, roles: Array<Pick<ManagedDbTenantRole, 'name' | 'grants' | 'db_user'> & { schema_name?: string | null }> = []) {
     return {
       id: tenant.id,
       org_id: tenant.org_id,
@@ -290,6 +290,8 @@ export class ManagedDbService {
       roles: roles.map((role) => ({
         name: role.name,
         grants: role.grants,
+        // A schema-owner role (grants `owner`): the schema it owns.
+        ...(role.schema_name ? { schema: role.schema_name } : {}),
         username: role.db_user,
       })),
       ready_at: tenant.ready_at?.toISOString() ?? null,
