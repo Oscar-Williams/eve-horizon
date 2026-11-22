@@ -233,7 +233,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
 
 A declared role may own one named schema of the tenant database instead of
 holding `public` grants (from 0.1.330). It can create, change and drop
-objects in that schema, and has nothing in `public`. This suits a service
+objects in that schema, and gets no grants of its own in `public`. This suits a service
 that runs its own migrations in a schema of its own, such as GoTrue in
 `auth`, without the owner credential.
 
@@ -272,18 +272,41 @@ environment:
     object, so the transaction waits at most 5 seconds for a lock and fails
     otherwise: hand over a busy schema in a quiet hour;
   - **owned by the role:** nothing;
-  - **owned by any other role, or holding an object another role owns:** the
-    tenant goes `failed` with `schema_owner_conflict`, and nothing changes.
-    The check runs before any role is created or dropped.
-- The role gets nothing in `public`, and the tenant's other logins (the owner
-  included) get nothing in its schema. Postgres 14 and older grant `CREATE` on
-  `public` to every role by default; from 15 they do not.
-- Removing the role from the manifest hands its schema and everything else it
-  owns in the database back to the tenant owner and revokes its privileges
-  there (`ALTER SCHEMA ... OWNER TO`, `REASSIGN OWNED`, `DROP OWNED`, in one
-  transaction), then ends its sessions and drops the login. The data stays.
-  Changing a role between `public` grants and an owned schema, or to another
-  schema, drops it this way and creates it again with a new password.
+  - **owned by any other role, holding an object another role owns, or
+    holding an object a hand-over does not move:** the tenant goes `failed`
+    with `schema_owner_conflict` and a reason naming the objects, and nothing
+    changes. The kinds a hand-over does not move are operators, operator
+    classes and families, collations, conversions, statistics objects,
+    text-search configurations and dictionaries, and ordered-set aggregates
+    (members of an extension excepted): move them to another schema or drop
+    them, then deploy again. The check runs before any role is created or
+    dropped.
+- The role gets no grants of its own in `public`. Like every role it keeps
+  what `PUBLIC` holds there: on Postgres 15 defaults, `USAGE` on the schema
+  and `EXECUTE` on its functions (14 and older also grant `CREATE`), so it
+  can call a function in `public` but not read a table there unless granted.
+- The tenant's other logins get nothing in its schema, except that the tenant
+  owner can read it: `USAGE` on the schema and `SELECT` on its tables and
+  sequences, including those the role creates later (default privileges).
+  Snapshots run `pg_dump` as the tenant owner, so this keeps the schema in
+  every scheduled, pre-delete and pre-reset snapshot. The owner cannot change
+  anything there. If the role turns on row-level security for a table,
+  snapshots fail: the owner is not that table's owner, so `pg_dump` refuses.
+- Removing the role from the manifest first stops it signing in (`NOLOGIN`)
+  and ends its sessions, waiting for each, so nothing it commits meanwhile is
+  lost or keeps the login. Then, in one transaction, its schema and
+  everything else it owns in the database go back to the tenant owner and
+  its privileges there are revoked (`ALTER SCHEMA ... OWNER TO`,
+  `REASSIGN OWNED`, `DROP OWNED`, which also removes the default privileges
+  that let the owner read new objects), and the login is dropped. The data stays. If that transaction
+  fails (a lock held past 5 seconds, say), nothing has moved and the login
+  can sign in again; the next run tries again. Changing a role between
+  `public` grants and an owned schema, or to another schema, drops it this
+  way and creates it again with a new password.
+- Functions the role made pass to the tenant owner at hand-back, `SECURITY
+  DEFINER` ones included, which from then on run with the owner's rights.
+  Review them after removing a role (`SELECT proname FROM pg_proc WHERE
+  prosecdef AND pronamespace = '<schema>'::regnamespace`).
 - `eve db rotate-credentials` rotates its password with the others;
   `eve db destroy` drops it with the database; `eve db reset` resets `public`
   only, so an owned schema is kept.
@@ -299,7 +322,11 @@ reads only `managed_db_tenant_roles`, so the login keeps its schema and
 password and running services keep working. It cannot deploy or sync the
 manifest (it refuses the object grant) until 0.1.330 is back, and an
 `eve db destroy` there leaves the owner login behind for the operator to
-drop (`DROP ROLE`).
+drop (`DROP ROLE`). While rolled back, do not declare the same role name as
+a `readwrite` or `readonly` role: the older release would make the same
+login (`<owner user>-<name>`) a data role too, with a new password (so the
+service using the owner role can no longer sign in) and grants in `public`,
+while it still owns the schema (a registered residual).
 
 ## Admin APIs (Managed DB Instances)
 

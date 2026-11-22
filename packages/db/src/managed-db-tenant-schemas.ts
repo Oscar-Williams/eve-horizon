@@ -1,6 +1,7 @@
 /**
  * Schema-owner roles inside a tenant database (EVE-071). A declared managed
- * DB role may own one named schema: DDL there, nothing in `public`. These
+ * DB role may own one named schema: DDL there, and no grants of its own in
+ * `public` (it keeps what PUBLIC holds there, as every role does). These
  * helpers run on a connection to the tenant database as the platform login,
  * which must be a member of the tenant owner and of the role (the reconciler
  * grants both). They need no superuser: on Cloud SQL the platform login is

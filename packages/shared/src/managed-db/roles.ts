@@ -15,8 +15,9 @@ import { quotePostgresIdentifier } from './extensions.js';
 // Each declared role becomes a Postgres LOGIN role named
 // `<tenant db_user>-<name>`. `readwrite` and `readonly` grant data access in
 // the tenant database's `public` schema. A schema-owner role owns one named
-// schema instead (DDL there, nothing in `public`): provisioned roles of that
-// kind are stored with `grants = 'owner'` and the schema in `schema_name`.
+// schema instead (DDL there, and no grants of its own in `public`, beyond what
+// PUBLIC holds): provisioned roles of that kind are stored with
+// `grants = 'owner'` and the schema in `schema_name`.
 // The helpers below are pure so the reconciler's SQL can be unit-tested
 // without a database.
 
