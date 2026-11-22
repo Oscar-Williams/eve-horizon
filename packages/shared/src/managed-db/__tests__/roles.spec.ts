@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildManagedDbRoleGrantSql,
   buildManagedDbRoleRevokeSql,
+  buildManagedDbSchemaOwnerSql,
   diffManagedDbRoles,
   generateManagedDbRoleUser,
   generateManagedDbUser,
   hasManagedDbRoleChanges,
+  managedDbRoleOwnedSchema,
   normalizeManagedDbRoles,
   parseManagedDbConnectionUrl,
 } from '../index.js';
@@ -177,5 +179,72 @@ describe('parseManagedDbConnectionUrl', () => {
     expect(parseManagedDbConnectionUrl('${secret.DATABASE_URL}')).toBeNull();
     expect(parseManagedDbConnectionUrl('https://example.com/db')).toBeNull();
     expect(parseManagedDbConnectionUrl('')).toBeNull();
+  });
+});
+
+describe('schema-owner roles', () => {
+  const gotrue = { name: 'gotrue', grants: { schema: 'auth', owner: true as const } };
+  const ownerRow = (name: string, schema: string) => ({ name, grants: 'owner', schema_name: schema });
+
+  it('keeps owner grants when normalizing, and drops malformed ones and a second owner of a schema', () => {
+    expect(normalizeManagedDbRoles([
+      { name: 'zeta', grants: { schema: 'auth', owner: true } },
+      { name: 'app', grants: 'readwrite' },
+      { name: 'alpha', grants: { schema: 'auth', owner: true } },
+      { name: 'pub', grants: { schema: 'public', owner: true } },
+      { name: 'dotted', grants: { schema: 'a.b', owner: true } },
+      { name: 'notowner', grants: { schema: 'billing', owner: false } },
+      { name: 'extra', grants: { schema: 'billing', owner: true, readonly: true } },
+    ])).toEqual([
+      { name: 'app', grants: 'readwrite' },
+      { name: 'zeta', grants: { schema: 'auth', owner: true } },
+    ]);
+  });
+
+  it('names the schema a declared or provisioned role owns', () => {
+    expect(managedDbRoleOwnedSchema(gotrue)).toBe('auth');
+    expect(managedDbRoleOwnedSchema(ownerRow('gotrue', 'auth'))).toBe('auth');
+    expect(managedDbRoleOwnedSchema({ name: 'app', grants: 'readwrite' })).toBeNull();
+    expect(managedDbRoleOwnedSchema({ name: 'app', grants: 'readwrite', schema_name: null })).toBeNull();
+  });
+
+  it('reports nothing to do for an owner role already provisioned for its schema', () => {
+    const diff = diffManagedDbRoles([gotrue], [ownerRow('gotrue', 'auth')]);
+    expect(diff).toEqual({ create: [], regrant: [], drop: [] });
+  });
+
+  it('replaces a role whose grant changes kind or schema: drop, then create, never a regrant', () => {
+    const app = { name: 'app', grants: 'readwrite', schema_name: null };
+    const diff = diffManagedDbRoles(
+      [
+        { name: 'gotrue', grants: { schema: 'identity', owner: true } },
+        { name: 'app', grants: { schema: 'app', owner: true } },
+        { name: 'audit', grants: 'readonly' },
+      ],
+      [ownerRow('gotrue', 'auth'), app, ownerRow('audit', 'audit')],
+    );
+    expect(diff.regrant).toEqual([]);
+    expect(diff.drop.map((role) => role.name).sort()).toEqual(['app', 'audit', 'gotrue']);
+    expect(diff.create.map((role) => role.name).sort()).toEqual(['app', 'audit', 'gotrue']);
+  });
+
+  it('renders the schema-owner statements', () => {
+    expect(buildManagedDbSchemaOwnerSql({
+      dbName: 'acme-shop-staging-1a2b3c',
+      ownerUser: 'acme-shop-staging-u-1a2b3c',
+      roleUser: 'acme-shop-staging-u-1a2b3c-gotrue',
+      schema: 'auth',
+    })).toEqual({
+      instance: [
+        'GRANT CONNECT ON DATABASE "acme-shop-staging-1a2b3c" TO "acme-shop-staging-u-1a2b3c-gotrue"',
+        'GRANT "acme-shop-staging-u-1a2b3c-gotrue" TO CURRENT_USER',
+      ],
+      create: 'CREATE SCHEMA "auth" AUTHORIZATION "acme-shop-staging-u-1a2b3c-gotrue"',
+      handOver: 'ALTER SCHEMA "auth" OWNER TO "acme-shop-staging-u-1a2b3c-gotrue"',
+      handBack: [
+        'REASSIGN OWNED BY "acme-shop-staging-u-1a2b3c-gotrue" TO "acme-shop-staging-u-1a2b3c"',
+        'DROP OWNED BY "acme-shop-staging-u-1a2b3c-gotrue"',
+      ],
+    });
   });
 });

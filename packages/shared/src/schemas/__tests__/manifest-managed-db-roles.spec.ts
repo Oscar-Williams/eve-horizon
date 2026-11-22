@@ -99,3 +99,102 @@ describe('managed DB roles manifest schema', () => {
     );
   });
 });
+
+describe('schema-owner roles', () => {
+  const owner = (schema: unknown, extra: Record<string, unknown> = {}) => ({
+    name: 'gotrue',
+    grants: { schema, owner: true, ...extra },
+  });
+
+  function messages(parsed: ReturnType<typeof parseManifest>): string[] {
+    return parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+  }
+
+  it('accepts a role that owns one named schema, beside readwrite roles', () => {
+    const parsed = parseManifest([
+      { name: 'app', grants: 'readwrite' },
+      owner('auth'),
+    ]);
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.services?.db?.['x-eve']?.managed?.roles).toEqual([
+      { name: 'app', grants: 'readwrite' },
+      { name: 'gotrue', grants: { schema: 'auth', owner: true } },
+    ]);
+  });
+
+  it('refuses public, which every role shares', () => {
+    const parsed = parseManifest([owner('public')]);
+
+    expect(parsed.success).toBe(false);
+    expect(messages(parsed).join('\n')).toMatch(/public/);
+  });
+
+  it.each([
+    ['quoted', '"auth"'],
+    ['dotted', 'auth.users'],
+    ['upper case', 'Auth'],
+    ['hyphenated', 'auth-db'],
+    ['leading digit', '1auth'],
+    ['empty', ''],
+    ['too long', 'a'.repeat(64)],
+    ['not a string', 7],
+  ])('refuses a %s schema name', (_label, schema) => {
+    const parsed = parseManifest([owner(schema)]);
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.path.includes('grants'))).toBe(true);
+  });
+
+  it.each([
+    ['pg_ prefixed', 'pg_auth'],
+    ['information_schema', 'information_schema'],
+  ])('refuses a schema name Postgres reserves (%s)', (_label, schema) => {
+    const parsed = parseManifest([owner(schema)]);
+
+    expect(parsed.success).toBe(false);
+    expect(messages(parsed).join('\n')).toMatch(/reserved/);
+  });
+
+  it('accepts a 63-character schema name', () => {
+    expect(parseManifest([owner(`a${'b'.repeat(62)}`)]).success).toBe(true);
+  });
+
+  it.each([
+    ['owner: false', { name: 'gotrue', grants: { schema: 'auth', owner: false } }],
+    ['no owner flag', { name: 'gotrue', grants: { schema: 'auth' } }],
+    ['an unknown key', owner('auth', { readonly: true })],
+  ])('refuses an object grant with %s', (_label, role) => {
+    const parsed = parseManifest([role]);
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.path.includes('grants'))).toBe(true);
+  });
+
+  it('refuses two owner roles for one schema', () => {
+    const parsed = parseManifest([
+      owner('auth'),
+      { name: 'gotrue2', grants: { schema: 'auth', owner: true } },
+    ]);
+
+    expect(parsed.success).toBe(false);
+    expect(messages(parsed)).toContain('Managed DB schema "auth" has two owner roles (gotrue, gotrue2)');
+  });
+
+  it('counts owner roles towards the 8 declared roles', () => {
+    const roles = [
+      ...Array.from({ length: 8 }, (_, i) => ({ name: `role${i}`, grants: 'readonly' })),
+      owner('auth'),
+    ];
+
+    expect(messages(parseManifest(roles))).toContain('A managed database declares at most 8 roles (found 9)');
+  });
+
+  it('names the accepted forms for an unknown grant', () => {
+    expect(messages(parseManifest([{ name: 'app', grants: 'admin' }])).join('\n'))
+      .toMatch(/readwrite.*readonly.*owner: true/);
+  });
+});

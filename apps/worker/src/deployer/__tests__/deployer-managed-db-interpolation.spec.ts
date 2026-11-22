@@ -26,7 +26,7 @@ const scope = {
   envName: 'test',
 };
 
-function buildManifest(roles?: Array<{ name: string; grants: 'readwrite' | 'readonly' }>) {
+function buildManifest(roles?: Array<{ name: string; grants: 'readwrite' | 'readonly' | { schema: string; owner: true } }>) {
   return ManifestSchema.parse({
     schema: 'eve/compose/v2',
     services: {
@@ -190,6 +190,44 @@ describe('ManagedDbProvisioner interpolation values', () => {
       manifest: buildManifest([{ name: 'app', grants: 'readwrite' }]),
       ...scope,
     })).rejects.toThrow(/declared role\(s\)/);
+  });
+
+  it('publishes a schema-owner role and keeps its owner grant in the declared roles', async () => {
+    const gotrueUrl =
+      'postgres://acme-shop-test-u-1a2b3c-gotrue:gotruepw@db.internal:6543/acme-shop-test-1a2b3c?sslmode=verify-full';
+    const roles = [
+      { name: 'app_ro', grants: 'readonly' as const },
+      { name: 'gotrue', grants: { schema: 'auth', owner: true as const } },
+    ];
+    const managedDb = buildManagedDb({
+      findTenantByEnv: vi.fn().mockResolvedValue(buildTenant({ desired_roles: roles })),
+      listTenantRoles: vi.fn().mockResolvedValue([
+        {
+          id: 'mdbr_1', tenant_id: 'mdbt_1', name: 'app_ro', grants: 'readonly', schema_name: null,
+          db_user: 'acme-shop-test-u-1a2b3c-app_ro', credential_secret_ref: roleUrl,
+        },
+        {
+          id: 'mdbr_2', tenant_id: 'mdbt_1', name: 'gotrue', grants: 'owner', schema_name: 'auth',
+          db_user: 'acme-shop-test-u-1a2b3c-gotrue', credential_secret_ref: gotrueUrl,
+        },
+      ]),
+    });
+    const provisioner = createProvisioner(managedDb);
+
+    const { managedValues } = await provisioner.resolveManagedDbTenants({
+      manifest: buildManifest(roles),
+      ...scope,
+    });
+
+    expect(managedValues.get('db.roles.gotrue.username')).toBe('acme-shop-test-u-1a2b3c-gotrue');
+    expect(managedValues.get('db.roles.gotrue.password')).toBe('gotruepw');
+    expect(managedValues.get('db.roles.app_ro.password')).toBe('rolepw');
+    expect(managedDb.syncTenantDesiredRoles).toHaveBeenCalledWith('mdbt_1', [
+      { name: 'app_ro', grants: 'readonly' },
+      { name: 'gotrue', grants: { schema: 'auth', owner: true } },
+    ]);
+    // Nothing to reconcile: the owner role is provisioned for its schema.
+    expect(managedDb.transitionStatus).not.toHaveBeenCalled();
   });
 });
 

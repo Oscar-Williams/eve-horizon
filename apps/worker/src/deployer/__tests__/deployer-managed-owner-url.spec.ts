@@ -127,4 +127,57 @@ describe('managed_db.owner_url', () => {
     }), 'legacy')).resolves.toBeDefined();
     expect(ownerFindings()).toEqual([]);
   });
+
+  it('deploys a service on a schema-owner role under strict, and records nothing', async () => {
+    mocks.profile = 'strict';
+    imageUsers = { 'auth:1': '1000:1000' };
+    const { deployer } = newDeployer();
+    vi.spyOn(deployer as any, 'resolveManagedDbTenants').mockResolvedValue({
+      managedValues: new Map([
+        ['db.host', 'db.internal'],
+        ['db.port', '5432'],
+        ['db.database', 'acme-shop-prod-1a2b3c'],
+        ['db.roles.gotrue.username', 'acme-shop-prod-u-1a2b3c-gotrue'],
+        ['db.roles.gotrue.password', 'gotruepw'],
+      ]),
+      trustInputs: [],
+    });
+    const services = {
+      db: {
+        'x-eve': {
+          role: 'managed_db',
+          managed: {
+            class: 'db.p1',
+            roles: [
+              { name: 'app', grants: 'readwrite' },
+              { name: 'gotrue', grants: { schema: 'auth', owner: true } },
+            ],
+          },
+        },
+      },
+      auth: {
+        image: 'auth:1',
+        ports: ['9999'],
+        environment: {
+          GOTRUE_DB_DATABASE_URL:
+            'postgres://${managed.db.roles.gotrue.username}:${managed.db.roles.gotrue.password}@${managed.db.host}:${managed.db.port}/${managed.db.database}?search_path=auth',
+        },
+      },
+    };
+    const result = await (deployer as any).renderManifest({
+      manifestYaml: yaml.stringify({ services }),
+      ...params,
+      podSecurity: 'legacy',
+    });
+    const secrets = yaml.parseAllDocuments(result.manifestYaml).map((doc: any) => doc.toJSON())
+      .filter((doc: any) => doc?.kind === 'Secret');
+    const values = secrets.flatMap((doc: any) => [
+      ...Object.values(doc.stringData ?? {}),
+      ...Object.values(doc.data ?? {}).map((v) => Buffer.from(String(v), 'base64').toString()),
+    ]);
+    expect(values).toContain(
+      'postgres://acme-shop-prod-u-1a2b3c-gotrue:gotruepw@db.internal:5432/acme-shop-prod-1a2b3c?search_path=auth',
+    );
+    expect(ownerFindings()).toEqual([]);
+  });
 });
