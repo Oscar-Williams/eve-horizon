@@ -120,10 +120,67 @@ async function schemaObjects(tx: Db, schema: string): Promise<SchemaObject[]> {
 }
 
 /**
+ * The objects of a schema a hand-over does not move, one row each, as
+ * "<kind> <identity>": operators, operator classes and families, collations,
+ * conversions, statistics objects, text-search configurations and
+ * dictionaries, and ordered-set aggregates (ALTER ROUTINE cannot name one).
+ * Extension members follow their extension; text-search parsers and
+ * templates have no owner, so they need no move.
+ */
+async function unmovableObjects(tx: Db, schema: string): Promise<string[]> {
+  const rows = await tx<{ object: string }[]>`
+    WITH ns AS (
+      SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = ${schema}
+    ), found (kind, classid, objid) AS (
+      SELECT 'operator', 'pg_catalog.pg_operator'::pg_catalog.regclass, o.oid
+      FROM pg_catalog.pg_operator o WHERE o.oprnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'operator class', 'pg_catalog.pg_opclass'::pg_catalog.regclass, c.oid
+      FROM pg_catalog.pg_opclass c WHERE c.opcnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'operator family', 'pg_catalog.pg_opfamily'::pg_catalog.regclass, f.oid
+      FROM pg_catalog.pg_opfamily f WHERE f.opfnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'collation', 'pg_catalog.pg_collation'::pg_catalog.regclass, l.oid
+      FROM pg_catalog.pg_collation l WHERE l.collnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'conversion', 'pg_catalog.pg_conversion'::pg_catalog.regclass, v.oid
+      FROM pg_catalog.pg_conversion v WHERE v.connamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'statistics object', 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid
+      FROM pg_catalog.pg_statistic_ext s WHERE s.stxnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'text search configuration', 'pg_catalog.pg_ts_config'::pg_catalog.regclass, g.oid
+      FROM pg_catalog.pg_ts_config g WHERE g.cfgnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'text search dictionary', 'pg_catalog.pg_ts_dict'::pg_catalog.regclass, t.oid
+      FROM pg_catalog.pg_ts_dict t WHERE t.dictnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'ordered-set aggregate', 'pg_catalog.pg_proc'::pg_catalog.regclass, p.oid
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_aggregate a ON a.aggfnoid = p.oid
+      WHERE p.pronamespace = (SELECT oid FROM ns) AND a.aggkind <> 'n'
+    )
+    SELECT pg_catalog.concat_ws(' ', found.kind, (pg_catalog.pg_identify_object(found.classid, found.objid, 0)).identity) AS object
+    FROM found
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_depend d
+      WHERE d.classid = found.classid AND d.objid = found.objid AND d.deptype = 'e'
+    )
+    ORDER BY 1
+  `;
+  return rows.map((row) => row.object);
+}
+
+/** At most this many unmovable objects are named in a refusal. */
+const UNMOVABLE_LISTED = 5;
+
+/**
  * Why the role cannot be given its schema now, as a ManagedDbSchemaConflictError,
  * or nothing: the schema is new, the role's, or the tenant owner's with every
- * object in it the owner's (or the role's). Owners in `releasing` count as
- * the tenant owner: their schema is handed back before the claim.
+ * object in it the owner's (or the role's) and of a kind a hand-over moves.
+ * Owners in `releasing` count as the tenant owner: their schema is handed
+ * back before the claim.
  */
 async function claimProblem(
   tx: Db,
@@ -149,13 +206,26 @@ async function claimProblem(
     objects.map((object) => asOwner(object.owner))
       .filter((name) => name !== target.ownerUser && name !== target.roleUser),
   )];
-  if (foreign.length === 0) return { owner, objects, conflict: null };
+  if (foreign.length > 0) {
+    return {
+      owner,
+      objects,
+      conflict: new ManagedDbSchemaConflictError(
+        `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
+        'not by the tenant owner; nothing was handed over',
+      ),
+    };
+  }
+  const unmovable = await unmovableObjects(tx, target.schema);
+  if (unmovable.length === 0) return { owner, objects, conflict: null };
+  const more = unmovable.length - UNMOVABLE_LISTED;
+  const listed = unmovable.slice(0, UNMOVABLE_LISTED).join(', ') + (more > 0 ? `, and ${more} more` : '');
   return {
     owner,
     objects,
     conflict: new ManagedDbSchemaConflictError(
-      `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
-      'not by the tenant owner; nothing was handed over',
+      `Schema "${target.schema}" holds objects a hand-over does not move: ${listed}; ` +
+      'nothing was handed over: move them to another schema or drop them, then deploy again',
     ),
   };
 }
@@ -163,7 +233,7 @@ async function claimProblem(
 /**
  * Check, changing nothing, that the role can be given its schema: throws
  * ManagedDbSchemaConflictError when another role holds the schema or an
- * object in it. Owners in `releasing` (roles whose schema this run hands back
+ * object in it, or it holds an object a hand-over does not move. Owners in `releasing` (roles whose schema this run hands back
  * first) count as the tenant owner.
  */
 export async function checkManagedDbSchemaClaim(
@@ -186,7 +256,8 @@ export async function checkManagedDbSchemaClaim(
  * - owned by the tenant owner: hand over the schema, then each object in it
  *   the owner owns, and take back what PUBLIC and `revokeFrom` (the tenant's
  *   other logins) were granted on the schema;
- * - owned by any other role, or holding an object another role owns:
+ * - owned by any other role, holding an object another role owns, or
+ *   holding an object of a kind a hand-over does not move (an operator, say):
  *   refused with ManagedDbSchemaConflictError, and nothing changes.
  * A created or handed-over schema stays readable by the tenant owner, which
  * snapshots run as: the schema, its tables and sequences, and those the role

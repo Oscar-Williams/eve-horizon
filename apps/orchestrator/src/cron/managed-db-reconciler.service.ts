@@ -895,8 +895,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    * schema back first), re-grant roles whose grant set changed, then create
    * newly declared roles with fresh credentials. Then each schema-owner role
    * is given its schema (created, or handed over from the tenant owner) on
-   * every run. A schema another role holds fails the tenant before anything
-   * changes. No-op (and no connections opened) when nothing changed and no
+   * every run. A schema another role holds, or one holding objects a
+   * hand-over does not move, fails the tenant before anything changes. No-op (and no connections opened) when nothing changed and no
    * role owns a schema.
    */
   private async applyLocalTenantRoleChanges(

@@ -256,6 +256,7 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       'SET LOCAL search_path = pg_catalog',
       SCHEMA_OWNER_QUERY,
       expect.stringContaining('FROM pg_class c'),
+      expect.stringContaining('FROM pg_catalog.pg_operator o'),
       `ALTER SCHEMA "auth" OWNER TO "${GOTRUE}"`,
       `ALTER ROUTINE auth.uid() OWNER TO "${GOTRUE}"`,
       `ALTER TABLE auth.users OWNER TO "${GOTRUE}"`,
