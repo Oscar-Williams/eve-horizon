@@ -301,6 +301,24 @@ manifest (it refuses the object grant) until 0.1.330 is back, and an
 `eve db destroy` there leaves the owner login behind for the operator to
 drop (`DROP ROLE`).
 
+### Eve's sessions on tenant databases
+
+A tenant owns its database, so it controls that database's settings and what is
+in its `public` schema. The reconciler's own connections as the platform login,
+to a tenant database (extension installs, declared-role grants, schema-owner
+hand-overs) and to the instance admin database, therefore send
+`search_path=pg_catalog` in the startup message: it overrides any per-database
+or per-role default and applies before the first query, and a `search_path` in
+`DATABASE_URL`'s query string is dropped for these connections. They also skip
+the client's startup type query (postgres.js `fetch_types: false`), so they
+handle built-in scalar types only (arrays come back as text). Statements on
+them name catalog objects in full (`pg_catalog.pg_roles`,
+`pg_catalog.pg_terminate_backend`) and name the schema of anything they create
+or grant in a tenant database (`CREATE EXTENSION ... SCHEMA "public"`,
+`GRANT ... IN SCHEMA "public"`). Connections made with a tenant's own
+credentials (apps, `eve db`, snapshots and restores) keep the database's own
+settings.
+
 ## Admin APIs (Managed DB Instances)
 
 Managed DB instances are registered via admin endpoints:
