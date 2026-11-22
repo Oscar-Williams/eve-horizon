@@ -472,10 +472,13 @@ roles:
 - `eve db rotate-credentials` rotates role passwords along with the owner
   password; destroying the managed DB drops its roles.
 - `grants: { schema: <name>, owner: true }` makes a role that owns that one
-  schema (from 0.1.330): DDL there, nothing in `public`, and the other roles
-  get nothing in it. A new schema is created owned by the role; one the owner
-  already owns is handed over with its objects at the next deploy; removing
-  the role hands the schema back before the login is dropped. The schema is a
+  schema (from 0.1.330): DDL there, and no grants of its own in `public`
+  (beyond what `PUBLIC` holds there). The other roles get nothing in it,
+  except that the tenant owner can read it, for snapshots. A new schema is
+  created owned by the role; one the owner already owns is handed over with
+  its objects at the next deploy (refused if it holds kinds a hand-over does
+  not move, such as operators); removing the role ends its sessions and hands
+  the schema back before the login is dropped. The schema is a
   plain lower-case identifier, never `public`, `pg_*` or
   `information_schema`, and has one owner role. See
   [schema-owner roles](db.md#schema-owner-roles), including rollback.

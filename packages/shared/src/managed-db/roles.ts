@@ -15,8 +15,9 @@ import { quotePostgresIdentifier } from './extensions.js';
 // Each declared role becomes a Postgres LOGIN role named
 // `<tenant db_user>-<name>`. `readwrite` and `readonly` grant data access in
 // the tenant database's `public` schema. A schema-owner role owns one named
-// schema instead (DDL there, nothing in `public`): provisioned roles of that
-// kind are stored with `grants = 'owner'` and the schema in `schema_name`.
+// schema instead (DDL there, and no grants of its own in `public`, beyond what
+// PUBLIC holds): provisioned roles of that kind are stored with
+// `grants = 'owner'` and the schema in `schema_name`.
 // The helpers below are pure so the reconciler's SQL can be unit-tested
 // without a database.
 
@@ -266,15 +267,26 @@ export function buildManagedDbRoleRevokeSql(target: ManagedDbRoleSqlTarget): Man
  * to give the role a schema and take it back (as for the owner role).
  * `create` makes the schema with the role as owner; `handOver` moves an
  * existing schema to it (its objects are moved one by one after it).
- * Removal runs `handBack` (the schema to the tenant owner) and then
+ * `snapshotRead` follows either: snapshots run as the tenant owner, so it
+ * may read the schema, its tables and sequences, and those the role creates
+ * later. Removal runs `handBack` (the schema to the tenant owner) and then
  * `release`: everything else the role owns in the database goes to the
  * tenant owner and what it was granted there is revoked, so the login can
- * be dropped. The schema moves first so its objects land in a schema the
- * owner may create in, which a platform login that is not a superuser needs.
+ * be dropped (`DROP OWNED` also removes the role's default privileges,
+ * `snapshotRead`'s among them). The schema moves first so its objects land
+ * in a schema the owner may create in, which a platform login that is not a
+ * superuser needs.
  */
 export function buildManagedDbSchemaOwnerSql(
   target: ManagedDbRoleSqlTarget & { schema: string },
-): { instance: string[]; create: string; handOver: string; handBack: string; release: string[] } {
+): {
+  instance: string[];
+  create: string;
+  handOver: string;
+  snapshotRead: string[];
+  handBack: string;
+  release: string[];
+} {
   const db = quotePostgresIdentifier(target.dbName);
   const owner = quotePostgresIdentifier(target.ownerUser);
   const role = quotePostgresIdentifier(target.roleUser);
@@ -286,6 +298,13 @@ export function buildManagedDbSchemaOwnerSql(
     ],
     create: `CREATE SCHEMA ${schema} AUTHORIZATION ${role}`,
     handOver: `ALTER SCHEMA ${schema} OWNER TO ${role}`,
+    snapshotRead: [
+      `GRANT USAGE ON SCHEMA ${schema} TO ${owner}`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA ${schema} TO ${owner}`,
+      `GRANT SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO ${owner}`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${role} IN SCHEMA ${schema} GRANT SELECT ON TABLES TO ${owner}`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${role} IN SCHEMA ${schema} GRANT SELECT ON SEQUENCES TO ${owner}`,
+    ],
     handBack: `ALTER SCHEMA ${schema} OWNER TO ${owner}`,
     release: [
       `REASSIGN OWNED BY ${role} TO ${owner}`,

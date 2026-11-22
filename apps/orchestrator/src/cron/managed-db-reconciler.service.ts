@@ -905,8 +905,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    * schema back first), re-grant roles whose grant set changed, then create
    * newly declared roles with fresh credentials. Then each schema-owner role
    * is given its schema (created, or handed over from the tenant owner) on
-   * every run. A schema another role holds fails the tenant before anything
-   * changes. No-op (and no connections opened) when nothing changed and no
+   * every run. A schema another role holds, or one holding objects a
+   * hand-over does not move, fails the tenant before anything changes. No-op (and no connections opened) when nothing changed and no
    * role owns a schema.
    */
   private async applyLocalTenantRoleChanges(
@@ -991,7 +991,8 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       for (const role of desired) {
         const target = this.schemaTarget(tenant, role);
         if (!target) continue;
-        // The tenant's other logins get nothing in the schema.
+        // The tenant's other logins get nothing in the schema, except the
+        // owner's read access for snapshots.
         const others = [tenant.db_user, ...desired
           .filter((other) => other.name !== role.name)
           .map((other) => generateManagedDbRoleUser(tenant.db_user, other.name))];
@@ -1042,9 +1043,10 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   }
 
   /**
-   * Drop a schema-owner role: its schema and everything else it owns in the
-   * tenant database go back to the tenant owner and its privileges there are
-   * revoked (one transaction), then its sessions end and the login goes.
+   * Drop a schema-owner role: the login stops signing in and its sessions
+   * end, its schema and everything else it owns in the tenant database go
+   * back to the tenant owner and its privileges there are revoked (one
+   * transaction), then the login goes.
    */
   private async dropLocalSchemaOwnerRole(
     adminSql: Db,
@@ -1062,11 +1064,7 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
       });
       this.logger.log(`[managed-db-reconciler] Handed schema ${schema} of tenant ${tenant.id} back from ${role.name}`);
     }
-    await adminSql`
-      SELECT pg_catalog.pg_terminate_backend(pid)
-      FROM pg_catalog.pg_stat_activity
-      WHERE usename = ${role.db_user} AND pid != pg_catalog.pg_backend_pid()
-    `;
+    // The hand-back already ended the login's sessions and refuses new ones.
     await adminSql.unsafe(`DROP ROLE IF EXISTS ${quotePostgresIdentifier(role.db_user)}`);
     await this.managedDb.deleteTenantRole(tenant.id, role.name);
   }

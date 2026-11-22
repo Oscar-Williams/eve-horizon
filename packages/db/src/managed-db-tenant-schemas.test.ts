@@ -6,10 +6,14 @@
  * helpers run as that platform login.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import postgres from 'postgres';
+import { spawn } from 'child_process';
+import type { Readable } from 'stream';
+import { executeSnapshot, type SnapshotUploadTarget } from '@eve/shared';
 import {
   ManagedDbSchemaConflictError,
+  checkManagedDbSchemaClaim,
   claimManagedDbSchema,
   managedDbSchemaOwner,
   releaseManagedDbSchema,
@@ -32,6 +36,43 @@ const platform = `platform_${suffix}`;
 
 const target = { dbName, schema: 'auth', roleUser: gotrue, ownerUser: owner };
 
+/**
+ * Objects of kinds a hand-over does not move, each owned by the tenant owner
+ * (made as the superuser where Postgres requires it): [kind, statements].
+ */
+const UNMOVABLE: Array<[string, string]> = [
+  ['operator', `
+    CREATE FUNCTION auth.int_eq(int, int) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT $1 = $2';
+    CREATE OPERATOR auth.=== (LEFTARG = int, RIGHTARG = int, FUNCTION = auth.int_eq);
+    ALTER FUNCTION auth.int_eq(int, int) OWNER TO "${owner}";
+    ALTER OPERATOR auth.=== (int, int) OWNER TO "${owner}";`],
+  ['operator class', `
+    CREATE OPERATOR CLASS auth.int_hash FOR TYPE int USING hash AS OPERATOR 1 =, FUNCTION 1 hashint4(int);
+    ALTER OPERATOR CLASS auth.int_hash USING hash OWNER TO "${owner}";`],
+  ['operator family', `
+    CREATE OPERATOR FAMILY auth.int_ops USING btree;
+    ALTER OPERATOR FAMILY auth.int_ops USING btree OWNER TO "${owner}";`],
+  ['collation', `
+    CREATE COLLATION auth.c_copy FROM "C";
+    ALTER COLLATION auth.c_copy OWNER TO "${owner}";`],
+  ['text search configuration', `
+    CREATE TEXT SEARCH CONFIGURATION auth.simple_copy (COPY = pg_catalog.simple);
+    ALTER TEXT SEARCH CONFIGURATION auth.simple_copy OWNER TO "${owner}";`],
+  ['text search dictionary', `
+    CREATE TEXT SEARCH DICTIONARY auth.simple_dict (TEMPLATE = pg_catalog.simple);
+    ALTER TEXT SEARCH DICTIONARY auth.simple_dict OWNER TO "${owner}";`],
+  ['conversion', `
+    CREATE CONVERSION auth.latin1_utf8 FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
+    ALTER CONVERSION auth.latin1_utf8 OWNER TO "${owner}";`],
+  ['statistics object', `
+    CREATE STATISTICS auth.users_stats ON id, email FROM auth.users;
+    ALTER STATISTICS auth.users_stats OWNER TO "${owner}";`],
+  ['ordered-set aggregate', `
+    CREATE AGGREGATE auth.pct(float8 ORDER BY float8) (
+      SFUNC = ordered_set_transition, STYPE = internal, FINALFUNC = percentile_disc_final, FINALFUNC_EXTRA);
+    ALTER AGGREGATE auth.pct(float8 ORDER BY float8) OWNER TO "${owner}";`],
+];
+
 function urlFor(user: string | null, database: string): string {
   const url = new URL(testDbUrl!);
   if (user) {
@@ -40,6 +81,51 @@ function urlFor(user: string | null, database: string): string {
   }
   url.pathname = `/${database}`;
   return url.toString();
+}
+
+/**
+ * A tenant database session as Eve opens one: search_path pinned to
+ * pg_catalog at startup, and no startup type query, so arrays come back as
+ * text.
+ */
+function pinnedTenantSession(user: string): Db {
+  return postgres(urlFor(user, dbName), { fetch_types: false, connection: { search_path: 'pg_catalog' } });
+}
+
+/** A session of a role in the tenant database, through psql, that runs `script`; resolves to psql's exit code. */
+function roleSession(user: string, script: string): Promise<number> {
+  const url = new URL(testDbUrl!);
+  const child = spawn('psql', [
+    `--host=${url.hostname}`, `--port=${url.port || '5432'}`, `--username=${user}`, '--no-password',
+    '--quiet', '--set=ON_ERROR_STOP=1', '--command', script, dbName,
+  ], { env: { ...process.env, PGPASSWORD: 'pw' }, stdio: 'ignore' });
+  return new Promise((resolve) => child.on('exit', (code) => resolve(code ?? -1)));
+}
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('timed out waiting');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** A snapshot of the tenant database as Eve takes one: pg_dump as the tenant owner, into a store that counts the bytes. */
+async function snapshotAsOwner(): Promise<number> {
+  const url = new URL(testDbUrl!);
+  const store = {
+    async uploadStream(_bucket: string, _key: string, body: Readable): Promise<number> {
+      let size = 0;
+      for await (const chunk of body) size += (chunk as Buffer).length;
+      return size;
+    },
+  } as unknown as SnapshotUploadTarget['client'];
+  const result = await executeSnapshot(
+    { host: url.hostname, port: Number(url.port) || 5432, username: owner, password: 'pw', database: dbName },
+    { client: store, bucket: 'snapshots', key: 'tenant.dump' },
+    { timeoutMs: 60_000 },
+  );
+  return result.sizeBytes;
 }
 
 describe('schema-owner roles in a tenant database', () => {
@@ -106,7 +192,7 @@ describe('schema-owner roles in a tenant database', () => {
     superTenant = postgres(urlFor(null, dbName));
     // Postgres 15 and later: public grants CREATE to no one by default.
     await superTenant.unsafe('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
-    tenant = postgres(urlFor(platform, dbName));
+    tenant = pinnedTenantSession(platform);
   });
 
   afterAll(async () => {
@@ -121,6 +207,8 @@ describe('schema-owner roles in a tenant database', () => {
 
   beforeEach(async () => {
     await superTenant.unsafe('DROP SCHEMA IF EXISTS auth CASCADE');
+    // A hand-back leaves the role unable to sign in.
+    await admin.unsafe(`ALTER ROLE "${gotrue}" LOGIN`);
   });
 
   it('runs as a platform login that is not a superuser', async () => {
@@ -141,11 +229,24 @@ describe('schema-owner roles in a tenant database', () => {
         .rejects.toThrow(/permission denied/);
     });
 
-    it('gives the other roles nothing in the schema', async () => {
+    it('gives the other roles nothing in the schema, and the tenant owner read access only', async () => {
       await claimManagedDbSchema(tenant, target);
-      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id int)'));
+      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id int); INSERT INTO auth.sessions VALUES (1)'));
       await expect(as(app, (tx) => tx.unsafe('SELECT * FROM auth.sessions'))).rejects.toThrow(/permission denied/);
-      await expect(as(owner, (tx) => tx.unsafe('SELECT * FROM auth.sessions'))).rejects.toThrow(/permission denied/);
+      const rows = await as(owner, (tx) => tx.unsafe('SELECT id FROM auth.sessions'));
+      expect(rows.map((row) => row.id)).toEqual([1]);
+      await expect(as(owner, (tx) => tx.unsafe('INSERT INTO auth.sessions VALUES (2)'))).rejects.toThrow(/permission denied/);
+      await expect(as(owner, (tx) => tx.unsafe('CREATE TABLE auth.extra (id int)'))).rejects.toThrow(/permission denied/);
+    });
+
+    it('lets a snapshot, which runs as the tenant owner, dump what the role makes in the schema', async () => {
+      await claimManagedDbSchema(tenant, target);
+      await as(gotrue, (tx) => tx.unsafe(`
+        CREATE TABLE auth.sessions (id serial PRIMARY KEY, token text);
+        INSERT INTO auth.sessions (token) VALUES ('t1');
+        CREATE SEQUENCE auth.audit_seq;
+      `));
+      await expect(snapshotAsOwner()).resolves.toBeGreaterThan(0);
     });
   });
 
@@ -175,6 +276,15 @@ describe('schema-owner roles in a tenant database', () => {
       await as(gotrue, (tx) => tx.unsafe('ALTER TABLE auth.users ADD COLUMN phone text'));
     });
 
+    it('lets a snapshot as the tenant owner dump the schema after the hand-over, and what the role adds later', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target, { revokeFrom: [owner, app] });
+      await as(gotrue, (tx) => tx.unsafe('CREATE TABLE auth.sessions (id serial PRIMARY KEY); INSERT INTO auth.sessions DEFAULT VALUES'));
+      const rows = await as(owner, (tx) => tx.unsafe('SELECT count(*)::int AS n FROM auth.users'));
+      expect(rows[0].n).toBe(2);
+      await expect(snapshotAsOwner()).resolves.toBeGreaterThan(0);
+    });
+
     it('takes back what the other roles of the tenant were given in the schema', async () => {
       await ownerMadeAuth();
       await claimManagedDbSchema(tenant, target, { revokeFrom: [owner, app] });
@@ -195,6 +305,18 @@ describe('schema-owner roles in a tenant database', () => {
       const before = await owners();
       await expect(claimManagedDbSchema(tenant, target)).rejects.toBeInstanceOf(ManagedDbSchemaConflictError);
       await expect(claimManagedDbSchema(tenant, target)).rejects.toThrow(new RegExp(stranger));
+      expect(await owners()).toEqual(before);
+    });
+
+    it.each(UNMOVABLE)('refuses, and changes nothing, when it holds an object a hand-over does not move: %s', async (kind, statements) => {
+      await ownerMadeAuth();
+      await superTenant.unsafe(statements);
+      const before = await owners();
+      const refusal = new RegExp(`does not move: .*${kind} auth\\.`);
+      await expect(checkManagedDbSchemaClaim(tenant, target)).rejects.toThrow(refusal);
+      const claim = claimManagedDbSchema(tenant, target);
+      await expect(claim).rejects.toBeInstanceOf(ManagedDbSchemaConflictError);
+      await expect(claim).rejects.toThrow(refusal);
       expect(await owners()).toEqual(before);
     });
   });
@@ -227,11 +349,113 @@ describe('schema-owner roles in a tenant database', () => {
           AND dbid = (SELECT oid FROM pg_database WHERE datname = ${dbName})
       `;
       expect(dependents).toBe(0);
+      // The default privileges that kept the schema readable for snapshots went with it.
+      const [{ defaults }] = await superTenant<{ defaults: number }[]>`
+        SELECT count(*)::int AS defaults FROM pg_default_acl
+        WHERE defaclrole = (SELECT oid FROM pg_roles WHERE rolname = ${gotrue})
+      `;
+      expect(defaults).toBe(0);
     });
+
+    it('closes the role\'s sessions and refuses new ones first, so nothing it commits meanwhile is lost or keeps the login', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      // GoTrue mid-migration, in a session of its own (psql, so the server
+      // ending it is seen plainly): a table made, not yet committed, while
+      // the hand-back starts.
+      const session = roleSession(gotrue, 'BEGIN; CREATE TABLE auth.late (id int); SELECT pg_sleep(2); COMMIT;');
+      await waitFor(async () => {
+        const [row] = await superTenant<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = ${gotrue} AND wait_event = 'PgSleep'
+        `;
+        return row.n === 1;
+      });
+
+      await releaseManagedDbSchema(tenant, target);
+
+      // Only a session that outlived the hand-back could commit its table.
+      expect(await session).not.toBe(0);
+
+      const [state] = await superTenant<{ late: string | null; can_login: boolean; sessions: number; dependents: number }[]>`
+        SELECT to_regclass('auth.late')::text AS late,
+               (SELECT rolcanlogin FROM pg_roles WHERE rolname = ${gotrue}) AS can_login,
+               (SELECT count(*)::int FROM pg_stat_activity WHERE usename = ${gotrue}) AS sessions,
+               (SELECT count(*)::int FROM pg_shdepend
+                WHERE refobjid = (SELECT oid FROM pg_roles WHERE rolname = ${gotrue})
+                  AND dbid = (SELECT oid FROM pg_database WHERE datname = ${dbName})) AS dependents
+      `;
+      expect(state).toEqual({ late: null, can_login: false, sessions: 0, dependents: 0 });
+      const again = postgres(urlFor(gotrue, dbName), { max: 1, onnotice: () => {} });
+      try {
+        await expect(again`SELECT 1`).rejects.toThrow(/not permitted to log in/);
+      } finally {
+        await again.end({ timeout: 0 }).catch(() => {});
+      }
+    }, 20_000);
+
+    it('moves nothing and lets the login sign in again when the hand-back fails', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      const before = await owners();
+      // A snapshot holds a lock on a table for longer than the hand-back waits.
+      await as(owner, async (tx) => {
+        await tx.unsafe('SELECT count(*) FROM auth.users');
+        await expect(releaseManagedDbSchema(tenant, target)).rejects.toThrow(/lock timeout/);
+      });
+      expect(await owners()).toEqual(before);
+      const [{ can_login }] = await superTenant<{ can_login: boolean }[]>`
+        SELECT rolcanlogin AS can_login FROM pg_roles WHERE rolname = ${gotrue}
+      `;
+      expect(can_login).toBe(true);
+    }, 20_000);
 
     it('drops nothing when the role has no schema', async () => {
       await expect(releaseManagedDbSchema(tenant, target)).resolves.toBeUndefined();
       expect(await managedDbSchemaOwner(tenant, 'auth')).toBeNull();
+    });
+  });
+
+  describe('a session whose search path puts a tenant schema before pg_catalog', () => {
+    // A session Eve did not pin: the tenant owner may set its database's
+    // search_path and name a function like a built-in, which would then run
+    // as the platform login. The decoy records each call.
+    let shadowed: Db;
+
+    async function decoyCalls(): Promise<number> {
+      const [row] = await superTenant<{ n: number }[]>`SELECT count(*)::int AS n FROM decoy.calls`;
+      return row.n;
+    }
+
+    beforeEach(async () => {
+      await superTenant.unsafe('DROP SCHEMA IF EXISTS decoy CASCADE');
+      await as(owner, (tx) => tx.unsafe(`
+        CREATE SCHEMA decoy;
+        CREATE TABLE decoy.calls (called_by name);
+        CREATE FUNCTION decoy.pg_get_userbyid(oid) RETURNS name LANGUAGE sql AS $$
+          INSERT INTO decoy.calls VALUES (current_user);
+          SELECT 'decoy'::name;
+        $$;
+      `));
+      shadowed = postgres(urlFor(platform, dbName), { fetch_types: false, connection: { search_path: 'decoy, pg_catalog' } });
+    });
+
+    afterEach(async () => {
+      await shadowed.end();
+      await superTenant.unsafe('DROP SCHEMA IF EXISTS decoy CASCADE');
+    });
+
+    it('reads the owner of a schema from the catalog', async () => {
+      await claimManagedDbSchema(tenant, target);
+      expect(await managedDbSchemaOwner(shadowed, 'auth')).toBe(gotrue);
+      expect(await decoyCalls()).toBe(0);
+    });
+
+    it('hands the schema back to the tenant owner', async () => {
+      await ownerMadeAuth();
+      await claimManagedDbSchema(tenant, target);
+      await releaseManagedDbSchema(shadowed, target);
+      expect(new Set(Object.values(await owners()))).toEqual(new Set([owner]));
+      expect(await decoyCalls()).toBe(0);
     });
   });
 });

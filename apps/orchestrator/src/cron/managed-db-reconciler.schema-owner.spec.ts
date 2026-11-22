@@ -62,7 +62,7 @@ const instance = {
 const OWNER = 'acme-shop-test-u-1a2b3c';
 const DB = 'acme-shop-test-1a2b3c';
 const GOTRUE = `${OWNER}-gotrue`;
-const SCHEMA_OWNER_QUERY = 'SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1';
+const SCHEMA_OWNER_QUERY = 'SELECT pg_catalog.pg_get_userbyid(nspowner) AS owner FROM pg_catalog.pg_namespace WHERE nspname = $1';
 
 const gotrueDeclared = { name: 'gotrue', grants: { schema: 'auth', owner: true } };
 const appDeclared = { name: 'app', grants: 'readwrite' };
@@ -143,11 +143,16 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
    * The tenant database's answers: who owns `auth` (following the CREATE and
    * ALTER SCHEMA statements run), and the objects in it.
    */
-  function tenantDb(schemaOwner: string | null, objects: Array<{ kind: string; identity: string; owner: string }> = []) {
+  function tenantDb(
+    schemaOwner: string | null,
+    objects: Array<{ kind: string; identity: string; owner: string }> = [],
+    unmovable: string[] = [],
+  ) {
     let owner = schemaOwner;
     tenantSql = createFakeSql('tenant', log, (text) => {
       if (text === SCHEMA_OWNER_QUERY) return owner === null ? [] : [{ owner }];
-      if (text.includes('FROM pg_class c')) return objects;
+      if (text.includes('FROM pg_catalog.pg_class c')) return objects;
+      if (text.includes('FROM pg_catalog.pg_operator o')) return unmovable.map((object) => ({ object }));
       const moved = /^(?:CREATE SCHEMA "auth" AUTHORIZATION|ALTER SCHEMA "auth" OWNER TO) "([^"]+)"$/.exec(text);
       if (moved) owner = moved[1];
       return [];
@@ -186,7 +191,13 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       `GRANT CONNECT ON DATABASE "${DB}" TO "${GOTRUE}"`,
       `GRANT "${GOTRUE}" TO CURRENT_USER`,
     ]));
-    expect(tenantSql.statements).toContain(`CREATE SCHEMA "auth" AUTHORIZATION "${GOTRUE}"`);
+    const created = tenantSql.statements.indexOf(`CREATE SCHEMA "auth" AUTHORIZATION "${GOTRUE}"`);
+    expect(created).toBeGreaterThanOrEqual(0);
+    // Snapshots run as the tenant owner: it may read the new schema.
+    expect(tenantSql.statements.slice(created + 1, created + 3)).toEqual([
+      `GRANT USAGE ON SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "auth" TO "${OWNER}"`,
+    ]);
     expect(tenantSql.statements.filter((statement) => statement.includes(`TO "${GOTRUE}"`) && statement.includes('"public"'))).toEqual([]);
     // app keeps its public grants.
     expect(tenantSql.statements).toContain(`GRANT USAGE ON SCHEMA "public" TO "${OWNER}-app"`);
@@ -244,12 +255,19 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
       "SET LOCAL lock_timeout = '5s'",
       'SET LOCAL search_path = pg_catalog',
       SCHEMA_OWNER_QUERY,
-      expect.stringContaining('FROM pg_class c'),
+      expect.stringContaining('FROM pg_catalog.pg_class c'),
+      expect.stringContaining('FROM pg_catalog.pg_operator o'),
       `ALTER SCHEMA "auth" OWNER TO "${GOTRUE}"`,
       `ALTER ROUTINE auth.uid() OWNER TO "${GOTRUE}"`,
       `ALTER TABLE auth.users OWNER TO "${GOTRUE}"`,
       `ALTER TYPE auth.factor_type OWNER TO "${GOTRUE}"`,
       `REVOKE ALL ON SCHEMA "auth" FROM PUBLIC, "${OWNER}", "${OWNER}-app"`,
+      // Snapshots run as the tenant owner, which keeps read access.
+      `GRANT USAGE ON SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "auth" TO "${OWNER}"`,
+      `GRANT SELECT ON ALL SEQUENCES IN SCHEMA "auth" TO "${OWNER}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${GOTRUE}" IN SCHEMA "auth" GRANT SELECT ON TABLES TO "${OWNER}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${GOTRUE}" IN SCHEMA "auth" GRANT SELECT ON SEQUENCES TO "${OWNER}"`,
       'COMMIT',
     ]);
     expect(logs.join('\n')).toMatch(/Handed schema auth of tenant mdbt_1 to gotrue: 1 routine, 1 table, 1 type/);
@@ -310,6 +328,24 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
     expect(managedDb.upsertTenantRole).not.toHaveBeenCalled();
   });
 
+  it('marks the tenant failed and changes nothing when the schema holds an object a hand-over does not move', async () => {
+    tenantDb(OWNER, [{ kind: 'table', identity: 'auth.users', owner: OWNER }], ['operator auth.===(integer,integer)']);
+    const { service, managedDb } = createService(
+      buildTenant({ status: 'modifying', desired_roles: [gotrueDeclared] }),
+    );
+    wireConnections(service);
+
+    await service.reconcile();
+
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), {
+      code: 'schema_owner_conflict',
+      message: expect.stringMatching(/does not move: operator auth\.===\(integer,integer\); nothing was handed over/),
+    });
+    expect(adminSql.statements.some((statement) => /^(CREATE|ALTER|GRANT|DROP)/.test(statement))).toBe(false);
+    expect(tenantSql.statements.some((statement) => /^(CREATE|ALTER|GRANT|REVOKE)/.test(statement))).toBe(false);
+    expect(managedDb.upsertTenantRole).not.toHaveBeenCalled();
+  });
+
   it('hands the schema back to the tenant owner before dropping a removed owner role', async () => {
     tenantDb(GOTRUE);
     const { service, managedDb } = createService(
@@ -325,14 +361,18 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
 
     await service.reconcile();
 
+    // The login stops signing in and its sessions end before anything moves,
+    // so nothing it commits meanwhile is dropped or keeps the login.
+    const noLogin = log.indexOf(`tenant: ALTER ROLE "${GOTRUE}" NOLOGIN`);
+    const terminate = log.findIndex((entry) => entry.startsWith('tenant: SELECT pg_catalog.pg_terminate_backend(pid'));
     const handBack = log.indexOf(`tenant: ALTER SCHEMA "auth" OWNER TO "${OWNER}"`);
     const reassign = log.indexOf(`tenant: REASSIGN OWNED BY "${GOTRUE}" TO "${OWNER}"`);
     const dropOwned = log.indexOf(`tenant: DROP OWNED BY "${GOTRUE}"`);
-    const terminate = log.findIndex((entry) => entry.startsWith('admin: SELECT pg_terminate_backend(pid)'));
     const dropRole = log.indexOf(`admin: DROP ROLE IF EXISTS "${GOTRUE}"`);
-    expect(handBack).toBeGreaterThanOrEqual(0);
-    expect([handBack, reassign, dropOwned, terminate, dropRole]).toEqual([...[handBack, reassign, dropOwned, terminate, dropRole]].sort((a, b) => a - b));
-    expect(new Set([handBack, reassign, dropOwned, terminate, dropRole]).size).toBe(5);
+    const steps = [noLogin, terminate, handBack, reassign, dropOwned, dropRole];
+    expect(noLogin).toBeGreaterThanOrEqual(0);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    expect(new Set(steps).size).toBe(6);
     // No public revokes for a role that never had public grants.
     expect(tenantSql.statements.some((statement) => statement.includes('"public"') && statement.includes(GOTRUE))).toBe(false);
     expect(managedDb.deleteTenantRole).toHaveBeenCalledWith('mdbt_1', 'gotrue');

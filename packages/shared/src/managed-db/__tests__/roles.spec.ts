@@ -241,6 +241,15 @@ describe('schema-owner roles', () => {
       ],
       create: 'CREATE SCHEMA "auth" AUTHORIZATION "acme-shop-staging-u-1a2b3c-gotrue"',
       handOver: 'ALTER SCHEMA "auth" OWNER TO "acme-shop-staging-u-1a2b3c-gotrue"',
+      // Snapshots run as the tenant owner: it reads the schema, now and what
+      // the role creates later.
+      snapshotRead: [
+        'GRANT USAGE ON SCHEMA "auth" TO "acme-shop-staging-u-1a2b3c"',
+        'GRANT SELECT ON ALL TABLES IN SCHEMA "auth" TO "acme-shop-staging-u-1a2b3c"',
+        'GRANT SELECT ON ALL SEQUENCES IN SCHEMA "auth" TO "acme-shop-staging-u-1a2b3c"',
+        'ALTER DEFAULT PRIVILEGES FOR ROLE "acme-shop-staging-u-1a2b3c-gotrue" IN SCHEMA "auth" GRANT SELECT ON TABLES TO "acme-shop-staging-u-1a2b3c"',
+        'ALTER DEFAULT PRIVILEGES FOR ROLE "acme-shop-staging-u-1a2b3c-gotrue" IN SCHEMA "auth" GRANT SELECT ON SEQUENCES TO "acme-shop-staging-u-1a2b3c"',
+      ],
       // The schema goes back first: its objects then move into a schema the
       // owner may create in, which a platform login that is not a superuser
       // needs.

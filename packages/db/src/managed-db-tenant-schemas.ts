@@ -1,6 +1,7 @@
 /**
  * Schema-owner roles inside a tenant database (EVE-071). A declared managed
- * DB role may own one named schema: DDL there, nothing in `public`. These
+ * DB role may own one named schema: DDL there, and no grants of its own in
+ * `public` (it keeps what PUBLIC holds there, as every role does). These
  * helpers run on a connection to the tenant database as the platform login,
  * which must be a member of the tenant owner and of the role (the reconciler
  * grants both). They need no superuser: on Cloud SQL the platform login is
@@ -35,6 +36,17 @@ export class ManagedDbSchemaConflictError extends Error {
 /** How long a hand-over waits for a lock (each object change takes an exclusive one) before it fails. */
 const LOCK_TIMEOUT = '5s';
 
+/** How long a hand-back waits for each session of the role to end (Postgres 14 and later). */
+const SESSION_END_WAIT_MS = 5000;
+
+/**
+ * Every transaction here resolves names in pg_catalog only, whatever the
+ * session's search path: catalog names are also written in full, and
+ * tenant objects are always named with their schema. Operators resolve
+ * through the search path, so this is what keeps a tenant-made `=` out.
+ */
+const CATALOG_SEARCH_PATH = 'SET LOCAL search_path = pg_catalog';
+
 /** The object kinds a hand-over moves, and the ALTER keyword for each. */
 const OBJECT_KEYWORDS: Record<string, string> = {
   table: 'TABLE',
@@ -53,10 +65,14 @@ interface SchemaObject {
   owner: string;
 }
 
-/** The owner of a schema of the connected database, or null when there is no such schema. */
+/**
+ * The owner of a schema of the connected database, or null when there is no
+ * such schema. Catalog names are written in full; the helpers below also
+ * pin the search path to pg_catalog around it.
+ */
 export async function managedDbSchemaOwner(tenantSql: Db, schema: string): Promise<string | null> {
   const [row] = await tenantSql<{ owner: string }[]>`
-    SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = ${schema}
+    SELECT pg_catalog.pg_get_userbyid(nspowner) AS owner FROM pg_catalog.pg_namespace WHERE nspname = ${schema}
   `;
   return row?.owner ?? null;
 }
@@ -77,50 +93,107 @@ async function schemaObjects(tx: Db, schema: string): Promise<SchemaObject[]> {
              WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'foreign_table'
              ELSE 'type'
            END AS kind,
-           format('%I.%I', n.nspname, c.relname) AS identity,
-           pg_get_userbyid(c.relowner) AS owner
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+           pg_catalog.format('%I.%I', n.nspname, c.relname) AS identity,
+           pg_catalog.pg_get_userbyid(c.relowner) AS owner
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = ${schema}
       AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'c')
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-          AND (d.deptype = 'e' OR (c.relkind = 'S' AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objid = c.oid
+          AND (d.deptype = 'e' OR (c.relkind = 'S' AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.deptype IN ('a', 'i')))
       )
     UNION ALL
     SELECT 'routine',
-           format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
-           pg_get_userbyid(p.proowner)
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
+           pg_catalog.format('%I.%I(%s)', n.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid)),
+           pg_catalog.pg_get_userbyid(p.proowner)
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = ${schema}
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e'
       )
     UNION ALL
     SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END,
-           format('%I.%I', n.nspname, t.typname),
-           pg_get_userbyid(t.typowner)
-    FROM pg_type t
-    JOIN pg_namespace n ON n.oid = t.typnamespace
+           pg_catalog.format('%I.%I', n.nspname, t.typname),
+           pg_catalog.pg_get_userbyid(t.typowner)
+    FROM pg_catalog.pg_type t
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = ${schema}
       AND t.typtype IN ('b', 'd', 'e', 'r')
-      AND NOT EXISTS (SELECT 1 FROM pg_type e WHERE e.typarray = t.oid)
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type e WHERE e.typarray = t.oid)
       AND NOT EXISTS (
-        SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e'
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND d.objid = t.oid AND d.deptype = 'e'
       )
     ORDER BY 1, 2
   `;
 }
 
 /**
+ * The objects of a schema a hand-over does not move, one row each, as
+ * "<kind> <identity>": operators, operator classes and families, collations,
+ * conversions, statistics objects, text-search configurations and
+ * dictionaries, and ordered-set aggregates (ALTER ROUTINE cannot name one).
+ * Extension members follow their extension; text-search parsers and
+ * templates have no owner, so they need no move.
+ */
+async function unmovableObjects(tx: Db, schema: string): Promise<string[]> {
+  const rows = await tx<{ object: string }[]>`
+    WITH ns AS (
+      SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = ${schema}
+    ), found (kind, classid, objid) AS (
+      SELECT 'operator', 'pg_catalog.pg_operator'::pg_catalog.regclass, o.oid
+      FROM pg_catalog.pg_operator o WHERE o.oprnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'operator class', 'pg_catalog.pg_opclass'::pg_catalog.regclass, c.oid
+      FROM pg_catalog.pg_opclass c WHERE c.opcnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'operator family', 'pg_catalog.pg_opfamily'::pg_catalog.regclass, f.oid
+      FROM pg_catalog.pg_opfamily f WHERE f.opfnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'collation', 'pg_catalog.pg_collation'::pg_catalog.regclass, l.oid
+      FROM pg_catalog.pg_collation l WHERE l.collnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'conversion', 'pg_catalog.pg_conversion'::pg_catalog.regclass, v.oid
+      FROM pg_catalog.pg_conversion v WHERE v.connamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'statistics object', 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid
+      FROM pg_catalog.pg_statistic_ext s WHERE s.stxnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'text search configuration', 'pg_catalog.pg_ts_config'::pg_catalog.regclass, g.oid
+      FROM pg_catalog.pg_ts_config g WHERE g.cfgnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'text search dictionary', 'pg_catalog.pg_ts_dict'::pg_catalog.regclass, t.oid
+      FROM pg_catalog.pg_ts_dict t WHERE t.dictnamespace = (SELECT oid FROM ns)
+      UNION ALL
+      SELECT 'ordered-set aggregate', 'pg_catalog.pg_proc'::pg_catalog.regclass, p.oid
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_aggregate a ON a.aggfnoid = p.oid
+      WHERE p.pronamespace = (SELECT oid FROM ns) AND a.aggkind <> 'n'
+    )
+    SELECT pg_catalog.concat_ws(' ', found.kind, (pg_catalog.pg_identify_object(found.classid, found.objid, 0)).identity) AS object
+    FROM found
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_depend d
+      WHERE d.classid = found.classid AND d.objid = found.objid AND d.deptype = 'e'
+    )
+    ORDER BY 1
+  `;
+  return rows.map((row) => row.object);
+}
+
+/** At most this many unmovable objects are named in a refusal. */
+const UNMOVABLE_LISTED = 5;
+
+/**
  * Why the role cannot be given its schema now, as a ManagedDbSchemaConflictError,
  * or nothing: the schema is new, the role's, or the tenant owner's with every
- * object in it the owner's (or the role's). Owners in `releasing` count as
- * the tenant owner: their schema is handed back before the claim.
+ * object in it the owner's (or the role's) and of a kind a hand-over moves.
+ * Owners in `releasing` count as the tenant owner: their schema is handed
+ * back before the claim.
  */
 async function claimProblem(
   tx: Db,
@@ -146,13 +219,26 @@ async function claimProblem(
     objects.map((object) => asOwner(object.owner))
       .filter((name) => name !== target.ownerUser && name !== target.roleUser),
   )];
-  if (foreign.length === 0) return { owner, objects, conflict: null };
+  if (foreign.length > 0) {
+    return {
+      owner,
+      objects,
+      conflict: new ManagedDbSchemaConflictError(
+        `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
+        'not by the tenant owner; nothing was handed over',
+      ),
+    };
+  }
+  const unmovable = await unmovableObjects(tx, target.schema);
+  if (unmovable.length === 0) return { owner, objects, conflict: null };
+  const more = unmovable.length - UNMOVABLE_LISTED;
+  const listed = unmovable.slice(0, UNMOVABLE_LISTED).join(', ') + (more > 0 ? `, and ${more} more` : '');
   return {
     owner,
     objects,
     conflict: new ManagedDbSchemaConflictError(
-      `Schema "${target.schema}" holds objects owned by ${foreign.map((name) => `"${name}"`).join(', ')}, ` +
-      'not by the tenant owner; nothing was handed over',
+      `Schema "${target.schema}" holds objects a hand-over does not move: ${listed}; ` +
+      'nothing was handed over: move them to another schema or drop them, then deploy again',
     ),
   };
 }
@@ -160,7 +246,7 @@ async function claimProblem(
 /**
  * Check, changing nothing, that the role can be given its schema: throws
  * ManagedDbSchemaConflictError when another role holds the schema or an
- * object in it. Owners in `releasing` (roles whose schema this run hands back
+ * object in it, or it holds an object a hand-over does not move. Owners in `releasing` (roles whose schema this run hands back
  * first) count as the tenant owner.
  */
 export async function checkManagedDbSchemaClaim(
@@ -170,7 +256,7 @@ export async function checkManagedDbSchemaClaim(
 ): Promise<void> {
   await tenantSql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Db;
-    await tx.unsafe('SET LOCAL search_path = pg_catalog');
+    await tx.unsafe(CATALOG_SEARCH_PATH);
     const { conflict } = await claimProblem(tx, target, options.releasing);
     if (conflict) throw conflict;
   });
@@ -183,8 +269,12 @@ export async function checkManagedDbSchemaClaim(
  * - owned by the tenant owner: hand over the schema, then each object in it
  *   the owner owns, and take back what PUBLIC and `revokeFrom` (the tenant's
  *   other logins) were granted on the schema;
- * - owned by any other role, or holding an object another role owns:
+ * - owned by any other role, holding an object another role owns, or
+ *   holding an object of a kind a hand-over does not move (an operator, say):
  *   refused with ManagedDbSchemaConflictError, and nothing changes.
+ * A created or handed-over schema stays readable by the tenant owner, which
+ * snapshots run as: the schema, its tables and sequences, and those the role
+ * creates later.
  */
 export async function claimManagedDbSchema(
   tenantSql: Db,
@@ -196,13 +286,13 @@ export async function claimManagedDbSchema(
   return tenantSql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Db;
     await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
-    // Catalog names come out schema-qualified whatever the login's path.
-    await tx.unsafe('SET LOCAL search_path = pg_catalog');
+    await tx.unsafe(CATALOG_SEARCH_PATH);
 
     const { owner, objects, conflict } = await claimProblem(tx, target);
     if (conflict) throw conflict;
     if (owner === null) {
       await tx.unsafe(sql.create);
+      for (const statement of sql.snapshotRead) await tx.unsafe(statement);
       return { action: 'created' } as const;
     }
     if (owner === target.roleUser) return { action: 'unchanged' } as const;
@@ -218,26 +308,50 @@ export async function claimManagedDbSchema(
       .filter((name) => name !== target.roleUser)
       .map(quotePostgresIdentifier)];
     await tx.unsafe(`REVOKE ALL ON SCHEMA ${quotePostgresIdentifier(target.schema)} FROM ${grantees.join(', ')}`);
+    for (const statement of sql.snapshotRead) await tx.unsafe(statement);
     return { action: 'handed_over', objects: counts } as const;
   }) as Promise<ManagedDbSchemaClaim>;
 }
 
 /**
- * Hand back what the role owns in the tenant database, in one transaction:
- * its schema (when it still owns it) and then every other object it owns go
- * to the tenant owner, and the privileges it was granted there, CONNECT on
- * the database included, are revoked. The login can then be dropped.
+ * Hand back what the role owns in the tenant database. First the login stops
+ * signing in and its sessions end, so nothing it commits meanwhile is dropped
+ * by DROP OWNED or left behind to keep the login. Then, in one transaction,
+ * its schema (when it still owns it) and every other object it owns go to the
+ * tenant owner, and the privileges it was granted there, CONNECT on the
+ * database included, are revoked. The login can then be dropped. When the
+ * transaction fails nothing has moved, and the login may sign in again.
  */
 export async function releaseManagedDbSchema(tenantSql: Db, target: ManagedDbSchemaTarget): Promise<void> {
   const sql = buildManagedDbSchemaOwnerSql(target);
-  await tenantSql.begin(async (rawTx) => {
-    const tx = rawTx as unknown as Db;
-    await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
-    if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
-      await tx.unsafe(sql.handBack);
-    }
-    for (const statement of sql.release) {
-      await tx.unsafe(statement);
-    }
-  });
+  const role = quotePostgresIdentifier(target.roleUser);
+  // Committed on its own, so no session of the role starts after it.
+  await tenantSql.unsafe(`ALTER ROLE ${role} NOLOGIN`);
+  try {
+    await tenantSql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.unsafe(CATALOG_SEARCH_PATH);
+      await tx`
+        SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
+        FROM pg_catalog.pg_stat_activity
+        WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
+      `;
+    });
+    await tenantSql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
+      await tx.unsafe(CATALOG_SEARCH_PATH);
+      if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
+        await tx.unsafe(sql.handBack);
+      }
+      for (const statement of sql.release) {
+        await tx.unsafe(statement);
+      }
+    });
+  } catch (err) {
+    // The error that stopped the hand-back is the one to report; should this
+    // fail too, the login stays unable to sign in until the next run.
+    await tenantSql.unsafe(`ALTER ROLE ${role} LOGIN`).catch(() => undefined);
+    throw err;
+  }
 }
