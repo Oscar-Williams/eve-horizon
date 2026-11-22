@@ -59,6 +59,29 @@ describe('db status', () => {
     expect(output).toContain('Provisioned Roles:   app (readwrite) as acme-shop-staging-u-1a2b3c-app');
   });
 
+  it('prints the schema a schema-owner role owns', async () => {
+    vi.mocked(requestJson).mockResolvedValueOnce({
+      ...baseTenant,
+      declared_roles: [
+        { name: 'app', grants: 'readwrite' },
+        { name: 'gotrue', grants: { schema: 'auth', owner: true } },
+      ],
+      roles: [
+        { name: 'app', grants: 'readwrite', username: 'acme-shop-staging-u-1a2b3c-app' },
+        { name: 'gotrue', grants: 'owner', schema: 'auth', username: 'acme-shop-staging-u-1a2b3c-gotrue' },
+      ],
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await handleDb('status', [], { env: 'staging' }, context as never);
+
+    const output = log.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(output).toContain('Declared Roles:      app (readwrite), gotrue (owner of auth)');
+    expect(output).toContain(
+      'Provisioned Roles:   app (readwrite) as acme-shop-staging-u-1a2b3c-app, gotrue (owner of auth) as acme-shop-staging-u-1a2b3c-gotrue',
+    );
+  });
+
   it('prints (none) when the tenant has no roles', async () => {
     vi.mocked(requestJson).mockResolvedValueOnce({ ...baseTenant, declared_roles: [], roles: [] });
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
