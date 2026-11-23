@@ -73,6 +73,9 @@ jobs:
           - service: dashboard
             dockerfile: apps/dashboard/Dockerfile
             target: production
+          - service: migrate
+            dockerfile: packages/migrate/Dockerfile
+            target: production
 
     steps:
       - name: Checkout
@@ -91,6 +94,8 @@ jobs:
           file: ./${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           push: false
+          load: ${{ matrix.service == 'migrate' }}
+          tags: eve-horizon/${{ matrix.service }}:check
           build-args: |
             EVE_BUILD_VERSION=0.0.0-check
             EVE_BUILD_SHA=${{ github.sha }}
@@ -98,6 +103,20 @@ jobs:
           cache-from: type=gha,scope=image-check-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=image-check-${{ matrix.service }}
           platforms: linux/amd64
+
+      # Same check the release gate runs on the frozen migrate artifact.
+      - name: Numeric non-root user and a clean start (migrate)
+        if: matrix.service == 'migrate'
+        run: bash -c 'source scripts/release/common.sh && release_check_migrate_image eve-horizon/migrate:check'
+
+  # The release scripts' own tests: image references, tag validation, frozen
+  # artifacts, ancestry and the publisher topology. Docker is mocked.
+  release-scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Release script and workflow topology tests
+        run: bash scripts/release/check.sh
 
   # Build-only browser gate uses source toolchains. Fork PRs need no registry token.
   browser-smoke:

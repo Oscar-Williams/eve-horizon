@@ -17,6 +17,7 @@ case "$action" in
     if [[ $kind == service ]]; then
       context=.
       dockerfile="apps/$name/Dockerfile"
+      [[ $name == migrate ]] && dockerfile=packages/migrate/Dockerfile
       target=production
       [[ $name == worker ]] && target=base
     else

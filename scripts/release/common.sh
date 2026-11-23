@@ -13,7 +13,7 @@ release_ref() {
   local kind=$1 name=$2 version=$3
   release_version "$version"
   case "$kind:$name" in
-    service:api|service:sso|service:gateway|service:agent-runtime|service:orchestrator|service:worker|service:dashboard) printf '%s/%s:%s\n' "$registry" "$name" "$version" ;;
+    service:api|service:sso|service:gateway|service:agent-runtime|service:orchestrator|service:worker|service:dashboard|service:migrate) printf '%s/%s:%s\n' "$registry" "$name" "$version" ;;
     toolchain:python|toolchain:media|toolchain:rust|toolchain:java|toolchain:kotlin|toolchain:browser) printf '%s/toolchain-%s:%s\n' "$registry" "$name" "$version" ;;
     *) release_die "unknown release image $kind:$name" ;;
   esac
@@ -27,6 +27,20 @@ release_native() {
 release_image_id() { docker image inspect --format '{{.Id}}' "$1"; }
 release_image_platform() {
   [[ $(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$1") == linux/amd64 ]] || release_die "non-AMD64 image: $1"
+}
+# Apps run the migrate image as a job, and the strict profile runs it as the
+# image's own numeric user: the kubelet cannot check runAsNonRoot against a
+# name. Started with no database URL and no network, it must get as far as
+# reading its configuration, which proves its code and dependencies load.
+release_check_migrate_image() {
+  local ref=$1 user output
+  user=$(docker image inspect --format '{{.Config.User}}' "$ref")
+  [[ $user =~ ^[1-9][0-9]*(:[0-9]+)?$ ]] || release_die "migrate image user must be a numeric non-root uid[:gid]: '$user'"
+  if output=$(docker run --rm --network none "$ref" 2>&1); then
+    release_die 'migrate image ran without DATABASE_URL'
+  fi
+  [[ $output == *'DATABASE_URL environment variable is required'* ]] || release_die "migrate image did not start: $output"
+  echo "qualified migrate image $ref user=$user"
 }
 release_check_tag_absent() {
   local ref=$1 output
