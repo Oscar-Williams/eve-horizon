@@ -294,19 +294,31 @@ environment:
   snapshots fail: the owner is not that table's owner, so `pg_dump` refuses.
 - Removing the role from the manifest first stops it signing in (`NOLOGIN`)
   and ends its sessions, waiting for each, so nothing it commits meanwhile is
-  lost or keeps the login. Then, in one transaction, its schema and
-  everything else it owns in the database go back to the tenant owner and
-  its privileges there are revoked (`ALTER SCHEMA ... OWNER TO`,
+  lost or keeps the login. Then, in one transaction: its `SECURITY DEFINER`
+  functions and procedures, in the schema or elsewhere in the database,
+  become `SECURITY INVOKER`; every privilege anyone but the tenant owner
+  holds on the schema and on the role's tables, views, sequences, routines
+  and types is revoked, with `CASCADE` (so what they passed on goes too),
+  `PUBLIC`'s included (functions grant it `EXECUTE`, types `USAGE`); its
+  schema and everything else it owns in the database go back to the tenant
+  owner and its privileges there are revoked (`ALTER SCHEMA ... OWNER TO`,
   `REASSIGN OWNED`, `DROP OWNED`, which also removes the default privileges
-  that let the owner read new objects), and the login is dropped. The data stays. If that transaction
-  fails (a lock held past 5 seconds, say), nothing has moved and the login
-  can sign in again; the next run tries again. Changing a role between
-  `public` grants and an owned schema, or to another schema, drops it this
-  way and creates it again with a new password.
-- Functions the role made pass to the tenant owner at hand-back, `SECURITY
-  DEFINER` ones included, which from then on run with the owner's rights.
-  Review them after removing a role (`SELECT proname FROM pg_proc WHERE
-  prosecdef AND pronamespace = '<schema>'::regnamespace`).
+  that let the owner read new objects). The login is then dropped. The data
+  stays. If that transaction fails (a lock held past 5 seconds, say),
+  nothing has moved, the tenant goes `failed` with `schema_hand_back_failed`
+  and the reason, and the role is kept, still unable to sign in, since it is
+  being removed; the next deploy hands the schema back and drops it.
+  Changing a role between `public` grants and an owned schema, or to
+  another schema, drops it this way and creates it again with a new
+  password (its login stays off until that hand-back succeeds).
+- So nothing the role made runs or reads with the tenant owner's rights for
+  another login after the hand-back: its functions run as their caller, and
+  only the owner (and Eve's platform login, as a member of it) can use the
+  schema or anything in it. What remains is the owner's to review: a view
+  reads with its owner's rights, now the tenant owner's, and the owner's own
+  calls run the role's code as the owner. Check the role's views and
+  functions before granting them to another login or switching a function
+  back to `SECURITY DEFINER`.
 - `eve db rotate-credentials` rotates its password with the others;
   `eve db destroy` drops it with the database; `eve db reset` resets `public`
   only, so an owned schema is kept.

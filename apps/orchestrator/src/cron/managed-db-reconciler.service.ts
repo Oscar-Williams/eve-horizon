@@ -1046,7 +1046,9 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
    * Drop a schema-owner role: the login stops signing in and its sessions
    * end, its schema and everything else it owns in the tenant database go
    * back to the tenant owner and its privileges there are revoked (one
-   * transaction), then the login goes.
+   * transaction), then the login goes. A hand-back that fails fails the
+   * tenant with schema_hand_back_failed and keeps the role, unable to sign
+   * in, for the next run to hand back.
    */
   private async dropLocalSchemaOwnerRole(
     adminSql: Db,
@@ -1056,12 +1058,20 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
   ): Promise<void> {
     const schema = managedDbRoleOwnedSchema(role);
     if (schema !== null) {
-      await releaseManagedDbSchema(tenantSql, {
-        dbName: tenant.db_name,
-        schema,
-        roleUser: role.db_user,
-        ownerUser: tenant.db_user,
-      });
+      try {
+        await releaseManagedDbSchema(tenantSql, {
+          dbName: tenant.db_name,
+          schema,
+          roleUser: role.db_user,
+          ownerUser: tenant.db_user,
+        });
+      } catch (err) {
+        throw new ManagedDbProvisioningError(
+          'schema_hand_back_failed',
+          `Failed to hand schema "${schema}" back from role "${role.name}" on tenant ${tenant.id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       this.logger.log(`[managed-db-reconciler] Handed schema ${schema} of tenant ${tenant.id} back from ${role.name}`);
     }
     // The hand-back already ended the login's sessions and refuses new ones.

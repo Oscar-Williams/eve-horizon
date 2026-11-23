@@ -190,8 +190,6 @@ describe('schema-owner roles in a tenant database', () => {
     await admin.unsafe(`GRANT "${owner}" TO "${platform}"`);
     await admin.unsafe(`GRANT "${gotrue}" TO "${platform}"`);
     superTenant = postgres(urlFor(null, dbName));
-    // Postgres 15 and later: public grants CREATE to no one by default.
-    await superTenant.unsafe('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
     tenant = pinnedTenantSession(platform);
   });
 
@@ -207,6 +205,12 @@ describe('schema-owner roles in a tenant database', () => {
 
   beforeEach(async () => {
     await superTenant.unsafe('DROP SCHEMA IF EXISTS auth CASCADE');
+    await superTenant.unsafe(`
+      DROP TABLE IF EXISTS public.ledger;
+      DROP FUNCTION IF EXISTS public.whoami();
+    `);
+    // Postgres 15 and later: public grants CREATE to no one by default.
+    await superTenant.unsafe('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
     // A hand-back leaves the role unable to sign in.
     await admin.unsafe(`ALTER ROLE "${gotrue}" LOGIN`);
   });
@@ -357,6 +361,81 @@ describe('schema-owner roles in a tenant database', () => {
       expect(defaults).toBe(0);
     });
 
+    it('makes the SECURITY DEFINER functions and procedures the role made run as their caller, in its schema and elsewhere', async () => {
+      await claimManagedDbSchema(tenant, target);
+      // As on Postgres 14 defaults, where every role may create in public.
+      await superTenant.unsafe('GRANT CREATE ON SCHEMA public TO PUBLIC');
+      await as(gotrue, (tx) => tx.unsafe(`
+        CREATE FUNCTION auth.whoami() RETURNS name LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user';
+        CREATE PROCEDURE auth.touch() LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        CREATE FUNCTION public.whoami() RETURNS name LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user';
+      `));
+
+      await releaseManagedDbSchema(tenant, target);
+
+      const definers = await superTenant<{ routine: string }[]>`
+        SELECT p.oid::regprocedure::text AS routine FROM pg_proc p
+        WHERE p.prosecdef AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = ${owner})
+      `;
+      expect(definers).toEqual([]);
+      // Should the tenant owner grant one again, it runs as whoever calls it.
+      await as(owner, (tx) => tx.unsafe(`GRANT USAGE ON SCHEMA auth TO "${app}"; GRANT EXECUTE ON FUNCTION auth.whoami() TO "${app}"`));
+      const [row] = await as(app, (tx) => tx.unsafe('SELECT auth.whoami() AS who'));
+      expect(row.who).toBe(app);
+    });
+
+    it('takes back what the role granted on its schema and what it owned, so no other login reaches them as the tenant owner', async () => {
+      await superTenant.unsafe(`
+        CREATE TABLE public.ledger (entry text);
+        INSERT INTO public.ledger VALUES ('owner only');
+        ALTER TABLE public.ledger OWNER TO "${owner}";
+      `);
+      await claimManagedDbSchema(tenant, target, { revokeFrom: [owner, app] });
+      // The role cannot read the owner's ledger; a view reads it with the rights of the view's owner.
+      await as(gotrue, (tx) => tx.unsafe(`
+        CREATE VIEW auth.ledger AS SELECT entry FROM public.ledger;
+        CREATE TABLE auth.sessions (id int, token text);
+        CREATE SEQUENCE auth.session_ids;
+        CREATE TYPE auth.level AS ENUM ('aal1', 'aal2');
+        CREATE FUNCTION auth.uid() RETURNS integer LANGUAGE sql STABLE AS 'SELECT 1';
+        GRANT USAGE ON SCHEMA auth TO PUBLIC;
+        GRANT SELECT ON auth.ledger TO "${app}" WITH GRANT OPTION;
+        GRANT SELECT (token) ON auth.sessions TO "${app}";
+        GRANT USAGE ON SEQUENCE auth.session_ids TO "${app}";
+        GRANT USAGE ON TYPE auth.level TO "${app}";
+      `));
+      await as(app, (tx) => tx.unsafe(`GRANT SELECT ON auth.ledger TO "${stranger}"`));
+      await expect(as(app, (tx) => tx.unsafe('SELECT * FROM auth.ledger'))).rejects.toThrow(/permission denied for table ledger/);
+
+      await releaseManagedDbSchema(tenant, target);
+
+      for (const login of [app, stranger]) {
+        await expect(as(login, (tx) => tx.unsafe('SELECT * FROM auth.ledger'))).rejects.toThrow(/permission denied/);
+        await expect(as(login, (tx) => tx.unsafe('SELECT auth.uid()'))).rejects.toThrow(/permission denied/);
+      }
+      // Nothing on the schema, or in it, is granted to anyone but the tenant owner.
+      const grants = await superTenant<{ object: string; grantee: string }[]>`
+        SELECT o.object, CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END AS grantee
+        FROM (
+          SELECT 'schema auth' AS object, nspacl AS acl FROM pg_namespace WHERE nspname = 'auth'
+          UNION ALL
+          SELECT 'relation ' || c.relname, c.relacl FROM pg_class c WHERE c.relnamespace = 'auth'::regnamespace
+          UNION ALL
+          SELECT 'column ' || c.relname || '.' || t.attname, t.attacl
+          FROM pg_attribute t JOIN pg_class c ON c.oid = t.attrelid WHERE c.relnamespace = 'auth'::regnamespace
+          UNION ALL
+          SELECT 'routine ' || p.proname, coalesce(p.proacl, acldefault('f', p.proowner))
+          FROM pg_proc p WHERE p.pronamespace = 'auth'::regnamespace
+          UNION ALL
+          SELECT 'type ' || y.typname, coalesce(y.typacl, acldefault('T', y.typowner))
+          FROM pg_type y WHERE y.typnamespace = 'auth'::regnamespace AND y.typrelid = 0 AND y.typelem = 0
+        ) o, aclexplode(o.acl) a
+        WHERE a.grantee <> (SELECT oid FROM pg_roles WHERE rolname = ${owner})
+        ORDER BY 1, 2
+      `;
+      expect(grants).toEqual([]);
+    });
+
     it('closes the role\'s sessions and refuses new ones first, so nothing it commits meanwhile is lost or keeps the login', async () => {
       await ownerMadeAuth();
       await claimManagedDbSchema(tenant, target);
@@ -393,7 +472,7 @@ describe('schema-owner roles in a tenant database', () => {
       }
     }, 20_000);
 
-    it('moves nothing and lets the login sign in again when the hand-back fails', async () => {
+    it('moves nothing and keeps the login unable to sign in when the hand-back fails, and a later run hands back', async () => {
       await ownerMadeAuth();
       await claimManagedDbSchema(tenant, target);
       const before = await owners();
@@ -403,10 +482,14 @@ describe('schema-owner roles in a tenant database', () => {
         await expect(releaseManagedDbSchema(tenant, target)).rejects.toThrow(/lock timeout/);
       });
       expect(await owners()).toEqual(before);
+      // The role is being removed, so it stays signed out until the hand-back succeeds.
       const [{ can_login }] = await superTenant<{ can_login: boolean }[]>`
         SELECT rolcanlogin AS can_login FROM pg_roles WHERE rolname = ${gotrue}
       `;
-      expect(can_login).toBe(true);
+      expect(can_login).toBe(false);
+
+      await releaseManagedDbSchema(tenant, target);
+      expect(new Set(Object.values(await owners()))).toEqual(new Set([owner]));
     }, 20_000);
 
     it('drops nothing when the role has no schema', async () => {

@@ -314,44 +314,126 @@ export async function claimManagedDbSchema(
 }
 
 /**
+ * The SECURITY DEFINER functions and procedures the role owns anywhere in the
+ * connected database, by identity: handed back, they would run with the
+ * tenant owner's rights.
+ */
+async function definerRoutines(tx: Db, roleUser: string): Promise<string[]> {
+  const rows = await tx<{ identity: string }[]>`
+    SELECT (pg_catalog.pg_identify_object('pg_catalog.pg_proc'::pg_catalog.regclass, p.oid, 0)).identity AS identity
+    FROM pg_catalog.pg_proc p
+    WHERE p.prosecdef AND p.proowner = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = ${roleUser})
+    ORDER BY 1
+  `;
+  return rows.map((row) => row.identity);
+}
+
+/**
+ * What the hand-back gives the tenant owner that anyone else holds a
+ * privilege on: the schema, while the role owns it, and every table, view,
+ * sequence, routine and type the role owns anywhere in the database (column
+ * privileges count for their table). One row per object, with its REVOKE
+ * keyword, its identity, and every grantee but the role and the tenant owner,
+ * PUBLIC included (functions and types grant it EXECUTE and USAGE until that
+ * is revoked), as a list for REVOKE.
+ */
+async function handedBackGrants(
+  tx: Db,
+  target: ManagedDbSchemaTarget,
+): Promise<Array<{ keyword: string; identity: string; grantees: string }>> {
+  return tx<Array<{ keyword: string; identity: string; grantees: string }>>`
+    WITH departing AS (
+      SELECT oid FROM pg_catalog.pg_roles WHERE rolname = ${target.roleUser}
+    ), tenant_owner AS (
+      SELECT oid FROM pg_catalog.pg_roles WHERE rolname = ${target.ownerUser}
+    ), handed (keyword, classid, objid, acl) AS (
+      SELECT 'SCHEMA', 'pg_catalog.pg_namespace'::pg_catalog.regclass, n.oid, n.nspacl
+      FROM pg_catalog.pg_namespace n
+      WHERE n.nspname = ${target.schema} AND n.nspowner = (SELECT oid FROM departing)
+      UNION ALL
+      SELECT CASE c.relkind WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END,
+             'pg_catalog.pg_class'::pg_catalog.regclass, c.oid, c.relacl
+      FROM pg_catalog.pg_class c
+      WHERE c.relowner = (SELECT oid FROM departing) AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      UNION ALL
+      SELECT 'TABLE', 'pg_catalog.pg_class'::pg_catalog.regclass, c.oid, a.attacl
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      WHERE c.relowner = (SELECT oid FROM departing) AND a.attacl IS NOT NULL
+      UNION ALL
+      SELECT 'ROUTINE', 'pg_catalog.pg_proc'::pg_catalog.regclass, p.oid,
+             COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+      FROM pg_catalog.pg_proc p
+      WHERE p.proowner = (SELECT oid FROM departing)
+      UNION ALL
+      SELECT 'TYPE', 'pg_catalog.pg_type'::pg_catalog.regclass, t.oid,
+             COALESCE(t.typacl, pg_catalog.acldefault('T', t.typowner))
+      FROM pg_catalog.pg_type t
+      WHERE t.typowner = (SELECT oid FROM departing)
+        AND t.typtype IN ('b', 'c', 'd', 'e', 'r')
+        AND (t.typrelid = 0 OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c')
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type e WHERE e.typarray = t.oid)
+    ), grants AS (
+      SELECT DISTINCT h.keyword, h.classid, h.objid,
+             CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                  ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END AS grantee
+      FROM handed h
+      CROSS JOIN LATERAL pg_catalog.aclexplode(h.acl) a
+      WHERE a.grantee <> (SELECT oid FROM departing) AND a.grantee <> (SELECT oid FROM tenant_owner)
+    )
+    SELECT g.keyword,
+           (pg_catalog.pg_identify_object(g.classid, g.objid, 0)).identity AS identity,
+           pg_catalog.string_agg(g.grantee, ', ' ORDER BY g.grantee) AS grantees
+    FROM grants g
+    GROUP BY g.keyword, g.classid, g.objid
+    ORDER BY 1, 2
+  `;
+}
+
+/**
  * Hand back what the role owns in the tenant database. First the login stops
  * signing in and its sessions end, so nothing it commits meanwhile is dropped
- * by DROP OWNED or left behind to keep the login. Then, in one transaction,
- * its schema (when it still owns it) and every other object it owns go to the
+ * by DROP OWNED or left behind to keep the login. Then, in one transaction:
+ * the role's SECURITY DEFINER functions and procedures become SECURITY
+ * INVOKER, and what anyone but the tenant owner holds on the schema and on
+ * the role's objects is revoked (with what they passed on), so nothing handed
+ * back runs or reads with the owner's rights for another login; then its
+ * schema (when it still owns it) and every other object it owns go to the
  * tenant owner, and the privileges it was granted there, CONNECT on the
  * database included, are revoked. The login can then be dropped. When the
- * transaction fails nothing has moved, and the login may sign in again.
+ * transaction fails nothing has moved and the error is thrown; the login,
+ * which is being removed, stays unable to sign in until a later run hands
+ * the schema back.
  */
 export async function releaseManagedDbSchema(tenantSql: Db, target: ManagedDbSchemaTarget): Promise<void> {
   const sql = buildManagedDbSchemaOwnerSql(target);
   const role = quotePostgresIdentifier(target.roleUser);
   // Committed on its own, so no session of the role starts after it.
   await tenantSql.unsafe(`ALTER ROLE ${role} NOLOGIN`);
-  try {
-    await tenantSql.begin(async (rawTx) => {
-      const tx = rawTx as unknown as Db;
-      await tx.unsafe(CATALOG_SEARCH_PATH);
-      await tx`
-        SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
-        FROM pg_catalog.pg_stat_activity
-        WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
-      `;
-    });
-    await tenantSql.begin(async (rawTx) => {
-      const tx = rawTx as unknown as Db;
-      await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
-      await tx.unsafe(CATALOG_SEARCH_PATH);
-      if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
-        await tx.unsafe(sql.handBack);
-      }
-      for (const statement of sql.release) {
-        await tx.unsafe(statement);
-      }
-    });
-  } catch (err) {
-    // The error that stopped the hand-back is the one to report; should this
-    // fail too, the login stays unable to sign in until the next run.
-    await tenantSql.unsafe(`ALTER ROLE ${role} LOGIN`).catch(() => undefined);
-    throw err;
-  }
+  await tenantSql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Db;
+    await tx.unsafe(CATALOG_SEARCH_PATH);
+    await tx`
+      SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
+      FROM pg_catalog.pg_stat_activity
+      WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
+    `;
+  });
+  await tenantSql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Db;
+    await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
+    await tx.unsafe(CATALOG_SEARCH_PATH);
+    for (const routine of await definerRoutines(tx, target.roleUser)) {
+      await tx.unsafe(`ALTER ROUTINE ${routine} SECURITY INVOKER`);
+    }
+    for (const { keyword, identity, grantees } of await handedBackGrants(tx, target)) {
+      await tx.unsafe(`REVOKE ALL ON ${keyword} ${identity} FROM ${grantees} CASCADE`);
+    }
+    if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
+      await tx.unsafe(sql.handBack);
+    }
+    for (const statement of sql.release) {
+      await tx.unsafe(statement);
+    }
+  });
 }

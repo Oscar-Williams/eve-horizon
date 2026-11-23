@@ -275,7 +275,10 @@ export function buildManagedDbRoleRevokeSql(target: ManagedDbRoleSqlTarget): Man
  * be dropped (`DROP OWNED` also removes the role's default privileges,
  * `snapshotRead`'s among them). The schema moves first so its objects land
  * in a schema the owner may create in, which a platform login that is not a
- * superuser needs.
+ * superuser needs. Before either, in the same transaction, the role's
+ * SECURITY DEFINER routines become SECURITY INVOKER and what others hold on
+ * what it hands back is revoked; those statements depend on the catalog, so
+ * the hand-back in `@eve/db` builds them.
  */
 export function buildManagedDbSchemaOwnerSql(
   target: ManagedDbRoleSqlTarget & { schema: string },
