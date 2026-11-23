@@ -472,7 +472,7 @@ describe('schema-owner roles in a tenant database', () => {
       }
     }, 20_000);
 
-    it('moves nothing and lets the login sign in again when the hand-back fails', async () => {
+    it('moves nothing and keeps the login unable to sign in when the hand-back fails, and a later run hands back', async () => {
       await ownerMadeAuth();
       await claimManagedDbSchema(tenant, target);
       const before = await owners();
@@ -482,10 +482,14 @@ describe('schema-owner roles in a tenant database', () => {
         await expect(releaseManagedDbSchema(tenant, target)).rejects.toThrow(/lock timeout/);
       });
       expect(await owners()).toEqual(before);
+      // The role is being removed, so it stays signed out until the hand-back succeeds.
       const [{ can_login }] = await superTenant<{ can_login: boolean }[]>`
         SELECT rolcanlogin AS can_login FROM pg_roles WHERE rolname = ${gotrue}
       `;
-      expect(can_login).toBe(true);
+      expect(can_login).toBe(false);
+
+      await releaseManagedDbSchema(tenant, target);
+      expect(new Set(Object.values(await owners()))).toEqual(new Set([owner]));
     }, 20_000);
 
     it('drops nothing when the role has no schema', async () => {

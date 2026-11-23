@@ -379,6 +379,36 @@ describe('ManagedDbReconcilerService schema-owner roles', () => {
     expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', { desiredClass: null });
   });
 
+  it('keeps a removed owner role unable to sign in, and records the error, when its hand-back fails', async () => {
+    tenantSql = createFakeSql('tenant', log, (text) => {
+      if (text === SCHEMA_OWNER_QUERY) return [{ owner: GOTRUE }];
+      if (text.startsWith('REASSIGN OWNED')) throw new Error('canceling statement due to lock timeout');
+      return [];
+    });
+    const { service, managedDb } = createService(
+      buildTenant({ status: 'modifying', desired_roles: [appDeclared] }),
+      {
+        listTenantRoles: vi.fn().mockResolvedValue([
+          provisionedRole('app', 'readwrite'),
+          provisionedRole('gotrue', 'owner', 'auth'),
+        ]),
+      },
+    );
+    wireConnections(service);
+
+    await service.reconcile();
+
+    expect(log).toContain(`tenant: ALTER ROLE "${GOTRUE}" NOLOGIN`);
+    // The role is being removed: it does not sign in again while it keeps its schema.
+    expect(log.filter((entry) => /ALTER ROLE "[^"]+" (WITH )?LOGIN/.test(entry))).toEqual([]);
+    expect(log).not.toContain(`admin: DROP ROLE IF EXISTS "${GOTRUE}"`);
+    expect(managedDb.deleteTenantRole).not.toHaveBeenCalled();
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), {
+      code: 'schema_hand_back_failed',
+      message: 'Failed to hand schema "auth" back from role "gotrue" on tenant mdbt_1: canceling statement due to lock timeout',
+    });
+  });
+
   it('moves a schema from a role being removed to the role that replaces it in the same run', async () => {
     tenantDb(`${OWNER}-gotrue_old`);
     const { service, managedDb } = createService(
