@@ -55,10 +55,23 @@ Every tag publisher (`publish-images`, `toolchain-images`, `publish-cli`,
    build provenance attestation (`actions/attest-build-provenance`) to it in
    GHCR. Both are recorded in the public Sigstore transparency log; the
    certificate there names the public repository, workflow, tag and commit.
+4. **npm trusted publishing** (npm packages only). No npm token is stored.
+   A `pack` job installs, builds, sets the version and runs `pnpm pack`
+   (which resolves `workspace:` ranges), then uploads the tarballs; it cannot
+   request an identity token. The `publish` job, in the `release`
+   environment, runs none of the repository's code: it installs a pinned npm
+   (11.5.1 or later takes an identity token; Node 22 ships npm 10),
+   downloads the tarballs and runs `npm publish <tarball> --ignore-scripts`.
+   npm exchanges the job's GitHub OIDC token for a short-lived publish token,
+   but only for a package whose trusted publisher names this repository, that
+   workflow file and the `release` environment, and attaches a provenance
+   attestation to the version. Neither job restores a cache. A publish that
+   fails with `ENEEDAUTH` means npm did not accept the identity token: check
+   the package's trusted publisher fields against the workflow.
 
 ### Maintainer setup (once, before the next release tag)
 
-These are repository settings; no workflow can create them.
+These are repository and registry settings; no workflow can create them.
 
 - **Create the `release` environment** (Settings → Environments → New
   environment → `release`) with **Required reviewers** set to the
@@ -67,8 +80,22 @@ These are repository settings; no workflow can create them.
   `toolchain-images/v*`, `cli-v*`, `sdk-v*` and `chat-v*`. If the environment
   does not exist when a publish job first runs, GitHub creates it with no
   protection rules, and the job publishes without waiting for anyone.
-- **Move `NPM_TOKEN`** from the repository secrets to the `release`
-  environment's secrets, so only an approved job can read it.
+- **Set up npm trusted publishing** for each package, just before its next
+  release (a new trusted publisher expires unless a publish succeeds within
+  two days): on npmjs.com, the package → *Settings* → *Trusted publishing* →
+  *GitHub Actions*, with organisation `eve-horizon`, repository
+  `eve-horizon`, environment `release`, *npm publish* allowed, and the
+  workflow file: `publish-cli.yml` for `@eve-horizon/cli`, `publish-sdk.yml`
+  for `@eve-horizon/auth` and `@eve-horizon/auth-react`, `publish-chat.yml`
+  for `@eve-horizon/chat` and `@eve-horizon/chat-react`. Every field is
+  case-sensitive and checked only at publish time. Once a package has
+  published this way, set its *Publishing access* to *Require two-factor
+  authentication and disallow tokens*. When all five have, delete the
+  repository's `NPM_TOKEN` secret and revoke the token on npm. After that, a
+  `cli-v*`, `sdk-v*` or `chat-v*` tag publishes only from a commit whose
+  publish workflows use trusted publishing (release 0.1.328 or later): cut
+  hotfix branches from such a release, or bring the three workflows onto
+  the branch first.
 - **Protect the release tags and hotfix branches** with rulesets that let only
   maintainers create, update or delete tags matching the patterns above and
   branches matching `hotfix/*`. A tag-triggered workflow runs the workflow
