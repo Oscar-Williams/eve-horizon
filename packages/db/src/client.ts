@@ -19,6 +19,10 @@ export type Db = ReturnType<typeof createDb>;
 const PINNED_SESSION_PARAMETERS: Readonly<Record<string, string>> = {
   // The only schema names resolve in.
   search_path: 'pg_catalog',
+  // Act as the login itself, not a role the owner names (SET role = ...).
+  role: 'none',
+  // Eve's statements may write, whatever read-only default the owner sets.
+  default_transaction_read_only: 'off',
 };
 
 const PINNED_SESSION_PARAMETER_NAMES = new Set(Object.keys(PINNED_SESSION_PARAMETERS));
@@ -33,8 +37,10 @@ function isPinnedSessionParameter(name: string): boolean {
  * managed tenant database. The owner may set that database's search_path
  * and create objects named like built-ins, so the session's search_path is
  * sent as pg_catalog in the startup message (ahead of any per-database
- * setting, and of the first query); a search_path in the connection
- * string's query is dropped. The client's startup type query is not sent,
+ * setting, and of the first query). The owner may also set the database's
+ * role and default_transaction_read_only, so those are sent as none and
+ * off. Any of the three in the connection string's query is dropped (the
+ * pinned values replace it). The client's startup type query is not sent,
  * so arrays come back as text: use built-in scalar types only. Statements
  * should still name catalog objects, and the schemas they create in, in full.
  */

@@ -202,10 +202,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
 A tenant owns its database, so it controls that database's settings and what
 is in its `public` schema. The reconciler's own connections as the platform
 login, to a tenant database (extension installs, declared-role grants) and to
-the instance admin database, therefore send `search_path=pg_catalog` in the
-startup message: it overrides any per-database or per-role default and applies
-before the first query, and a `search_path` in `DATABASE_URL`'s query string is
-dropped for these connections. They also skip the client's startup type query
+the instance admin database, therefore send `search_path=pg_catalog`,
+`role=none` and `default_transaction_read_only=off` in the startup message: a
+startup value overrides any per-database or per-role default (so a tenant's
+`ALTER DATABASE ... SET role` or `SET default_transaction_read_only = on` does
+not apply to them) and applies before the first query, and any of the three in
+`DATABASE_URL`'s query string is dropped for these connections. They also skip the client's startup type query
 (postgres.js `fetch_types: false`), so they handle built-in scalar types only
 (arrays come back as text). Statements on them name catalog objects in full
 (`pg_catalog.pg_roles`, `pg_catalog.pg_terminate_backend`) and name the schema
