@@ -23,11 +23,24 @@ export type ProviderGatedExtension = typeof PROVIDER_GATED_EXTENSION_NAMES[numbe
 export const MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS_ENV =
   'EVE_MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS';
 
+/**
+ * Set to exactly `true` to let Eve install tenant extensions PostgreSQL does
+ * not mark trusted. Dangerous: see untrustedManagedDbExtensionError.
+ */
+export const MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS_ENV =
+  'EVE_MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS';
+
 export type SupportedExtensionDefinition =
   | {
     mode: 'plain';
     extname: string;
     installScope: 'tenant_db';
+    /**
+     * Whether PostgreSQL ships the extension marked trusted (`trusted = true`
+     * in its control file). Manifest validation goes by this; at install time
+     * the server's own flag decides.
+     */
+    trusted: boolean;
   }
   | {
     mode: 'preload';
@@ -39,12 +52,12 @@ export type SupportedExtensionDefinition =
   };
 
 export const SUPPORTED_EXTENSIONS: Record<SupportedExtension, SupportedExtensionDefinition> = {
-  postgis: { mode: 'plain', extname: 'postgis', installScope: 'tenant_db' },
-  pgvector: { mode: 'plain', extname: 'vector', installScope: 'tenant_db' },
-  pg_trgm: { mode: 'plain', extname: 'pg_trgm', installScope: 'tenant_db' },
-  btree_gist: { mode: 'plain', extname: 'btree_gist', installScope: 'tenant_db' },
-  hstore: { mode: 'plain', extname: 'hstore', installScope: 'tenant_db' },
-  citext: { mode: 'plain', extname: 'citext', installScope: 'tenant_db' },
+  postgis: { mode: 'plain', extname: 'postgis', installScope: 'tenant_db', trusted: false },
+  pgvector: { mode: 'plain', extname: 'vector', installScope: 'tenant_db', trusted: false },
+  pg_trgm: { mode: 'plain', extname: 'pg_trgm', installScope: 'tenant_db', trusted: true },
+  btree_gist: { mode: 'plain', extname: 'btree_gist', installScope: 'tenant_db', trusted: true },
+  hstore: { mode: 'plain', extname: 'hstore', installScope: 'tenant_db', trusted: true },
+  citext: { mode: 'plain', extname: 'citext', installScope: 'tenant_db', trusted: true },
   pg_cron: {
     mode: 'preload',
     extname: 'pg_cron',
@@ -124,6 +137,26 @@ export function isManagedDbExtensionEnabled(
   return enabled.has(name);
 }
 
+export function untrustedManagedDbExtensionsAllowed(): boolean {
+  return process.env[MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS_ENV] === 'true';
+}
+
+/**
+ * Why Eve refuses a tenant extension PostgreSQL does not mark trusted. Eve
+ * installs it as its platform login inside the tenant's database, into
+ * "public", which the tenant can write; the install script resolves names
+ * there first, so an object the tenant planted could run with Eve's rights.
+ */
+export function untrustedManagedDbExtensionError(name: string): string {
+  return (
+    `Managed DB extension "${name}" is not marked trusted by PostgreSQL, so Eve does not install it: ` +
+    `its install script would run as Eve's platform login in the tenant database's "public" schema, ` +
+    `which the tenant can write. A platform admin may set ${MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS_ENV}=true ` +
+    `on the API, worker and orchestrator to allow it. That is dangerous: install it only into databases ` +
+    `whose "public" no tenant can write yet, such as a new database before it is handed over.`
+  );
+}
+
 export function getManagedDbExtensionValidationError(
   name: string,
   opts?: { enabledPreloadExtensions?: readonly string[] },
@@ -137,6 +170,11 @@ export function getManagedDbExtensionValidationError(
 
   if (!isManagedDbExtensionEnabled(name, opts)) {
     return `Provider-gated managed DB extension "${name}" is disabled. Configure provider preload support and set ${MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS_ENV}=${name}.`;
+  }
+
+  const definition = SUPPORTED_EXTENSIONS[name];
+  if (definition.mode === 'plain' && !definition.trusted && !untrustedManagedDbExtensionsAllowed()) {
+    return untrustedManagedDbExtensionError(name);
   }
 
   return null;

@@ -285,7 +285,7 @@ describe('EnvDbService database target', () => {
       for (const fragment of ['session_user', 'current_user', 'rolsuper', 'rolcreaterole', 'rolbypassrls', 'rolreplication']) {
         expect(sql).toContain(fragment);
       }
-      const roles = values.flat();
+      const roles = values.flat().join(',').split(',');
       for (const role of [
         'pg_read_all_data',
         'pg_write_all_data',
@@ -295,6 +295,26 @@ describe('EnvDbService database target', () => {
       ]) {
         expect(roles).toContain(role);
       }
+    });
+
+    it('runs on a connection of its own, pinned to pg_catalog, naming catalog objects and operators in full', async () => {
+      await expect(runSql()).resolves.toMatchObject({ row_count: 0 });
+
+      const target = describeConnectionTarget(managedUrl);
+      expect(mocks.createDb).toHaveBeenNthCalledWith(1, target, { pinned: true });
+      expect(mocks.createDb).toHaveBeenNthCalledWith(2, target);
+      const [guard, session] = mocks.createDb.mock.results.map((result) => result.value as ReturnType<typeof fakeClient>);
+      expect(guard.end).toHaveBeenCalled();
+      expect(guard.begin).not.toHaveBeenCalled();
+      expect(session).not.toHaveBeenCalled();
+
+      const [strings] = guard.mock.calls[0] as unknown as [TemplateStringsArray];
+      const sql = strings.join('$');
+      const unqualified = [...sql.matchAll(/(?<![\w."])pg_\w+/g)]
+        .map(([name]) => name)
+        .filter((name) => name !== 'pg_catalog');
+      expect(unqualified).toEqual([]);
+      expect(sql.replace(/OPERATOR\(pg_catalog\.=\)/g, '')).not.toContain('=');
     });
   });
 
