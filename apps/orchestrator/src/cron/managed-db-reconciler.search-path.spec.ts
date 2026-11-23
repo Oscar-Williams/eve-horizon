@@ -53,7 +53,9 @@ function createFakeSql(): FakeSql {
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.reduce((acc, part, index) => acc + part + (index < values.length ? `$${index + 1}` : ''), '');
     record(text);
-    if (text.includes('pg_available_extensions')) return Promise.resolve([{ name: values[0] }]);
+    if (text.includes('pg_available_extensions')) {
+      return Promise.resolve([{ name: values[0], installed_version: null, trusted: true }]);
+    }
     if (text.includes('pg_extension')) return Promise.resolve([{ schema_name: 'public' }]);
     return Promise.resolve([]);
   }) as FakeSql;
@@ -214,7 +216,9 @@ describe('statements on platform connections', () => {
 
     expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', expect.anything());
     expect(tenantSql.statements).toEqual(expect.arrayContaining([
-      'SELECT name FROM pg_catalog.pg_available_extensions WHERE name = $1',
+      'SELECT a.installed_version, v.trusted FROM pg_catalog.pg_available_extensions a ' +
+        'LEFT JOIN pg_catalog.pg_available_extension_versions v ' +
+        'ON v.name = a.name AND v.version = a.default_version WHERE a.name = $1',
       'CREATE EXTENSION IF NOT EXISTS "pg_trgm" SCHEMA "public"',
       'SELECT n.nspname AS schema_name FROM pg_catalog.pg_extension e ' +
         'JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1',
