@@ -19,9 +19,9 @@ cluster credentials or use `repository_dispatch` to reach an instance repo — s
 
 | Trigger | Workflow | Result |
 | --- | --- | --- |
-| PR or main push | `image-build-check.yml` | Builds all seven services and six toolchains without credentials; native source browser smoke |
+| PR or main push | `image-build-check.yml` | Builds all eight service images (seven services and `migrate`) and six toolchains without credentials; checks the migrate image's user and start; runs the release script tests; native source browser smoke |
 | `toolchain-images/v*` | `toolchain-images.yml` | Six independently versioned AMD64 GHCR images after archive and native gate |
-| `release-v*` | `publish-images.yml` | Seven AMD64 GHCR service images after archive and native gate |
+| `release-v*` | `publish-images.yml` | Eight AMD64 GHCR images (seven services and `migrate`) after archive and native gate |
 | manual dispatch | either image publisher | Build and native gate only; no publication |
 
 Only publisher jobs have `packages: write` (and `id-token: write` and
@@ -34,7 +34,8 @@ Toolchain tags must match `docker/toolchains/release-version.txt`; service
 gates resolve that version's Python and browser digests.
 
 The `cli-v*`, `sdk-v*`, and `chat-v*` npm publishers remain. The retired
-`worker-images/v*` and `eve-migrate/v*` paths stay retired.
+`worker-images/v*` and `eve-migrate/v*` paths stay retired: the `migrate` image
+now ships with each `release-v*`, versioned with the platform.
 
 ## Release protections
 

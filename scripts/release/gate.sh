@@ -22,6 +22,8 @@ if [[ $kind == service ]]; then
     if [[ $name == python ]]; then python_ref=$resolved; else browser_ref=$resolved; fi
     echo "qualified toolchain source $resolved id=$(release_image_id "$resolved")"
   done
+  bash scripts/release/image.sh load service migrate "$version" "$root/migrate"
+  release_check_migrate_image "$(release_ref service migrate "$version")"
   worker_ref=$(release_ref service worker "$version")
   agent_ref=$(release_ref service agent-runtime "$version")
 elif [[ $kind == toolchain ]]; then

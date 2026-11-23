@@ -5,7 +5,7 @@ source "$(dirname "$0")/common.sh"
 [[ $# -eq 2 ]] || release_die 'usage: prepublish.sh service|toolchain version'
 kind=$1 version=$2
 if [[ $kind == service ]]; then
-  names=(api sso gateway agent-runtime orchestrator worker dashboard)
+  names=(api sso gateway agent-runtime orchestrator worker dashboard migrate)
 elif [[ $kind == toolchain ]]; then
   names=(python media rust java kotlin browser)
 else

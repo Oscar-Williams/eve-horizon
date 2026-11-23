@@ -780,7 +780,8 @@ async function fetchRegistryTags(imageRef: string): Promise<string[]> {
 
   const registry = imageRef.slice(0, slashIndex);
   const repository = imageRef.slice(slashIndex + 1);
-  const url = `https://${registry}/v2/${repository}/tags/list?n=200`;
+  // GHCR lists tags oldest first; one large page keeps the newest in view.
+  const url = `https://${registry}/v2/${repository}/tags/list?n=1000`;
   const token = await fetchRegistryBearerToken(registry, repository);
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const tagsPayload = await fetchText(url, headers);
@@ -897,8 +898,12 @@ async function importPlatformImages(version: string, runtimeOptions: UpRuntimeOp
     if (pull.status !== 0) {
       const pullOutput = `${pull.stderr}\n${pull.stdout}`.toLowerCase();
       const isAuthError = pullOutput.includes('403') || pullOutput.includes('401') || pullOutput.includes('unauthorized');
-      const hint = isAuthError
+      const registryHost = image.remote.split('/')[0];
+      const authHint = registryHost.includes('ecr.aws')
         ? 'This is likely an ECR authentication issue. Run: aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws'
+        : `The registry refused the pull. Check that ${image.remote} is public, or run: docker login ${registryHost}`;
+      const hint = isAuthError
+        ? authHint
         : `Ensure image availability/access at ${image.remote} and the version exists. Try: eve local up --version <x.y.z>`;
       throw new Error(`Failed to pull ${remoteTag}. ${hint}`);
     }
@@ -1032,7 +1037,7 @@ function buildPlatformImageRegistry(): string {
   if (CONFIGURED_REGISTRY) {
     return `${CONFIGURED_REGISTRY}/${CONFIGURED_NAMESPACE}`;
   }
-  return `public.ecr.aws/w7c4v0w3/${DEFAULT_PLATFORM_NAMESPACE}`;
+  return `ghcr.io/eve-horizon/${DEFAULT_PLATFORM_NAMESPACE}`;
 }
 
 function buildPlatformImages(): ImageDefinition[] {

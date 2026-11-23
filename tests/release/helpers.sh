@@ -9,6 +9,7 @@ expect_fail() {
   fi
 }
 [[ $(release_ref service worker 1.2.3) == ghcr.io/eve-horizon/eve-horizon/worker:1.2.3 ]]
+[[ $(release_ref service migrate 1.2.3) == ghcr.io/eve-horizon/eve-horizon/migrate:1.2.3 ]]
 [[ $(release_ref toolchain browser 0.1.0) == ghcr.io/eve-horizon/eve-horizon/toolchain-browser:0.1.0 ]]
 expect_fail bash -c 'source scripts/release/common.sh; release_ref service worker latest'
 expect_fail bash -c 'source scripts/release/common.sh; release_ref toolchain unknown 0.1.0'
@@ -44,6 +45,17 @@ if [[ $* == 'image inspect --format {{.Id}} '* ]]; then
   printf 'sha256:%064d\n' 1
   exit 0
 fi
+if [[ $* == 'image inspect --format {{.Config.User}} '* ]]; then
+  printf '%s\n' "${MOCK_USER:-}"
+  exit 0
+fi
+if [[ $* == 'run --rm --network none '* ]]; then
+  case "${MOCK_RUN:-}" in
+    starts) echo 'ERROR: DATABASE_URL environment variable is required' >&2; exit 1 ;;
+    missing_module) echo "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'postgres'" >&2; exit 1 ;;
+    succeeds) exit 0 ;;
+  esac
+fi
 exit 98
 MOCK
 chmod +x "$tmp/docker"
@@ -55,6 +67,18 @@ done
 for absence in missing missing_manifest; do
   env PATH="$tmp:$PATH" MOCK_REMOTE="$absence" bash -c 'source scripts/release/common.sh; release_check_tag_absent ghcr.io/eve-horizon/eve-horizon/api:1.2.3'
 done
+# Strict pods run as the image's numeric user: the migrate image must name one
+# that is not root, and must start far enough to read its configuration.
+for user in 1000 1000:1000 65532:65532; do
+  env PATH="$tmp:$PATH" MOCK_USER="$user" MOCK_RUN=starts bash -c 'source scripts/release/common.sh; release_check_migrate_image ghcr.io/eve-horizon/eve-horizon/migrate:1.2.3'
+done
+for user in '' root node 0 0:0 00 1000:node node:1000; do
+  expect_fail env PATH="$tmp:$PATH" MOCK_USER="$user" MOCK_RUN=starts bash -c 'source scripts/release/common.sh; release_check_migrate_image ghcr.io/eve-horizon/eve-horizon/migrate:1.2.3'
+done
+for run in missing_module succeeds; do
+  expect_fail env PATH="$tmp:$PATH" MOCK_USER=1000:1000 MOCK_RUN="$run" bash -c 'source scripts/release/common.sh; release_check_migrate_image ghcr.io/eve-horizon/eve-horizon/migrate:1.2.3'
+done
+
 mkdir -p "$tmp/artifact"
 printf 'bad archive' > "$tmp/artifact/image.tar.gz"
 printf 'ref=ghcr.io/eve-horizon/eve-horizon/api:1.2.3\nid=sha256:%064d\nsha256=%064d\nrevision=%040d\n' 0 0 0 > "$tmp/artifact/receipt.txt"

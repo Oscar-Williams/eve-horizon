@@ -1,7 +1,8 @@
 # Canonical GHCR image release
 
-The seven service packages live at
-`ghcr.io/eve-horizon/eve-horizon/{api,sso,gateway,agent-runtime,orchestrator,worker,dashboard}`;
+The seven service packages and the `migrate` image (apps run it as a job to
+apply their SQL migrations) live at
+`ghcr.io/eve-horizon/eve-horizon/{api,sso,gateway,agent-runtime,orchestrator,worker,dashboard,migrate}`;
 the six toolchains use `toolchain-{python,media,rust,java,kotlin,browser}` under
 that prefix. Deployment owners roll out digests from their instance repos.
 
@@ -31,10 +32,11 @@ that prefix. Deployment owners roll out digests from their instance repos.
    tag, manifest digest, config digest, source revision, and gate run ID. If
    a package is private or an anonymous pull fails, stop before service release.
 5. Push one approved `refs/tags/release-v<version>` ref. Service builds archive
-   all seven exact AMD64 images. The native gate loads the frozen worker and
-   agent-runtime images and pulls the declared versioned Python/browser images
+   all eight exact AMD64 images. The native gate loads the frozen worker and
+   agent-runtime images, pulls the declared versioned Python/browser images
    from `release-version.txt`, resolving their registry digests before the
-   launch. `prepublish` rejects any existing service version tag. Publishers
+   launch, then loads the frozen migrate image, which must name a numeric
+   non-root user and start cleanly with no database. `prepublish` rejects any existing service version tag. Publishers
    wait for approval in the `release` environment, then load, verify and push
    exactly their archived images, and sign and attest each pushed digest. No
    `latest`, `staging`, or SHA alias is part of release qualification. The
@@ -42,7 +44,8 @@ that prefix. Deployment owners roll out digests from their instance repos.
    [Release protections](../system/ci-cd.md#release-protections) for the
    ancestry rule, the hotfix route and the one-time `release` environment
    setup.
-6. Make all seven packages public, anonymously pull each `@sha256:` digest,
+6. Make all eight packages public (a package's first release creates it
+   private), anonymously pull each `@sha256:` digest,
    and inspect source/revision labels and linux/amd64 platform. Record both
    manifest and config digests; the publisher verifies config identity against
    the local image ID. `cosign verify` each digest against the
@@ -60,9 +63,10 @@ overwrite tags.
 
 ## Capacity and provenance
 
-Per-image jobs run on native GitHub `ubuntu-24.04` x64. The gate loads two
-runtime and two toolchain archives. Locally, compressed worker/agent-runtime
-archives were about 2.1/1.86 GB; measure the first hosted run against its 14 GB
+Per-image jobs run on native GitHub `ubuntu-24.04` x64. The service gate loads
+the worker, agent-runtime and migrate archives and two toolchains. Locally,
+compressed worker/agent-runtime archives were about 2.1/1.86 GB (migrate is
+under 0.1 GB); measure the first hosted run against its 14 GB
 disk and use a larger native x64 runner if needed. Do not prune an operator's
 local Docker daemon.
 

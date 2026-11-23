@@ -18,13 +18,15 @@ All system apps share a single version derived from the `release-v*` git tag (se
 
 ## Image Registry
 
-System apps are published to **ECR Public**:
+System apps are published to **GHCR**, signed and versioned:
 
 ```
-public.ecr.aws/w7c4v0w3/eve-horizon/<name>
+ghcr.io/eve-horizon/eve-horizon/<name>:<version>
 ```
 
-ECR repos are auto-created by the CI workflow's `ensure_repo` step. Do not use the Eve internal registry or GHCR for system apps.
+A new image's package is created by its first release and starts private: make
+it public in the package settings ([Container Image Release](deploy/container-image-release.md)).
+Do not use the Eve internal registry for system apps.
 
 ## Adding a New System App
 
@@ -43,14 +45,12 @@ FROM node:20-alpine AS production
 
 ### 2. Add to CI image build matrix
 
-Edit `.github/workflows/publish-images.yml` and add an entry to `matrix.include`:
-
-```yaml
-- service: <name>
-  dockerfile: apps/<name>/Dockerfile
-  target: production
-  image: <name>
-```
+Add `<name>` to both `matrix.name` lists (build and publish) in
+`.github/workflows/publish-images.yml`, to the `matrix.include` of
+`.github/workflows/image-build-check.yml` (same Dockerfile and target), and to
+the release scripts' allow-lists: `release_ref` in `scripts/release/common.sh`
+and the service list in `scripts/release/prepublish.sh`. Then update the image
+count in `tests/release/workflows.rb` and run `bash scripts/release/check.sh`.
 
 ### 3. Add Kubernetes base manifests
 
@@ -69,7 +69,7 @@ Add the new manifest files to `k8s/base/kustomization.yaml`.
 In `eve-horizon-infra` (the template at `../../eve-horizon/eve-horizon-infra`):
 
 - Copy base manifests to the template's `k8s/base/`
-- Add overlay patches for each deployment target (`aws-eks`, `aws`, `gcp`) that replace the `:local` image tag with the versioned ECR image
+- Add overlay patches for each deployment target (`aws-eks`, `aws`, `gcp`) that replace the `:local` image tag with the versioned GHCR image
 - Add the new files to each overlay's `kustomization.yaml`
 
 ### 6. Update the deploy workflow

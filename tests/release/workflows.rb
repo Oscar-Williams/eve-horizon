@@ -40,17 +40,27 @@ files.each do |kind, file|
   abort "#{file}: global absent-version check missing" unless jobs['prepublish']['steps'].to_s.include?('prepublish.sh')
   source = File.read(file)
   abort "#{file}: AWS or floating release reference" if source.match?(/\baws-actions\b|public\.ecr\.aws|:latest\b|:staging\b/)
-  expected = kind == 'service' ? 7 : 6
+  expected = kind == 'service' ? 8 : 6
   abort "#{file}: wrong image count" unless jobs['build']['strategy']['matrix']['name'].size == expected && jobs['publish']['strategy']['matrix']['name'].size == expected
 end
 { 'cli' => 'publish-cli.yml', 'sdk' => 'publish-sdk.yml', 'chat' => 'publish-chat.yml' }.each do |kind, name|
   file = ".github/workflows/#{name}"
   jobs = YAML.load_file(file).fetch('jobs')
   check_release_gate(file, jobs, 'publish')
-  abort "#{file}: tag version is not validated" unless jobs['publish']['steps'].to_s.include?("validate-tag.sh #{kind}")
+  # The pack job validates the tag and builds the tarball the publisher uploads.
+  abort "#{file}: publisher does not take the packed tarball" unless Array(jobs['publish']['needs']).include?('pack')
+  abort "#{file}: tag version is not validated" unless jobs.fetch('pack')['steps'].to_s.include?("validate-tag.sh #{kind}")
 end
+services = YAML.load_file(files['service']).dig('jobs', 'build', 'strategy', 'matrix', 'name')
+gate = YAML.load_file(files['service']).dig('jobs', 'native-gate', 'steps').to_s
+abort "#{files['service']}: native gate does not load the migrate artifact" unless gate.include?('service-migrate')
+abort 'gate.sh does not check the migrate image' unless File.read('scripts/release/gate.sh').include?('release_check_migrate_image')
 ci = YAML.load_file('.github/workflows/image-build-check.yml')
 abort 'build-only CI has publish permission' if ci.fetch('permissions').values.include?('write')
+checked = ci.fetch('jobs').fetch('build').fetch('strategy').fetch('matrix').fetch('include').map { |entry| entry['service'] }
+abort "build-only CI misses service images: #{(services - checked).join(', ')}" unless (services - checked).empty?
+abort 'build-only CI does not check the migrate image' unless ci.fetch('jobs').fetch('build').fetch('steps').to_s.include?('release_check_migrate_image')
 abort 'build-only CI missing native browser smoke' unless ci.fetch('jobs').key?('browser-smoke')
+abort 'build-only CI does not run the release script tests' unless ci.fetch('jobs').fetch('release-scripts', {}).fetch('steps', []).to_s.include?('scripts/release/check.sh')
 abort 'build-only CI missing toolchain coverage' unless ci.fetch('jobs').fetch('toolchain-build').fetch('strategy').fetch('matrix').fetch('name').size == 6
 puts 'release workflow topology passed'

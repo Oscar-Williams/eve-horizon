@@ -1,6 +1,7 @@
 name: Publish Images
 
-# Release tags publish seven immutable service artifacts; deployment is owned elsewhere.
+# Release tags publish eight immutable artifacts: the seven platform services and
+# the migrate image apps run as a job. Deployment is owned elsewhere.
 # Publishing needs the tagged commit on main or a hotfix/* branch and an
 # approval in the protected `release` environment. Each pushed digest is
 # signed keyless with this workflow's identity and gets a build provenance
@@ -58,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [api, sso, gateway, agent-runtime, orchestrator, worker, dashboard]
+        name: [api, sso, gateway, agent-runtime, orchestrator, worker, dashboard, migrate]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -97,7 +98,11 @@ jobs:
         with:
           name: service-agent-runtime
           path: release-artifact/agent-runtime
-      - name: Test exact worker and agent artifacts with digest-resolved versioned toolchains
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: service-migrate
+          path: release-artifact/migrate
+      - name: Test exact migrate, worker and agent artifacts with digest-resolved versioned toolchains
         env:
           VERSION: ${{ needs.version.outputs.value }}
         run: bash scripts/release/gate.sh service "$VERSION" release-artifact
@@ -147,7 +152,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [api, sso, gateway, agent-runtime, orchestrator, worker, dashboard]
+        name: [api, sso, gateway, agent-runtime, orchestrator, worker, dashboard, migrate]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0

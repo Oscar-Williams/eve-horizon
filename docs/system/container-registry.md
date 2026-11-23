@@ -16,15 +16,15 @@ It supports three modes: Eve-native (`"eve"`), disabled (`"none"`), or a BYO reg
 
 ```yaml
 registry:
-  host: public.ecr.aws/w7c4v0w3
-  namespace: eve-horizon
+  host: ghcr.io
+  namespace: example-org
   auth:
     username_secret: REGISTRY_USERNAME    # Secret key for registry username
     token_secret: REGISTRY_PASSWORD        # Secret key for registry token/password
 ```
 
-- `host`: The container registry hostname (e.g., `public.ecr.aws/w7c4v0w3`, `docker.io`)
-- `namespace`: The registry namespace/organization (e.g., `eve-horizon`)
+- `host`: The container registry hostname (e.g., `ghcr.io`, `docker.io`)
+- `namespace`: The registry namespace/organization (e.g., `example-org`)
 - `auth.username_secret`: Name of the secret containing the registry username (defaults to `REGISTRY_USERNAME`)
 - `auth.token_secret`: Name of the secret containing the registry token/password (defaults to `REGISTRY_PASSWORD`)
 
@@ -202,7 +202,7 @@ Services specify their full image path without a tag:
 ```yaml
 services:
   api:
-    image: public.ecr.aws/w7c4v0w3/eve-horizon/my-project-api
+    image: ghcr.io/example-org/my-project-api
     build:
       context: ./apps/api
       dockerfile: ./apps/api/Dockerfile
@@ -246,10 +246,10 @@ For fast iteration without pushing to a remote registry:
 
 ```bash
 # Build with :local tag
-docker build -t public.ecr.aws/w7c4v0w3/eve-horizon/my-project-api:local ./apps/api
+docker build -t ghcr.io/example-org/my-project-api:local ./apps/api
 
 # Import directly into k3d cluster
-k3d image import public.ecr.aws/w7c4v0w3/eve-horizon/my-project-api:local -c eve-local
+k3d image import ghcr.io/example-org/my-project-api:local -c eve-local
 
 # Deploy (requires explicit --ref)
 eve env deploy test --ref main --repo-dir .
@@ -299,7 +299,7 @@ For CI environments that need explicit registry auth before build:
 - name: Login to container registry
   uses: docker/login-action@v3
   with:
-    registry: public.ecr.aws/w7c4v0w3
+    registry: ghcr.io
     username: ${{ secrets.REGISTRY_USERNAME }}
     password: ${{ secrets.REGISTRY_PASSWORD }}
 ```
