@@ -602,7 +602,7 @@ those images never became a supported public release surface.
 
 ### Image Pull Authentication
 
-Platform images on GHCR are public. For a private mirror:
+Released platform images on GHCR pull anonymously. For a private mirror:
 
 **Kubernetes**:
 Create an image pull secret:

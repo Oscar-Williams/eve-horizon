@@ -32,11 +32,11 @@ that prefix. Deployment owners roll out digests from their instance repos.
    tag, manifest digest, config digest, source revision, and gate run ID. If
    a package is private or an anonymous pull fails, stop before service release.
 5. Push one approved `refs/tags/release-v<version>` ref. Service builds archive
-   all eight exact AMD64 images. The native gate loads the frozen migrate image
-   (it must name a numeric non-root user and start cleanly with no database),
-   then the frozen worker and agent-runtime images, and pulls the declared versioned Python/browser images
+   all eight exact AMD64 images. The native gate loads the frozen worker and
+   agent-runtime images, pulls the declared versioned Python/browser images
    from `release-version.txt`, resolving their registry digests before the
-   launch. `prepublish` rejects any existing service version tag. Publishers
+   launch, then loads the frozen migrate image, which must name a numeric
+   non-root user and start cleanly with no database. `prepublish` rejects any existing service version tag. Publishers
    wait for approval in the `release` environment, then load, verify and push
    exactly their archived images, and sign and attest each pushed digest. No
    `latest`, `staging`, or SHA alias is part of release qualification. The
@@ -63,9 +63,10 @@ overwrite tags.
 
 ## Capacity and provenance
 
-Per-image jobs run on native GitHub `ubuntu-24.04` x64. The gate loads two
-runtime and two toolchain archives. Locally, compressed worker/agent-runtime
-archives were about 2.1/1.86 GB; measure the first hosted run against its 14 GB
+Per-image jobs run on native GitHub `ubuntu-24.04` x64. The service gate loads
+the worker, agent-runtime and migrate archives and two toolchains. Locally,
+compressed worker/agent-runtime archives were about 2.1/1.86 GB (migrate is
+under 0.1 GB); measure the first hosted run against its 14 GB
 disk and use a larger native x64 runner if needed. Do not prune an operator's
 local Docker daemon.
 

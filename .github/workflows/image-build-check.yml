@@ -7,7 +7,7 @@
 # a `release-v*` tag and watched Publish Images fail.
 #
 # Build-only: no registry login, no credentials, no push. Uses the GitHub Actions
-# cache rather than the ECR registry cache so it works on fork PRs too.
+# cache rather than a registry cache so it works on fork PRs too.
 name: Image Build Check
 
 on:

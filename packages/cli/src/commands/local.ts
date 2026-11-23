@@ -780,7 +780,8 @@ async function fetchRegistryTags(imageRef: string): Promise<string[]> {
 
   const registry = imageRef.slice(0, slashIndex);
   const repository = imageRef.slice(slashIndex + 1);
-  const url = `https://${registry}/v2/${repository}/tags/list?n=200`;
+  // GHCR lists tags oldest first; one large page keeps the newest in view.
+  const url = `https://${registry}/v2/${repository}/tags/list?n=1000`;
   const token = await fetchRegistryBearerToken(registry, repository);
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const tagsPayload = await fetchText(url, headers);

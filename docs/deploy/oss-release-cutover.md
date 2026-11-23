@@ -17,8 +17,8 @@
 > No new AWS repository creation is allowed from this source repo. GHCR
 > publication, public visibility, and hosted rollout are still pending.
 > Later: GHCR is the only publishing route (versioned images from `0.1.320`),
-> and the `migrate` image ships with each `release-v*`. Nothing pulls from the
-> ECR namespace any more.
+> and the `migrate` image ships with each `release-v*`. The ECR namespace gets
+> no new releases.
 
 ## Canonical repository
 

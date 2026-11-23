@@ -36,7 +36,10 @@ release_check_migrate_image() {
   local ref=$1 user output
   user=$(docker image inspect --format '{{.Config.User}}' "$ref")
   [[ $user =~ ^[1-9][0-9]*(:[0-9]+)?$ ]] || release_die "migrate image user must be a numeric non-root uid[:gid]: '$user'"
-  if output=$(docker run --rm --network none "$ref" 2>&1); then
+  # A minute is ample to start and fail; never let a stuck start hold the job.
+  local limit=()
+  command -v timeout >/dev/null && limit=(timeout 60)
+  if output=$(${limit[@]+"${limit[@]}"} docker run --rm --network none "$ref" 2>&1); then
     release_die 'migrate image ran without DATABASE_URL'
   fi
   [[ $output == *'DATABASE_URL environment variable is required'* ]] || release_die "migrate image did not start: $output"
