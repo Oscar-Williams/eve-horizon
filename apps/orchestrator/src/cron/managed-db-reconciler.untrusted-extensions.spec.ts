@@ -165,8 +165,7 @@ describe('installing extensions on a tenant database', () => {
   it('goes by the server\'s flag, not the registry\'s expectation', async () => {
     const managedDb = await reconcile(buildTenant({ desired_extensions: ['pg_trgm'] }), { pg_trgm: UNTRUSTED });
 
-    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported'),
-    });
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported' }));
     expect(createExtensions()).toEqual([]);
   });
 
@@ -177,8 +176,7 @@ describe('installing extensions on a tenant database', () => {
       enabled_extensions: ['pg_trgm'],
     }), { vector: UNTRUSTED, pg_trgm: { installed_version: '1.6', trusted: true } });
 
-    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported'),
-    });
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported' }));
     expect(createExtensions()).toEqual([]);
   });
 
