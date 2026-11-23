@@ -363,7 +363,7 @@ describe('publishing workflows', () => {
       assert.doesNotMatch(text, /NPM_TOKEN|NODE_AUTH_TOKEN/, `${file}: no npm token; npm trusts the workflow instead`);
 
       const job = releaseJob(text);
-      assert.match(job, /^ {6}id-token: write\s*$/m, `${file}: the publish job may request an identity token`);
+      assert.match(job, /^ {6}id-token: write(?:\s+#.*)?$/m, `${file}: the publish job may request an identity token`);
       assert.doesNotMatch(job, /^\s*cache:/m, `${file}: the publish job restores no cache`);
 
       // pnpm publish hands the upload to the npm on the PATH, and npm takes

@@ -35,6 +35,7 @@ jobs:
 
     permissions:
       contents: read
+      id-token: write # npm trusted publishing
 
     steps:
       - name: Checkout
@@ -47,8 +48,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-          cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Install npm for trusted publishing
+        # pnpm publish hands the upload to npm, which publishes with this
+        # job's identity token from 11.5.1 on; Node 22 ships npm 10.
+        run: npm install --global npm@11.21.2
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -71,5 +76,3 @@ jobs:
 
       - name: Publish to npm
         run: pnpm --filter @eve-horizon/cli publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
