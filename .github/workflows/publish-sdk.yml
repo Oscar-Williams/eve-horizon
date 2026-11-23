@@ -83,7 +83,7 @@ jobs:
           name: npm-packages
           path: ${{ runner.temp }}/packages/*.tgz
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # Publishes the packed tarballs by npm trusted publishing: npm exchanges
   # this job's identity token for a short-lived publish token. It runs none
@@ -114,7 +114,25 @@ jobs:
           path: ${{ runner.temp }}/packages
 
       - name: Publish @eve-horizon/auth
-        run: npm publish "$RUNNER_TEMP"/packages/eve-horizon-auth-[0-9]*.tgz --access public --ignore-scripts
+        run: |
+          tarball=$(echo "$RUNNER_TEMP"/packages/eve-horizon-auth-[0-9]*.tgz)
+          version=$(basename "$tarball" .tgz)
+          version=${version#eve-horizon-auth-}
+          # A re-run after a partly failed release skips what is already on npm.
+          if [ "$(npm view "@eve-horizon/auth@$version" version)" = "$version" ]; then
+            echo "@eve-horizon/auth@$version is already on npm"
+          else
+            npm publish "$tarball" --access public --ignore-scripts
+          fi
 
       - name: Publish @eve-horizon/auth-react
-        run: npm publish "$RUNNER_TEMP"/packages/eve-horizon-auth-react-[0-9]*.tgz --access public --ignore-scripts
+        run: |
+          tarball=$(echo "$RUNNER_TEMP"/packages/eve-horizon-auth-react-[0-9]*.tgz)
+          version=$(basename "$tarball" .tgz)
+          version=${version#eve-horizon-auth-react-}
+          # A re-run after a partly failed release skips what is already on npm.
+          if [ "$(npm view "@eve-horizon/auth-react@$version" version)" = "$version" ]; then
+            echo "@eve-horizon/auth-react@$version is already on npm"
+          else
+            npm publish "$tarball" --access public --ignore-scripts
+          fi
