@@ -56,13 +56,18 @@ Every tag publisher (`publish-images`, `toolchain-images`, `publish-cli`,
    GHCR. Both are recorded in the public Sigstore transparency log; the
    certificate there names the public repository, workflow, tag and commit.
 4. **npm trusted publishing** (npm packages only). No npm token is stored.
-   The publish job requests GitHub's OIDC token, and npm exchanges it for a
-   short-lived publish token, but only for a package whose trusted publisher
-   names this repository, that workflow file and the `release` environment.
-   npm attaches a provenance attestation to each version published this way.
-   `pnpm publish` hands the upload to npm, which needs 11.5.1 or later for
-   this (Node 22 ships npm 10), so each publish job installs a pinned npm.
-   Release jobs restore no cache.
+   A `pack` job installs, builds, sets the version and runs `pnpm pack`
+   (which resolves `workspace:` ranges), then uploads the tarballs; it cannot
+   request an identity token. The `publish` job, in the `release`
+   environment, runs none of the repository's code: it installs a pinned npm
+   (11.5.1 or later takes an identity token; Node 22 ships npm 10),
+   downloads the tarballs and runs `npm publish <tarball> --ignore-scripts`.
+   npm exchanges the job's GitHub OIDC token for a short-lived publish token,
+   but only for a package whose trusted publisher names this repository, that
+   workflow file and the `release` environment, and attaches a provenance
+   attestation to the version. Neither job restores a cache. A publish that
+   fails with `ENEEDAUTH` means npm did not accept the identity token: check
+   the package's trusted publisher fields against the workflow.
 
 ### Maintainer setup (once, before the next release tag)
 
@@ -86,7 +91,11 @@ These are repository and registry settings; no workflow can create them.
   case-sensitive and checked only at publish time. Once a package has
   published this way, set its *Publishing access* to *Require two-factor
   authentication and disallow tokens*. When all five have, delete the
-  repository's `NPM_TOKEN` secret and revoke the token on npm.
+  repository's `NPM_TOKEN` secret and revoke the token on npm. After that, a
+  `cli-v*`, `sdk-v*` or `chat-v*` tag publishes only from a commit whose
+  publish workflows use trusted publishing (release 0.1.328 or later): cut
+  hotfix branches from such a release, or bring the three workflows onto
+  the branch first.
 - **Protect the release tags and hotfix branches** with rulesets that let only
   maintainers create, update or delete tags matching the patterns above and
   branches matching `hotfix/*`. A tag-triggered workflow runs the workflow
