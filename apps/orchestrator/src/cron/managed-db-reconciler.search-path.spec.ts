@@ -11,8 +11,12 @@ import { ManagedDbReconcilerService } from './managed-db-reconciler.service.js';
  * sessions there must not resolve names through that path, from the first
  * query the client sends onwards.
  *
- * The last block needs a real Postgres whose login may create roles and
- * databases: set TEST_DATABASE_URL. It creates and drops its own tenant
+ * The owner may also set the database's `role` (so Eve's sessions would act
+ * as a role of the owner's choosing) and `default_transaction_read_only`;
+ * Eve's sessions there pin both too.
+ *
+ * The real-Postgres blocks need a login that may create roles and
+ * databases: set TEST_DATABASE_URL. Each creates and drops its own tenant
  * database and roles.
  */
 
@@ -53,7 +57,9 @@ function createFakeSql(): FakeSql {
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.reduce((acc, part, index) => acc + part + (index < values.length ? `$${index + 1}` : ''), '');
     record(text);
-    if (text.includes('pg_available_extensions')) return Promise.resolve([{ name: values[0] }]);
+    if (text.includes('pg_available_extensions')) {
+      return Promise.resolve([{ name: values[0], installed_version: null, trusted: true }]);
+    }
     if (text.includes('pg_extension')) return Promise.resolve([{ schema_name: 'public' }]);
     return Promise.resolve([]);
   }) as FakeSql;
@@ -176,6 +182,18 @@ describe('platform connections to tenant databases', () => {
       }
     }
   });
+
+  it('pin the role and the read-only default too, over any in DATABASE_URL', () => {
+    const { tenant, admin } = connect(
+      'postgres://eve:eve@localhost:5432/eve?sslmode=disable&ROLE=tenant_owner&default_transaction_read_only=on',
+    );
+
+    for (const options of [tenant, admin]) {
+      const pinned = Object.entries(options.connection)
+        .filter(([name]) => ['role', 'default_transaction_read_only'].includes(name.toLowerCase()));
+      expect(pinned.sort()).toEqual([['default_transaction_read_only', 'off'], ['role', 'none']]);
+    }
+  });
 });
 
 describe('statements on platform connections', () => {
@@ -214,7 +232,9 @@ describe('statements on platform connections', () => {
 
     expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'ready', expect.anything());
     expect(tenantSql.statements).toEqual(expect.arrayContaining([
-      'SELECT name FROM pg_catalog.pg_available_extensions WHERE name = $1',
+      'SELECT a.installed_version, v.trusted FROM pg_catalog.pg_available_extensions a ' +
+        'LEFT JOIN pg_catalog.pg_available_extension_versions v ' +
+        'ON v.name = a.name AND v.version = a.default_version WHERE a.name = $1',
       'CREATE EXTENSION IF NOT EXISTS "pg_trgm" SCHEMA "public"',
       'SELECT n.nspname AS schema_name FROM pg_catalog.pg_extension e ' +
         'JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1',
@@ -375,5 +395,80 @@ describe.skipIf(!testDbUrl)('a tenant database that shadows built-ins (real Post
       await client.end({ timeout: 1 });
     }
     expect(await shadowCalls()).toEqual([]);
+  });
+});
+
+describe.skipIf(!testDbUrl)('a tenant database that sets its own role and read-only defaults (real Postgres)', () => {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  const tenant = { id: 'mdbt_defaults', db_name: `eve_defaults_${suffix}`, db_user: `eve_defaults_${suffix}_owner` };
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  let platformLogin: string;
+  let target: typeof instance;
+  let server: Db;
+
+  function reconciler() {
+    return new ManagedDbReconcilerService(mockDb) as unknown as {
+      connectToTenantDb: (target: typeof instance, tenant: { db_name: string }) => Db;
+      installTenantExtensions: (target: typeof instance, tenant: object, extensions: string[]) => Promise<void>;
+    };
+  }
+
+  beforeAll(async () => {
+    const url = new URL(testDbUrl!);
+    platformLogin = decodeURIComponent(url.username);
+    target = { ...instance, provider_instance_id: 'local-test', host: url.hostname, port: Number(url.port || 5432) };
+    process.env.DATABASE_URL = testDbUrl;
+    server = createDb(testDbUrl!);
+    await server.unsafe(`CREATE ROLE "${tenant.db_user}" LOGIN`);
+    await server.unsafe(`CREATE DATABASE "${tenant.db_name}" OWNER "${tenant.db_user}"`);
+    // The owner, on its own database: every new session acts as the owner
+    // and starts its transactions read-only.
+    await server.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL ROLE "${tenant.db_user}"`);
+      await tx.unsafe(`ALTER DATABASE "${tenant.db_name}" SET role = '${tenant.db_user}'`);
+      await tx.unsafe(`ALTER DATABASE "${tenant.db_name}" SET default_transaction_read_only = on`);
+    });
+  });
+
+  afterAll(async () => {
+    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = originalDatabaseUrl;
+    if (!server) return;
+    await server`
+      SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE datname = ${tenant.db_name}
+    `;
+    await server.unsafe(`DROP DATABASE IF EXISTS "${tenant.db_name}"`);
+    await server.unsafe(`DROP ROLE IF EXISTS "${tenant.db_user}"`);
+    await server.end({ timeout: 1 });
+  });
+
+  it('opens sessions that act as the platform login and may write', async () => {
+    const client = reconciler().connectToTenantDb(target, tenant);
+    try {
+      const [row] = await client<{ acting: string; login: string; read_only: string }[]>`
+        SELECT CURRENT_USER::pg_catalog.text AS acting, SESSION_USER::pg_catalog.text AS login,
+          pg_catalog.current_setting('transaction_read_only') AS read_only
+      `;
+      expect(row).toEqual({ acting: platformLogin, login: platformLogin, read_only: 'off' });
+    } finally {
+      await client.end({ timeout: 1 });
+    }
+  });
+
+  it('installs extensions there as the platform login', async () => {
+    await reconciler().installTenantExtensions(target, tenant, ['pg_trgm']);
+
+    const client = reconciler().connectToTenantDb(target, tenant);
+    try {
+      const [extension] = await client<{ owner: string }[]>`
+        SELECT r.rolname::pg_catalog.text AS owner
+        FROM pg_catalog.pg_extension e
+        JOIN pg_catalog.pg_roles r ON r.oid = e.extowner
+        WHERE e.extname = 'pg_trgm'
+      `;
+      expect(extension).toEqual({ owner: platformLogin });
+    } finally {
+      await client.end({ timeout: 1 });
+    }
   });
 });
