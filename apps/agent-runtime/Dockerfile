@@ -79,8 +79,8 @@ COPY docker/harness-clis/ /opt/harness-clis/
 RUN set -eu; \
     /opt/harness-clis/install.sh; \
     claude_version="$(node -p 'require("/opt/harness-clis/package.json").dependencies["@anthropic-ai/claude-code"]')"; \
-    (HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --yes --no-shell-env 2>/dev/null || true) \
-    && (HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true) \
+    (HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --no-tweak --yes --no-shell-env 2>/dev/null || true) \
+    && (HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --no-tweak --api-key "placeholder" --yes --no-shell-env 2>/dev/null || true) \
     && if [ -f /home/node/.cc-mirror/zai/config/settings.json ]; then \
          node -e "const fs=require('fs'); const f='/home/node/.cc-mirror/zai/config/settings.json'; const d=JSON.parse(fs.readFileSync(f)); delete d.env.ANTHROPIC_API_KEY; fs.writeFileSync(f,JSON.stringify(d,null,2));" 2>/dev/null || true; \
        fi \

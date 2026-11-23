@@ -202,6 +202,21 @@ function inexactPackage(tool, spec, vars) {
   return exact.test(resolved) ? null : `${tool} package ${spec} (${resolved}) has no exact version`;
 }
 
+/**
+ * The lines of each `cc-mirror quick` in a RUN that lacks `--no-tweak`.
+ * cc-mirror themes Claude Code with tweakcc, which it runs through npx at a
+ * version it names and, when that fails, at tweakcc@latest: code the lock
+ * never sees, fetched during the build.
+ */
+function untweakedCcMirror(instruction) {
+  const QUICK = /\bcc-mirror\s+quick\b/;
+  const lines = instruction.parts.flatMap((part) =>
+    [...part.text.matchAll(/\bcc-mirror\s+quick\b/g)].map(() => part.line),
+  );
+  const commands = instruction.text.split(/;|&&|\|\||\|/).filter((command) => QUICK.test(command));
+  return commands.flatMap((command, i) => (/(^|\s)--no-tweak(\s|$)/.test(command) ? [] : [lines[i] ?? instruction.line]));
+}
+
 export function checkDockerfile(text) {
   const offences = new Map();
   const report = (line, message) => offences.set(`${line}:${message}`, { line, message });
@@ -270,6 +285,9 @@ export function checkDockerfile(text) {
       for (const { tool, spec } of packageArgs(rest)) {
         const problem = inexactPackage(tool, spec, vars);
         if (problem) report(lineOf(instruction, spec), problem);
+      }
+      for (const line of untweakedCcMirror(instruction)) {
+        report(line, 'cc-mirror quick without --no-tweak fetches tweakcc through npx at build time, falling back to tweakcc@latest');
       }
     }
   }

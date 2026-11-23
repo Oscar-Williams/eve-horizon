@@ -89,6 +89,23 @@ describe('Dockerfile packages', () => {
     );
   });
 
+  it('rejects cc-mirror quick without --no-tweak, which fetches tweakcc at build time', () => {
+    const offences = checkDockerfile(
+      [
+        'FROM scratch',
+        'RUN set -eu; \\',
+        '    HOME=/home/node cc-mirror quick --provider mirror --name mclaude --yes --no-shell-env; \\',
+        '    HOME=/home/node cc-mirror quick --provider zai --name zai --no-tweak --yes',
+        'RUN cc-mirror quick --provider mirror --name a --no-tweak && cc-mirror quick --provider zai --name b --no-tweak',
+        'RUN cc-mirror update mclaude',
+      ].join('\n'),
+    );
+    assert.deepEqual(
+      offences.map(({ line, message }) => `${line} ${message}`),
+      ['3 cc-mirror quick without --no-tweak fetches tweakcc through npx at build time, falling back to tweakcc@latest'],
+    );
+  });
+
   it('rejects npx, pnpm add, yarn add and pip install without an exact version', () => {
     const offences = checkDockerfile(
       [
@@ -106,6 +123,7 @@ describe('Dockerfile packages', () => {
       [
         '2 npx package cc-mirror has no exact version',
         '2 npx package helper@^1 has no exact version',
+        '2 cc-mirror quick without --no-tweak fetches tweakcc through npx at build time, falling back to tweakcc@latest',
         '3 pnpm package pkg-a has no exact version',
         '3 yarn package pkg-c@~1.0.0 has no exact version',
         '4 pip package uv has no exact version',

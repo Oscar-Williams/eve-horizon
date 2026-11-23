@@ -227,11 +227,11 @@ RUN /opt/harness-clis/install.sh
 RUN set -eu; \
     if command -v cc-mirror >/dev/null 2>&1; then \
       claude_version="$(node -p 'require("/opt/harness-clis/package.json").dependencies["@anthropic-ai/claude-code"]')"; \
-      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --yes --no-shell-env; \
+      HOME=/home/node cc-mirror quick --provider mirror --name mclaude --claude-version "$claude_version" --no-tweak --yes --no-shell-env; \
       # Z.ai provider (GLM models). cc-mirror needs an API key to create the
       # variant; the placeholder is stripped so the runtime env var takes
       # precedence (the wrapper exports settings.json env vars over it).
-      HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --api-key "placeholder" --yes --no-shell-env; \
+      HOME=/home/node cc-mirror quick --provider zai --name zai --claude-version "$claude_version" --no-tweak --api-key "placeholder" --yes --no-shell-env; \
       node -e "const fs=require('fs'); const f='/home/node/.cc-mirror/zai/config/settings.json'; const d=JSON.parse(fs.readFileSync(f)); delete d.env.ANTHROPIC_API_KEY; fs.writeFileSync(f,JSON.stringify(d,null,2));"; \
       test -x /home/node/.local/bin/mclaude; \
       test -x /home/node/.local/bin/zai; \
