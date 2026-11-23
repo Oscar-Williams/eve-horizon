@@ -28,16 +28,16 @@ The template includes:
 - Ubuntu 22.04+ VPS on AWS (single node)
 - A public domain with DNS control
 - External Postgres (RDS or managed Postgres)
-- Container registry credentials (public ECR by default, or private ECR mirror)
+- Pull access to the platform images (public on GHCR by default, or your own mirror)
 
 ## Images
 
-This repo publishes container images to `public.ecr.aws/w7c4v0w3/eve-horizon` via
-`publish-images.yml` workflow. It can also publish to private ECR when
-`ECR_REGISTRY` plus `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are configured
-in GitHub Actions.
-For anonymous/public pulls, use ECR Public (`public.ecr.aws/<alias>`). Private
-ECR endpoints (`<account>.dkr.ecr.<region>.amazonaws.com`) require auth.
+This repo publishes signed, versioned container images to
+`ghcr.io/eve-horizon/eve-horizon` from the `publish-images.yml` workflow (see
+[Container Image Release](./container-image-release.md)). They pull
+anonymously; pin a version or, better, a digest. To pull from a private mirror
+instead (ECR or another registry), copy the images there and give it
+credentials.
 The infra template uses the `platform.registry` value in `config/platform.yaml`
 to select the registry namespace.
 See [Container Registry](../system/container-registry.md) for details on image

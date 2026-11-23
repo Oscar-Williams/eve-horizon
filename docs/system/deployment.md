@@ -19,7 +19,7 @@ repo never deploys.**
 | `<org>/<name>-eve-infra` | Private instance | Real hosts, secrets, pinned version, cluster credentials |
 
 ```
-this repo  ──release-v*──>  public ECR  ──pinned version──>  instance repo  ──deploy-v*──>  cluster
+this repo  ──release-v*──>  GHCR  ──pinned version──>  instance repo  ──deploy-v*──>  cluster
 ```
 
 A `release-v*` tag here publishes images and stops. Rollouts are triggered only
@@ -50,8 +50,8 @@ K8s is the **primary deployment target** for integration testing, manual validat
 
 Deployments support both tag-based and digest-based image references for immutability:
 
-- **Tag-based**: `public.ecr.aws/w7c4v0w3/namespace/service:v1.0.0` (default, traditional)
-- **Digest-based**: `public.ecr.aws/w7c4v0w3/namespace/service@sha256:abc123...` (immutable, from pipeline builds)
+- **Tag-based**: `ghcr.io/namespace/service:v1.0.0` (default, traditional)
+- **Digest-based**: `ghcr.io/namespace/service@sha256:abc123...` (immutable, from pipeline builds)
 
 Release objects capture `image_digests_json` from build outputs, enabling reproducible deployments with exact image pinning.
 See [builds.md](./builds.md) for how BuildSpecs/BuildRuns produce artifacts.
@@ -78,7 +78,7 @@ Production-style AWS deployments use the **`eve-horizon/eve-horizon-infra`** tem
 which contains the Kustomize overlay, Terraform configuration, and deploy workflow:
 
 - Uses external Postgres (RDS or managed database)
-- Assumes images are pulled from public ECR (published by `publish-images.yml` in this repo)
+- Assumes images are pulled from GHCR, `ghcr.io/eve-horizon/eve-horizon` (published by `publish-images.yml` in this repo)
 - Sets a placeholder Ingress host and default app domain
 
 The AWS overlay and Terraform have been extracted from this repo. See
@@ -344,7 +344,7 @@ Example manifest:
 ```yaml
 services:
   api:
-    image: public.ecr.aws/w7c4v0w3/org/api
+    image: ghcr.io/example-org/api
     ports: [3000]
     environment:
       DATABASE_URL: postgres://eve:eve@${ENV_NAME}-db:5432/eve
@@ -586,7 +586,7 @@ Platform releases publish one versioned `worker` service image alongside the
 other six services:
 
 ```text
-public.ecr.aws/w7c4v0w3/eve-horizon/worker:<platform-version>
+ghcr.io/eve-horizon/eve-horizon/worker:<platform-version>
 ```
 
 Deployment instances pin that image as both the worker deployment image and
@@ -602,13 +602,13 @@ those images never became a supported public release surface.
 
 ### Image Pull Authentication
 
-ECR images are public by default. For private deployments:
+Platform images on GHCR are public. For a private mirror:
 
 **Kubernetes**:
 Create an image pull secret:
 ```bash
-kubectl create secret docker-registry ecr-pull-secret \
-  --docker-server=public.ecr.aws/w7c4v0w3 \
+kubectl create secret docker-registry registry-pull-secret \
+  --docker-server=registry.example.com \
   --docker-username=<registry-username> \
   --docker-password=<registry-password> \
   --namespace=eve
@@ -618,13 +618,13 @@ Reference in deployment:
 ```yaml
 spec:
   imagePullSecrets:
-  - name: ecr-pull-secret
+  - name: registry-pull-secret
 ```
 
 **Docker Compose**:
 Login to a private registry before starting the stack:
 ```bash
-echo $REGISTRY_PASSWORD | docker login public.ecr.aws/w7c4v0w3 -u <registry-username> --password-stdin
+echo $REGISTRY_PASSWORD | docker login registry.example.com -u <registry-username> --password-stdin
 docker compose up
 ```
 

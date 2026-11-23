@@ -94,8 +94,10 @@ tag-driven via GitHub Actions, cut from `eve-horizon/eve-horizon` only.
 > [ci-cd.md](./docs/system/ci-cd.md).
 
 > ✅ **Publishing fully cut over** — both paths proven end-to-end from
-> `eve-horizon/eve-horizon`. Images: `release-v0.1.314` (2026-07-22) published
-> all 7 service images to `public.ecr.aws/w7c4v0w3/eve-horizon`. npm:
+> `eve-horizon/eve-horizon`. Images: every `release-v*` publishes the 7 service
+> images and the `migrate` image, signed, to `ghcr.io/eve-horizon/eve-horizon`
+> ([container-image-release.md](./docs/deploy/container-image-release.md)); the
+> earlier AWS ECR route is retired and nothing pulls from it. npm:
 > `cli-v0.2.73` (2026-08-25) published `@eve-horizon/cli@0.2.73`, confirmed live
 > and installable via `npx`. All 3 Actions secrets set and exercised. See
 > [oss-release-cutover.md](./docs/deploy/oss-release-cutover.md).

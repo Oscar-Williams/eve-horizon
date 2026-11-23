@@ -9,8 +9,8 @@
  * This is NOT the same tool as @eve/migrate (packages/migrate), which
  * migrates TENANT APP databases: timestamp-named app-supplied migrations,
  * `schema_migrations` state table, SHA-256 checksums, auto-baseline, and the
- * legacy standalone `eve-migrate` image. Publishing for that image is retired.
- * The two runners serve disjoint databases —
+ * `migrate` image published with each platform release. The two runners
+ * serve disjoint databases —
  * do not consolidate them without reconciling state tables and file-naming
  * rules (see codebase-refactor-simplification-plan.md, MIG-1 withdrawal).
  */
