@@ -344,4 +344,40 @@ describe('publishing workflows', () => {
       assert.doesNotMatch(`${steps[1]}\n${steps[2]}`, /\bif:/, `${file}: the gate runs on every trigger`);
     }
   });
+
+  /** The lines of the workflow's job that runs in the `release` environment. */
+  function releaseJob(text) {
+    const lines = text.split(/\r?\n/);
+    const jobs = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+    const starts = lines.flatMap((line, i) => (i > jobs && /^ {2}[\w-]+:\s*$/.test(line) ? [i] : []));
+    const blocks = starts.map((start, n) => lines.slice(start, starts[n + 1] ?? lines.length).join('\n'));
+    const release = blocks.filter((block) => /^ {4}environment:\s*release\s*$/m.test(block));
+    assert.equal(release.length, 1, 'one job runs in the release environment');
+    return release[0];
+  }
+
+  it('publish to npm by trusted publishing: no npm token, an identity token, no cache, npm 11.5.1 or later', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const file of ['publish-chat.yml', 'publish-cli.yml', 'publish-sdk.yml']) {
+      const text = readFileSync(join(workflowsDir, file), 'utf8');
+      assert.doesNotMatch(text, /NPM_TOKEN|NODE_AUTH_TOKEN/, `${file}: no npm token; npm trusts the workflow instead`);
+
+      const job = releaseJob(text);
+      assert.match(job, /^ {6}id-token: write\s*$/m, `${file}: the publish job may request an identity token`);
+      assert.doesNotMatch(job, /^\s*cache:/m, `${file}: the publish job restores no cache`);
+
+      // pnpm publish hands the upload to the npm on the PATH, and npm takes
+      // an identity token from 11.5.1; Node 22 ships npm 10.
+      const npm = job.match(/^ {8}run: npm install --global npm@(\d+)\.(\d+)\.(\d+)$/m);
+      assert.ok(npm, `${file}: the publish job installs an exact npm version`);
+      const [major, minor, patch] = npm.slice(1).map(Number);
+      assert.ok(
+        major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1))),
+        `${file}: npm ${major}.${minor}.${patch} cannot publish with an identity token`,
+      );
+      const publishes = [...job.matchAll(/^ {8}run: pnpm --filter \S+ publish\b/gm)].map((match) => match.index);
+      assert.ok(publishes.length > 0, `${file}: the publish job publishes`);
+      assert.ok(publishes.every((at) => at > npm.index), `${file}: npm is installed before anything is published`);
+    }
+  });
 });
