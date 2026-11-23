@@ -58,7 +58,10 @@ or as loopback). On the platform server:
   `403` if its session or current role is, or is a member of, a role with
   SUPERUSER, CREATEROLE, BYPASSRLS or REPLICATION, or of `cloudsqlsuperuser`,
   `rds_superuser`, `azure_pg_admin`, `pg_read_all_data`, `pg_write_all_data`
-  or the `pg_*_server_*` file roles.
+  or the `pg_*_server_*` file roles. The check runs on a connection of its
+  own, opened and closed before the command's session, that sends
+  `search_path=pg_catalog` at startup (the database's owner and the URL may
+  both set a search path) and names every catalog object and operator in full.
 
 On any server, a connection URL may only set the startup parameters
 `application_name`, `search_path` and `sslrootcert` (plus client settings
