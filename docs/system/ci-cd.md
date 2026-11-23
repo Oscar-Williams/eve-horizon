@@ -67,7 +67,10 @@ Every tag publisher (`publish-images`, `toolchain-images`, `publish-cli`,
    workflow file and the `release` environment, and attaches a provenance
    attestation to the version. Neither job restores a cache. A publish that
    fails with `ENEEDAUTH` means npm did not accept the identity token: check
-   the package's trusted publisher fields against the workflow.
+   the package's trusted publisher fields against the workflow, then use
+   *Re-run failed jobs*, which skips any package version already on npm. The
+   tarballs are kept for seven days; after that, re-run all jobs (which packs
+   again and asks for approval again).
 
 ### Maintainer setup (once, before the next release tag)
 
