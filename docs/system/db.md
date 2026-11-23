@@ -58,7 +58,10 @@ or as loopback). On the platform server:
   `403` if its session or current role is, or is a member of, a role with
   SUPERUSER, CREATEROLE, BYPASSRLS or REPLICATION, or of `cloudsqlsuperuser`,
   `rds_superuser`, `azure_pg_admin`, `pg_read_all_data`, `pg_write_all_data`
-  or the `pg_*_server_*` file roles.
+  or the `pg_*_server_*` file roles. The check runs on a connection of its
+  own, opened and closed before the command's session, that sends
+  `search_path=pg_catalog` at startup (the database's owner and the URL may
+  both set a search path) and names every catalog object and operator in full.
 
 On any server, a connection URL may only set the startup parameters
 `application_name`, `search_path` and `sslrootcert` (plus client settings
@@ -109,7 +112,7 @@ services:
         class: db.p1
         engine: postgres
         engine_version: "16"
-        extensions: [postgis, pgvector, pg_trgm]
+        extensions: [pg_trgm, citext]
         roles:
           - name: app
             grants: readwrite
@@ -138,6 +141,21 @@ Notes:
   `password`, `extensions`, and `roles.<name>.url|username|password` for declared
   roles.
 - Plain declarable extensions are `postgis`, `pgvector`, `pg_trgm`, `btree_gist`, `hstore`, and `citext`.
+- Eve installs a tenant's extensions as its platform login, inside the tenant's
+  database and into `public`, which the tenant can write. An extension's install
+  script resolves names in that schema first, so an object the tenant planted
+  there could run with the platform login's rights. PostgreSQL vouches only for
+  the scripts of extensions it marks trusted (`pg_trgm`, `btree_gist`, `hstore`,
+  `citext`). `postgis` and `pgvector` are not, and are refused: manifest
+  validation rejects them, and the reconciler checks the server's own
+  `pg_available_extension_versions.trusted` flag for the version it would
+  install and fails the tenant with `provider_unsupported` before any script
+  runs. An extension already installed in the database is left as it is.
+- `EVE_MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS=true` (exactly `true`, on the API,
+  worker and orchestrator) lets Eve install untrusted extensions. **This is
+  dangerous**: set it only while installing into databases whose `public` no
+  tenant can write yet, such as a new database before it is handed over, and
+  unset it afterwards.
 - Provider-gated preload extensions are rejected unless the platform enables them with `EVE_MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS`. `pg_cron` is the first gated extension; it requires `shared_preload_libraries=pg_cron` on the backing Postgres instance before deploy.
 - `pgvector` is declared as `pgvector` in the manifest but appears as `vector` in `pg_extension`.
 - `pg_cron` follows the AWS RDS model: Eve installs it in the instance admin database (`postgres`) and grants tenant roles `USAGE` on the `cron` schema. Scheduling jobs for tenant databases remains a platform-admin operation.
@@ -234,10 +252,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "<owner>" IN SCHEMA "public" GRANT ... ON SEQU
 A tenant owns its database, so it controls that database's settings and what
 is in its `public` schema. The reconciler's own connections as the platform
 login, to a tenant database (extension installs, declared-role grants) and to
-the instance admin database, therefore send `search_path=pg_catalog` in the
-startup message: it overrides any per-database or per-role default and applies
-before the first query, and a `search_path` in `DATABASE_URL`'s query string is
-dropped for these connections. They also skip the client's startup type query
+the instance admin database, therefore send `search_path=pg_catalog`,
+`role=none` and `default_transaction_read_only=off` in the startup message: a
+startup value overrides any per-database or per-role default (so a tenant's
+`ALTER DATABASE ... SET role` or `SET default_transaction_read_only = on` does
+not apply to them) and applies before the first query, and any of the three in
+`DATABASE_URL`'s query string is dropped for these connections. They also skip the client's startup type query
 (postgres.js `fetch_types: false`), so they handle built-in scalar types only
 (arrays come back as text). Statements on them name catalog objects in full
 (`pg_catalog.pg_roles`, `pg_catalog.pg_terminate_backend`) and name the schema

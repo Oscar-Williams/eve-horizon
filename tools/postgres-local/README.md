@@ -25,3 +25,7 @@ The local k3d overlay also sets `shared_preload_libraries=pg_cron` on the
 Postgres container and enables `EVE_MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS=pg_cron`
 on the API, worker, and orchestrator. `timescaledb` remains out of the manifest
 allowlist until a Timescale-capable provider model exists.
+
+`postgis` and `pgvector` are not marked trusted by PostgreSQL, so Eve refuses
+them unless `EVE_MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS=true` is set on the API,
+worker, and orchestrator (the overlay does not set it; see `docs/system/db.md`).

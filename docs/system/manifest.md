@@ -415,7 +415,7 @@ services:
         class: db.p1
         engine: postgres
         engine_version: "16"
-        extensions: [postgis, pgvector, pg_trgm]
+        extensions: [pg_trgm, citext]
         roles:
           - name: app
             grants: readwrite
@@ -433,6 +433,9 @@ Notes:
 - `extensions` is optional and supports plain tenant-local extensions:
   `postgis`, `pgvector`, `pg_trgm`, `btree_gist`, `hstore`, and `citext`.
 - The manifest name `pgvector` maps to the PostgreSQL extension `vector`.
+- `postgis` and `pgvector` are not marked trusted by PostgreSQL and are
+  rejected unless the platform sets `EVE_MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS=true`
+  (see [Managed DB](db.md#managed-db-current) for why this is dangerous).
 - Eve installs declared extensions as the backing instance admin during
   provisioning or in-place reconcile, before app migration jobs run.
 - Removing an extension from the manifest does not drop it from an existing DB.

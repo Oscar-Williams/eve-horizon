@@ -25,10 +25,13 @@ import {
   getSupportedExtensionDefinition,
   isSupportedExtensionName,
   isManagedDbExtensionEnabled,
+  MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS_ENV,
   MANAGED_DB_ENABLED_PRELOAD_EXTENSIONS_ENV,
   normalizeManagedDbExtensions,
   quotePostgresIdentifier,
   sharedPreloadLibrariesContains,
+  untrustedManagedDbExtensionError,
+  untrustedManagedDbExtensionsAllowed,
   buildManagedDbRoleGrantSql,
   buildManagedDbRoleRevokeSql,
   diffManagedDbRoles,
@@ -692,10 +695,14 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
           );
         }
 
-        const [available] = await sql<{ name: string }[]>`
-          SELECT name
-          FROM pg_catalog.pg_available_extensions
-          WHERE name = ${definition.extname}
+        // The version CREATE EXTENSION would install, and whether the server
+        // marks it trusted (the source of truth, over the registry's flag).
+        const [available] = await sql<{ installed_version: string | null; trusted: boolean | null }[]>`
+          SELECT a.installed_version, v.trusted
+          FROM pg_catalog.pg_available_extensions a
+          LEFT JOIN pg_catalog.pg_available_extension_versions v
+            ON v.name = a.name AND v.version = a.default_version
+          WHERE a.name = ${definition.extname}
         `;
         if (!available) {
           throw new ManagedDbProvisioningError(
@@ -722,6 +729,27 @@ export class ManagedDbReconcilerService implements OnModuleInit, OnModuleDestroy
               `then re-run deploy.`,
             );
           }
+        }
+
+        // An untrusted extension's script would run as this login in the
+        // tenant's "public" (see untrustedManagedDbExtensionError). One that
+        // is already installed runs nothing: CREATE ... IF NOT EXISTS skips it.
+        if (
+          definition.installScope === 'tenant_db' &&
+          available.installed_version === null &&
+          available.trusted !== true
+        ) {
+          if (!untrustedManagedDbExtensionsAllowed()) {
+            throw new ManagedDbProvisioningError(
+              'provider_unsupported',
+              `${untrustedManagedDbExtensionError(extension)} ` +
+              `(Postgres extname "${definition.extname}" on instance ${instance.id}, tenant ${tenant.id})`,
+            );
+          }
+          this.logger.warn(
+            `[managed-db-reconciler] Installing untrusted extension "${definition.extname}" into tenant ` +
+            `${tenant.id} because ${MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS_ENV}=true`,
+          );
         }
 
         // A tenant database's extensions go into "public", by name (the
