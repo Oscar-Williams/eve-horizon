@@ -110,6 +110,7 @@ function createService(tenant: ReturnType<typeof buildTenant>) {
     acquireOperationLock: vi.fn().mockResolvedValue(tenant),
     findInstanceById: vi.fn().mockResolvedValue(instance),
     transitionStatus: vi.fn().mockResolvedValue(tenant),
+    failOperation: vi.fn().mockResolvedValue({ ...tenant, status: 'failed' }),
     markTenantExtensionsEnabled: vi.fn().mockResolvedValue(tenant),
     listTenantRoles: vi.fn().mockResolvedValue([]),
   };
@@ -153,12 +154,10 @@ describe('installing extensions on a tenant database', () => {
   it('refuses one the server does not mark trusted, naming the opt-in, and runs no install script', async () => {
     const managedDb = await reconcile(buildTenant({ desired_extensions: ['postgis'] }), { postgis: UNTRUSTED });
 
-    expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', {
-      error: {
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), {
         code: 'provider_unsupported',
         message: expect.stringContaining(`${OPT_IN}=true`),
-      },
-    });
+      });
     expect(createExtensions()).toEqual([]);
     expect(managedDb.markTenantExtensionsEnabled).not.toHaveBeenCalled();
   });
@@ -166,8 +165,7 @@ describe('installing extensions on a tenant database', () => {
   it('goes by the server\'s flag, not the registry\'s expectation', async () => {
     const managedDb = await reconcile(buildTenant({ desired_extensions: ['pg_trgm'] }), { pg_trgm: UNTRUSTED });
 
-    expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', {
-      error: expect.objectContaining({ code: 'provider_unsupported' }),
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported'),
     });
     expect(createExtensions()).toEqual([]);
   });
@@ -179,8 +177,7 @@ describe('installing extensions on a tenant database', () => {
       enabled_extensions: ['pg_trgm'],
     }), { vector: UNTRUSTED, pg_trgm: { installed_version: '1.6', trusted: true } });
 
-    expect(managedDb.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', {
-      error: expect.objectContaining({ code: 'provider_unsupported' }),
+    expect(managedDb.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.objectContaining({ code: 'provider_unsupported'),
     });
     expect(createExtensions()).toEqual([]);
   });
@@ -209,7 +206,7 @@ describe('installing extensions on a tenant database', () => {
   it('installs an untrusted extension when the platform opts in with exactly "true"', async () => {
     process.env[OPT_IN] = '1';
     const refused = await reconcile(buildTenant({ desired_extensions: ['postgis'] }), { postgis: UNTRUSTED });
-    expect(refused.transitionStatus).toHaveBeenCalledWith('mdbt_1', expect.any(String), 'failed', expect.anything());
+    expect(refused.failOperation).toHaveBeenCalledWith('mdbt_1', expect.any(String), expect.anything());
     expect(createExtensions()).toEqual([]);
 
     process.env[OPT_IN] = 'true';
