@@ -305,10 +305,12 @@ environment:
   `REASSIGN OWNED`, `DROP OWNED`, which also removes the default privileges
   that let the owner read new objects). The login is then dropped. The data
   stays. If that transaction fails (a lock held past 5 seconds, say),
-  nothing has moved and the login can sign in again; the next run tries
-  again. Changing a role between `public` grants and an owned schema, or to
+  nothing has moved, the tenant goes `failed` with `schema_hand_back_failed`
+  and the reason, and the role is kept, still unable to sign in, since it is
+  being removed; the next deploy hands the schema back and drops it.
+  Changing a role between `public` grants and an owned schema, or to
   another schema, drops it this way and creates it again with a new
-  password.
+  password (its login stays off until that hand-back succeeds).
 - So nothing the role made runs or reads with the tenant owner's rights for
   another login after the hand-back: its functions run as their caller, and
   only the owner (and Eve's platform login, as a member of it) can use the

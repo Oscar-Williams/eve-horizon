@@ -401,44 +401,39 @@ async function handedBackGrants(
  * schema (when it still owns it) and every other object it owns go to the
  * tenant owner, and the privileges it was granted there, CONNECT on the
  * database included, are revoked. The login can then be dropped. When the
- * transaction fails nothing has moved, and the login may sign in again.
+ * transaction fails nothing has moved and the error is thrown; the login,
+ * which is being removed, stays unable to sign in until a later run hands
+ * the schema back.
  */
 export async function releaseManagedDbSchema(tenantSql: Db, target: ManagedDbSchemaTarget): Promise<void> {
   const sql = buildManagedDbSchemaOwnerSql(target);
   const role = quotePostgresIdentifier(target.roleUser);
   // Committed on its own, so no session of the role starts after it.
   await tenantSql.unsafe(`ALTER ROLE ${role} NOLOGIN`);
-  try {
-    await tenantSql.begin(async (rawTx) => {
-      const tx = rawTx as unknown as Db;
-      await tx.unsafe(CATALOG_SEARCH_PATH);
-      await tx`
-        SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
-        FROM pg_catalog.pg_stat_activity
-        WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
-      `;
-    });
-    await tenantSql.begin(async (rawTx) => {
-      const tx = rawTx as unknown as Db;
-      await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
-      await tx.unsafe(CATALOG_SEARCH_PATH);
-      for (const routine of await definerRoutines(tx, target.roleUser)) {
-        await tx.unsafe(`ALTER ROUTINE ${routine} SECURITY INVOKER`);
-      }
-      for (const { keyword, identity, grantees } of await handedBackGrants(tx, target)) {
-        await tx.unsafe(`REVOKE ALL ON ${keyword} ${identity} FROM ${grantees} CASCADE`);
-      }
-      if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
-        await tx.unsafe(sql.handBack);
-      }
-      for (const statement of sql.release) {
-        await tx.unsafe(statement);
-      }
-    });
-  } catch (err) {
-    // The error that stopped the hand-back is the one to report; should this
-    // fail too, the login stays unable to sign in until the next run.
-    await tenantSql.unsafe(`ALTER ROLE ${role} LOGIN`).catch(() => undefined);
-    throw err;
-  }
+  await tenantSql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Db;
+    await tx.unsafe(CATALOG_SEARCH_PATH);
+    await tx`
+      SELECT pg_catalog.pg_terminate_backend(pid, ${SESSION_END_WAIT_MS})
+      FROM pg_catalog.pg_stat_activity
+      WHERE usename = ${target.roleUser} AND pid <> pg_catalog.pg_backend_pid()
+    `;
+  });
+  await tenantSql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Db;
+    await tx.unsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
+    await tx.unsafe(CATALOG_SEARCH_PATH);
+    for (const routine of await definerRoutines(tx, target.roleUser)) {
+      await tx.unsafe(`ALTER ROUTINE ${routine} SECURITY INVOKER`);
+    }
+    for (const { keyword, identity, grantees } of await handedBackGrants(tx, target)) {
+      await tx.unsafe(`REVOKE ALL ON ${keyword} ${identity} FROM ${grantees} CASCADE`);
+    }
+    if ((await managedDbSchemaOwner(tx, target.schema)) === target.roleUser) {
+      await tx.unsafe(sql.handBack);
+    }
+    for (const statement of sql.release) {
+      await tx.unsafe(statement);
+    }
+  });
 }
