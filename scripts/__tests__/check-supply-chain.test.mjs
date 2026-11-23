@@ -383,10 +383,13 @@ describe('publishing workflows', () => {
       const release = Object.keys(jobs).filter((name) => /^ {4}environment:\s*release\s*$/m.test(jobs[name]));
       assert.equal(release.length, 1, `${file}: one job runs in the release environment`);
       const job = jobs[release[0]];
+      // One grant of the identity token in the whole file, in the release
+      // job, and every job sets its own permissions, so nothing inherits it.
+      assert.equal([...text.matchAll(/^\s*id-token:/gm)].length, 1, `${file}: one grant of the identity token`);
+      assert.match(job, /^ {6}id-token: write(?:\s+#.*)?$/m, `${file}: and it is the release job's`);
       for (const [name, body] of Object.entries(jobs)) {
-        if (name !== release[0]) assert.doesNotMatch(body, /id-token:/, `${file}: ${name} may not request an identity token`);
+        assert.match(body, /^ {4}permissions:\s*$/m, `${file}: ${name} sets its own permissions`);
       }
-      assert.match(job, /^ {6}id-token: write(?:\s+#.*)?$/m, `${file}: the release job may request an identity token`);
       // Any code that runs where the identity token can be requested could publish.
       assert.doesNotMatch(
         job,
@@ -404,13 +407,21 @@ describe('publishing workflows', () => {
       // npm takes an identity token from 11.5.1; Node 22 ships npm 10.
       const npm = find(/^ {8}run: npm install --global npm@\d+\.\d+\.\d+$/m, 'installs an exact npm version');
       const download = find(/uses: actions\/download-artifact@/, 'downloads the packed packages');
-      const publishes = steps.flatMap((step, i) => (/^ {8}run: npm publish\b/m.test(step) ? [i] : []));
-      const published = publishes.map(
-        (i) => steps[i].match(/^ {8}run: npm publish "\$RUNNER_TEMP"\/packages\/([\w-]+)-\[0-9\]\*\.tgz --access public --ignore-scripts$/m)?.[1],
-      );
-      assert.deepEqual(published, packages, `${file}: publishes each packed tarball by name, with scripts off`);
+      assert.match(steps[download], /^ {10}name: npm-packages$/m, `${file}: the artifact the pack job uploads`);
+      assert.match(steps[download], /^ {10}path: \$\{\{ runner\.temp \}\}\/packages$/m, `${file}: into the folder it publishes from`);
+      const publishes = steps.flatMap((step, i) => (/\bnpm publish\b/.test(step) ? [i] : []));
+      const published = publishes.map((i) => {
+        const step = steps[i];
+        const tarball = step.match(/^ {10}tarball=\$\(echo "\$RUNNER_TEMP"\/packages\/([\w-]+)-\[0-9\]\*\.tgz\)$/m)?.[1];
+        assert.match(step, /^ {12}npm publish "\$tarball" --access public --ignore-scripts$/m, `${file}: publishes the tarball with scripts off`);
+        // A re-run after a partly failed release skips what is already on npm.
+        assert.match(step, /if \[ "\$\(npm view "@eve-horizon\/[\w-]+@\$version" version\)" = "\$version" \]; then/, `${file}: skips a published version`);
+        assert.doesNotMatch(step, /^ {8}if:/m, `${file}: the publish always runs`);
+        return tarball;
+      });
+      assert.deepEqual(published, packages, `${file}: publishes each packed tarball by name`);
       assert.ok(node < npm && npm < publishes[0] && download < publishes[0], `${file}: Node, then npm, then the publishes`);
-      for (const i of [node, npm, download, ...publishes]) {
+      for (const i of [node, npm, download]) {
         assert.doesNotMatch(steps[i], /^ {8}if:/m, `${file}: every step the publish needs always runs`);
       }
       const [major, minor, patch] = steps[npm].match(/npm@(\d+)\.(\d+)\.(\d+)/).slice(1).map(Number);
@@ -419,11 +430,26 @@ describe('publishing workflows', () => {
         `${file}: npm ${major}.${minor}.${patch} cannot publish with an identity token`,
       );
 
+      // The release job takes the packages from a job that packs them, which
+      // itself waits for the ancestry check (and the supply-chain gate in it).
       const packer = job.match(/^ {4}needs: ([\w-]+)\s*$/m)?.[1];
       assert.ok(packer && jobs[packer], `${file}: the release job needs the job that packs`);
-      const packs = [...jobs[packer].matchAll(/^ {8}run: pnpm pack --pack-destination "\$RUNNER_TEMP\/packages"$/gm)];
-      assert.equal(packs.length, packages.length, `${file}: ${packer} packs each package`);
-      assert.match(jobs[packer], /uses: actions\/upload-artifact@/, `${file}: ${packer} uploads what it packed`);
+      assert.match(jobs[packer], /^ {4}needs: ancestry\s*$/m, `${file}: ${packer} waits for the ancestry check`);
+      assert.doesNotMatch(jobs[packer], /^ {4}environment:/m, `${file}: ${packer} runs outside the release environment`);
+      const packSteps = stepsOf(jobs[packer]).filter((step) => /pnpm pack\b/.test(step));
+      assert.equal(packSteps.length, packages.length, `${file}: ${packer} packs each package`);
+      for (const step of packSteps) {
+        assert.match(step, /^ {8}working-directory: packages\/[\w-]+$/m, `${file}: each pack runs in its package`);
+        assert.match(step, /^ {8}run: pnpm pack --pack-destination "\$RUNNER_TEMP\/packages"$/m, `${file}: into the upload folder`);
+      }
+      const upload = stepsOf(jobs[packer]).find((step) => /uses: actions\/upload-artifact@/.test(step));
+      assert.ok(upload, `${file}: ${packer} uploads what it packed`);
+      assert.match(upload, /^ {10}name: npm-packages$/m, `${file}: as npm-packages`);
+      assert.match(upload, /^ {10}path: \$\{\{ runner\.temp \}\}\/packages\/\*\.tgz$/m, `${file}: every tarball it packed`);
+      assert.match(upload, /^ {10}if-no-files-found: error$/m, `${file}: failing when there are none`);
+      // An approval can come days after the tag.
+      const days = Number(upload.match(/^ {10}retention-days: (\d+)$/m)?.[1]);
+      assert.ok(days >= 7, `${file}: the tarballs are kept at least 7 days for a late approval`);
     }
   });
 });
