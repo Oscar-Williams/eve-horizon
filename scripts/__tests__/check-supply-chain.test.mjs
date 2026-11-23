@@ -385,10 +385,12 @@ describe('publishing workflows', () => {
       const job = jobs[release[0]];
       // One grant of the identity token in the whole file, in the release
       // job, and every job sets its own permissions, so nothing inherits it.
-      assert.equal([...text.matchAll(/^\s*id-token:/gm)].length, 1, `${file}: one grant of the identity token`);
+      assert.equal([...text.matchAll(/^\s*(["']?)id-token\1\s*:/gm)].length, 1, `${file}: one grant of the identity token`);
       assert.match(job, /^ {6}id-token: write(?:\s+#.*)?$/m, `${file}: and it is the release job's`);
       for (const [name, body] of Object.entries(jobs)) {
         assert.match(body, /^ {4}permissions:\s*$/m, `${file}: ${name} sets its own permissions`);
+        // A job condition could run the pack or the publish after a failed ancestry check.
+        assert.doesNotMatch(body, /^ {4}(?:if|continue-on-error)\s*:/m, `${file}: ${name} runs only when the jobs it needs succeed`);
       }
       // Any code that runs where the identity token can be requested could publish.
       assert.doesNotMatch(
