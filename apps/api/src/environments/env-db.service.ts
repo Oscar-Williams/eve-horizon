@@ -626,22 +626,38 @@ export class EnvDbService {
    * On the platform database server, refuse a login whose session or current
    * role has (or can take on) superuser, CREATEROLE, BYPASSRLS or REPLICATION,
    * or a cloud admin, read-all, write-all or server-file role.
+   *
+   * The database's owner and the URL may both set search_path, and the owner
+   * may create objects named like the catalog's. So the check runs on a
+   * connection of its own, pinned to pg_catalog at startup and closed before
+   * the target's session opens, and names every catalog object and operator
+   * in full. (The pinned client sends arrays as text, hence string_to_array.)
    */
-  private async assertUnprivilegedLogin(client: DbClient): Promise<void> {
-    const [row] = await client<{ privileged: boolean }[]>`
-      SELECT EXISTS (
-        SELECT 1
-        FROM pg_roles r
-        WHERE (pg_has_role(current_user, r.oid, 'MEMBER') OR pg_has_role(session_user, r.oid, 'MEMBER'))
-          AND (
-            r.rolsuper
-            OR r.rolcreaterole
-            OR r.rolbypassrls
-            OR r.rolreplication
-            OR r.rolname = ANY(${ADMIN_ROLE_NAMES})
-          )
-      ) AS privileged
-    `;
+  private async assertUnprivilegedLogin(target: ConnectionTarget): Promise<void> {
+    const client = createDbFromTarget(target, { pinned: true });
+    let row: { privileged: boolean } | undefined;
+    try {
+      [row] = await client<{ privileged: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_roles r
+          WHERE (
+              pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')
+              OR pg_catalog.pg_has_role(session_user, r.oid, 'MEMBER')
+            )
+            AND (
+              r.rolsuper
+              OR r.rolcreaterole
+              OR r.rolbypassrls
+              OR r.rolreplication
+              OR r.rolname::pg_catalog.text OPERATOR(pg_catalog.=)
+                ANY (pg_catalog.string_to_array(${ADMIN_ROLE_NAMES.join(',')}, ','))
+            )
+        ) AS privileged
+      `;
+    } finally {
+      await client.end({ timeout: 5 });
+    }
     if (row?.privileged !== false) {
       throw new ForbiddenException(
         'The environment database login has superuser or equivalent admin rights on the Eve platform ' +
@@ -908,11 +924,11 @@ export class EnvDbService {
     if (!config.target) {
       throw new Error('Environment database target was not checked');
     }
+    if (config.onPlatformServer !== false) {
+      await this.assertUnprivilegedLogin(config.target);
+    }
     const client = createDbFromTarget(config.target);
     try {
-      if (config.onPlatformServer !== false) {
-        await this.assertUnprivilegedLogin(client);
-      }
       return await client.begin(async (tx) => {
         const transaction = tx as unknown as DbClient;
         if (!allowWrite) {

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+  getManagedDbExtensionValidationError,
   getSupportedExtensionDefinition,
   normalizeManagedDbExtensions,
   parseEnabledPreloadExtensions,
@@ -53,5 +54,44 @@ describe('managed DB extension registry', () => {
   it('quotes Postgres identifiers safely', () => {
     expect(quotePostgresIdentifier('postgis')).toBe('"postgis"');
     expect(quotePostgresIdentifier('weird"name')).toBe('"weird""name"');
+  });
+});
+
+/**
+ * Eve installs a tenant's extensions as its platform login, inside the
+ * tenant's own database, into "public", which the tenant can write. An
+ * extension PostgreSQL does not mark trusted has an install script nobody
+ * vouches for in that setting, so it is refused unless the platform opts in.
+ */
+describe('extensions PostgreSQL does not mark trusted', () => {
+  const OPT_IN = 'EVE_MANAGED_DB_ALLOW_UNTRUSTED_EXTENSIONS';
+
+  afterEach(() => {
+    delete process.env[OPT_IN];
+  });
+
+  it('refuses postgis and pgvector, naming the opt-in', () => {
+    for (const extension of ['postgis', 'pgvector']) {
+      const error = getManagedDbExtensionValidationError(extension);
+      expect(error).toMatch(/not marked trusted/);
+      expect(error).toContain(`${OPT_IN}=true`);
+    }
+  });
+
+  it('accepts the trusted core extensions as before', () => {
+    for (const extension of ['pg_trgm', 'btree_gist', 'hstore', 'citext']) {
+      expect(getManagedDbExtensionValidationError(extension)).toBeNull();
+    }
+  });
+
+  it('accepts untrusted extensions only when the opt-in is exactly "true"', () => {
+    for (const value of ['1', 'yes', 'TRUE ', '']) {
+      process.env[OPT_IN] = value;
+      expect(getManagedDbExtensionValidationError('postgis')).toMatch(/not marked trusted/);
+    }
+
+    process.env[OPT_IN] = 'true';
+    expect(getManagedDbExtensionValidationError('postgis')).toBeNull();
+    expect(getManagedDbExtensionValidationError('pgvector')).toBeNull();
   });
 });
