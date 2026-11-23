@@ -92,7 +92,7 @@ Set these on `eve-horizon/eve-horizon` → Settings → Secrets and variables �
 | --- | --- | --- | --- |
 | `AWS_ACCESS_KEY_ID` | `publish-images`, `toolchain-images` | Public ECR push | ✅ set, proven by `0.1.314` |
 | `AWS_SECRET_ACCESS_KEY` | same | Public ECR push | ✅ set, proven by `0.1.314` |
-| `NPM_TOKEN` | `publish-cli`, `publish-sdk`, `publish-chat` | npm publish under `@eve-horizon` | ✅ set, proven through `cli-v0.2.73` |
+| `NPM_TOKEN` | `publish-cli`, `publish-sdk`, `publish-chat` on commits before release 0.1.328 | npm publish under `@eve-horizon` | ✅ set, proven through `cli-v0.2.73`. From release 0.1.328 the workflows use npm trusted publishing instead (see [ci-cd.md](../system/ci-cd.md)); the secret is deleted once all five packages have published that way |
 
 **Where the AWS credential came from.** IAM user
 `eve-horizon-gha-ecr-public-publisher` in account `767828750268`, policy

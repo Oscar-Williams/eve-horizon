@@ -344,4 +344,86 @@ describe('publishing workflows', () => {
       assert.doesNotMatch(`${steps[1]}\n${steps[2]}`, /\bif:/, `${file}: the gate runs on every trigger`);
     }
   });
+
+  /** A workflow's jobs, by name, each as its lines joined. */
+  function jobsOf(text) {
+    const lines = text.split(/\r?\n/);
+    const jobs = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+    const starts = lines.flatMap((line, i) => (i > jobs && /^ {2}[\w-]+:\s*$/.test(line) ? [i] : []));
+    return Object.fromEntries(
+      starts.map((start, n) => [lines[start].trim().slice(0, -1), lines.slice(start, starts[n + 1] ?? lines.length).join('\n')]),
+    );
+  }
+
+  /** A job's steps, each as its lines joined. */
+  function stepsOf(job) {
+    const steps = [];
+    for (const line of job.split('\n')) {
+      if (/^ {6}- /.test(line)) steps.push(line);
+      else if (steps.length > 0 && /^ {8}/.test(line)) steps[steps.length - 1] += `\n${line}`;
+    }
+    return steps;
+  }
+
+  /** The tarballs each npm workflow publishes, in order (pnpm names a scoped package's tarball scope-name-version). */
+  const NPM_PACKAGES = {
+    'publish-chat.yml': ['eve-horizon-chat', 'eve-horizon-chat-react'],
+    'publish-cli.yml': ['eve-horizon-cli'],
+    'publish-sdk.yml': ['eve-horizon-auth', 'eve-horizon-auth-react'],
+  };
+
+  it('publish to npm by trusted publishing, from a job that only publishes what an earlier job packed', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const [file, packages] of Object.entries(NPM_PACKAGES)) {
+      const text = readFileSync(join(workflowsDir, file), 'utf8');
+      assert.doesNotMatch(text, /NPM_TOKEN|NODE_AUTH_TOKEN/, `${file}: no npm token; npm trusts the workflow instead`);
+      assert.doesNotMatch(text, /^\s*cache:|actions\/cache@|registry-url:/m, `${file}: no cache, and no .npmrc token placeholder`);
+
+      const jobs = jobsOf(text);
+      const release = Object.keys(jobs).filter((name) => /^ {4}environment:\s*release\s*$/m.test(jobs[name]));
+      assert.equal(release.length, 1, `${file}: one job runs in the release environment`);
+      const job = jobs[release[0]];
+      for (const [name, body] of Object.entries(jobs)) {
+        if (name !== release[0]) assert.doesNotMatch(body, /id-token:/, `${file}: ${name} may not request an identity token`);
+      }
+      assert.match(job, /^ {6}id-token: write(?:\s+#.*)?$/m, `${file}: the release job may request an identity token`);
+      // Any code that runs where the identity token can be requested could publish.
+      assert.doesNotMatch(
+        job,
+        /actions\/checkout@|\bpnpm\b|\bnpm (?:ci|run|exec|version)\b|\bnpx\b|npm install (?!--global npm@)/,
+        `${file}: the release job runs none of the repository's code or dependencies`,
+      );
+
+      const steps = stepsOf(job);
+      const find = (pattern, what) => {
+        const i = steps.findIndex((step) => pattern.test(step));
+        assert.notEqual(i, -1, `${file}: the release job ${what}`);
+        return i;
+      };
+      const node = find(/uses: actions\/setup-node@/, 'sets up Node');
+      // npm takes an identity token from 11.5.1; Node 22 ships npm 10.
+      const npm = find(/^ {8}run: npm install --global npm@\d+\.\d+\.\d+$/m, 'installs an exact npm version');
+      const download = find(/uses: actions\/download-artifact@/, 'downloads the packed packages');
+      const publishes = steps.flatMap((step, i) => (/^ {8}run: npm publish\b/m.test(step) ? [i] : []));
+      const published = publishes.map(
+        (i) => steps[i].match(/^ {8}run: npm publish "\$RUNNER_TEMP"\/packages\/([\w-]+)-\[0-9\]\*\.tgz --access public --ignore-scripts$/m)?.[1],
+      );
+      assert.deepEqual(published, packages, `${file}: publishes each packed tarball by name, with scripts off`);
+      assert.ok(node < npm && npm < publishes[0] && download < publishes[0], `${file}: Node, then npm, then the publishes`);
+      for (const i of [node, npm, download, ...publishes]) {
+        assert.doesNotMatch(steps[i], /^ {8}if:/m, `${file}: every step the publish needs always runs`);
+      }
+      const [major, minor, patch] = steps[npm].match(/npm@(\d+)\.(\d+)\.(\d+)/).slice(1).map(Number);
+      assert.ok(
+        major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1))),
+        `${file}: npm ${major}.${minor}.${patch} cannot publish with an identity token`,
+      );
+
+      const packer = job.match(/^ {4}needs: ([\w-]+)\s*$/m)?.[1];
+      assert.ok(packer && jobs[packer], `${file}: the release job needs the job that packs`);
+      const packs = [...jobs[packer].matchAll(/^ {8}run: pnpm pack --pack-destination "\$RUNNER_TEMP\/packages"$/gm)];
+      assert.equal(packs.length, packages.length, `${file}: ${packer} packs each package`);
+      assert.match(jobs[packer], /uses: actions\/upload-artifact@/, `${file}: ${packer} uploads what it packed`);
+    }
+  });
 });
