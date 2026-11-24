@@ -23,6 +23,8 @@ export interface RegistryConfig {
 }
 
 export interface BuildServiceParams {
+  projectId: string;
+  signal?: AbortSignal;
   serviceName: string;
   service: Service;
   registryConfig: RegistryConfig;
@@ -37,6 +39,7 @@ export interface BuildServiceParams {
 }
 
 export interface BuildAllParams {
+  signal?: AbortSignal;
   manifest: Manifest;
   manifestYaml: string;
   gitSha: string;
@@ -54,6 +57,7 @@ export interface BuildResult {
 }
 
 export interface BuildBackend {
+  readonly kind: 'buildx' | 'kaniko' | 'buildkit' | 'sandbox';
   /** Build and push all buildable services, return their digests */
   buildAll(params: BuildAllParams): Promise<BuildResult>;
 

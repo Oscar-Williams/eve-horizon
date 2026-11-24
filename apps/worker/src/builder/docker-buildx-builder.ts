@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 
 @Injectable()
 export class DockerBuildxBuilder implements BuildBackend {
+  readonly kind = 'buildx' as const;
   private readonly logger = new Logger(DockerBuildxBuilder.name);
 
   /**

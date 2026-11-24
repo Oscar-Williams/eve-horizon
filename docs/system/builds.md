@@ -66,9 +66,67 @@ eve build cancel <build_id>
 
 ## Build Backends
 
-- **Local:** Docker Buildx (default)
-- **Kubernetes:** BuildKit (default)
-- **Fallback:** Kaniko (only if BuildKit unavailable)
+`EVE_BUILD_BACKEND` selects `buildx` (alias `docker`), `buildkit`,
+`kaniko`, or `sandbox`. An unset value defaults to Buildx locally and
+BuildKit in Kubernetes. Unknown values are rejected. There is no automatic
+fallback from BuildKit to Kaniko.
+
+### Disposable rootless BuildKit (unreleased)
+
+`sandbox` creates a new `SandboxClaim` for each service image build, runs
+`buildctl` on the worker against that claim's verified pod IP, then deletes
+the claim with foreground cleanup. The worker clones the repository and
+sends a temporary context snapshot through the BuildKit session. The snapshot
+excludes `.git` directories, and its context and Dockerfile must resolve
+inside the checkout and context respectively. Registry auth stays
+in a mode-0600 temporary Docker config on the worker and is removed after
+success, failure or cancellation; no git or registry Secret is mounted in
+the builder pod.
+
+The instance rule `builds.isolated` requires this backend under `strict`.
+Other backends are refused before resolving registry auth. Under `audit`,
+the same choice records a finding and remains usable. Selecting `sandbox`
+also stops reuse of build results produced by another backend.
+
+Deployment owners provision the `eve-builds` namespace, `eve-builder`
+SandboxTemplate and a matching SandboxWarmPool with **replicas: 0**, using
+agent-sandbox's `extensions.agents.x-k8s.io/v1beta1` API. The worker refuses
+a nonzero pool. Install this release and the matching infrastructure before
+selecting `sandbox`; releases through 0.1.332 do not provide it.
+
+| Worker variable | Default | Purpose |
+|---|---|---|
+| `EVE_BUILD_SANDBOX_NAMESPACE` | `eve-builds` | Isolated builder namespace |
+| `EVE_BUILD_SANDBOX_TEMPLATE` | `eve-builder` | Matching pool and template name |
+| `EVE_BUILD_RUNTIME_CLASS` | `gvisor` | Required runtime of the claimed pod |
+| `EVE_BUILD_SANDBOX_IMAGE` | Pinned rootless BuildKit v0.34.1 digest | Must match the template and admission policy |
+| `EVE_BUILD_READY_TIMEOUT` | `5m` | Bound cold startup, including node scale-up |
+| `EVE_BUILD_TIMEOUT` | `30m` | Bound claim creation, startup and build session together |
+
+Timeouts accept a positive integer followed by `ms`, `s` or `m`, at most
+24 hours. The claim also has a deletion deadline for worker crashes.
+Job cancellation and `eve build cancel` are polled during builds; cleanup
+uses its own bounded signal. A cleanup failure fails the build even if the
+image was pushed, and the claim name is logged for the operator.
+
+The template must use user/group 1000, `runAsNonRoot`, a digest-pinned
+rootless image, `--oci-worker-no-process-sandbox`, an appropriate runtime
+class, tokenless service account and emptyDir state. Rootless BuildKit
+requires Unconfined seccomp/AppArmor: namespace admission must confine that
+exception to the builder image/runtime and refuse privileged containers,
+host namespaces, host paths, added capabilities and injected credentials.
+Network policy admits the worker on TCP 1234 only, and allows DNS, public
+image/package sources and the instance registry while excluding metadata,
+the Kubernetes API and private networks. The worker needs create/get/delete
+on claims, get on the named pool, and get/list on pods; no exec, Secret or
+template-write rights.
+
+`EVE_BUILDKIT_ADDR` and `BUILDKIT_HOST` apply only to the shared `buildkit`
+backend; sandbox never falls back to either. `EVE_BUILDKIT_CACHE_REPO`
+enables the registry cache. An Eve registry cache remains under the
+project's prefix; external-registry sandbox builds use a project-specific
+`eve-cache-<project-id>` tag on the authorized image repository. Local
+BuildKit state is discarded with each pod.
 
 ## Release Integration
 

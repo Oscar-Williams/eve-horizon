@@ -36,12 +36,13 @@ describe('ImageBuilderService', () => {
 
     // Create mock BuildBackend
     mockBuilder = {
+      kind: 'sandbox',
       buildService: vi.fn().mockResolvedValue('sha256:abc123'),
       buildAll: vi.fn(),
     };
 
     // Create service with mocks
-    service = new ImageBuilderService(mockRegistryAuth, mockBuilder);
+    service = new ImageBuilderService(mockRegistryAuth, mockBuilder, {} as any);
   });
 
   describe('buildAll', () => {
@@ -467,6 +468,8 @@ services:
       await service.buildAll(params);
 
       expect(mockBuilder.buildService).toHaveBeenCalledWith({
+        projectId: 'proj_123',
+        signal: undefined,
         serviceName: 'api',
         service: expect.objectContaining({
           image: 'myorg/api',

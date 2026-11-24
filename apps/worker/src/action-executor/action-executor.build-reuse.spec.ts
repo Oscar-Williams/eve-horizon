@@ -7,11 +7,11 @@ import { ActionExecutorService } from './action-executor.service.js';
  * per project. Such a build is rebuilt instead.
  */
 describe('ActionExecutorService.findReusableBuild', () => {
-  function serviceWithArtifacts(imageRef: string) {
-    const service = new ActionExecutorService(null as any, {} as any, {} as any);
+  function serviceWithArtifacts(imageRef: string, selected = 'buildkit', previous = 'buildkit') {
+    const service = new ActionExecutorService(null as any, {} as any, { backendName: selected } as any);
     (service as any).builds = {
       listSpecs: vi.fn().mockResolvedValue([{ id: 'bld_1', git_sha: 'abc', manifest_hash: 'mh' }]),
-      findLatestRunByBuildId: vi.fn().mockResolvedValue({ status: 'succeeded' }),
+      findLatestRunByBuildId: vi.fn().mockResolvedValue({ status: 'succeeded', backend: previous }),
       listArtifacts: vi.fn().mockResolvedValue([
         { service_name: 'api', image_ref: imageRef, digest: 'sha256:1' },
       ]),
@@ -26,6 +26,16 @@ describe('ActionExecutorService.findReusableBuild', () => {
     await expect(
       (service as any).findReusableBuild('proj_1', 'abc', 'mh', ['api'], expected),
     ).resolves.toEqual({ build_id: 'bld_1', image_digests: { api: 'sha256:1' } });
+  });
+
+  it('rebuilds shared results after selecting sandbox', async () => {
+    const service = serviceWithArtifacts(expected.api, 'sandbox', 'buildkit');
+    await expect((service as any).findReusableBuild('proj_1', 'abc', 'mh', ['api'], expected)).resolves.toBeNull();
+  });
+
+  it('reuses results from a successful sandbox build', async () => {
+    const service = serviceWithArtifacts(expected.api, 'sandbox', 'sandbox');
+    await expect((service as any).findReusableBuild('proj_1', 'abc', 'mh', ['api'], expected)).resolves.toMatchObject({ build_id: 'bld_1' });
   });
 
   it('rebuilds when the earlier image is outside the project prefix', async () => {

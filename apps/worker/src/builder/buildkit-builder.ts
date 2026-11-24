@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { eveRegistryImageRef } from '@eve/shared';
+import { bindProcessCancellation, eveRegistryImageRef } from '@eve/shared';
 import {
   BuildAllParams,
   BuildResult,
@@ -50,6 +50,14 @@ export function resolveBuildkitCacheRepo(
     return eveRegistryImageRef(cacheRepo, registryHost, eveProjectId);
   }
   return cacheRepo || undefined;
+}
+
+export function resolveIsolatedCacheRepo(configured: string | undefined, params: BuildServiceParams): string | undefined {
+  if (!configured) return undefined;
+  if (params.registryConfig.eveProjectId && configured.startsWith(`${params.registryAuth.host}/`)) {
+    return resolveBuildkitCacheRepo(configured, params.registryAuth.host, params.projectId);
+  }
+  return `${params.imageRef}:eve-cache-${params.projectId}`;
 }
 
 function parseHostFromRegistryRef(ref: string): string | null {
@@ -113,6 +121,7 @@ function extractFailedStage(outputLines: string[]): string | null {
 
 @Injectable()
 export class BuildKitBuilder implements BuildBackend {
+  readonly kind = 'buildkit' as const;
   private readonly logger = new Logger(BuildKitBuilder.name);
 
   async buildAll(_params: BuildAllParams): Promise<BuildResult> {
@@ -120,7 +129,12 @@ export class BuildKitBuilder implements BuildBackend {
   }
 
   async buildService(params: BuildServiceParams): Promise<string> {
-    const addr = this.resolveBuildkitAddr();
+    return this.buildServiceAt(params, this.resolveBuildkitAddr());
+  }
+
+  /** The sandbox backend supplies its verified, build-specific endpoint. */
+  async buildServiceAt(params: BuildServiceParams, addr: string, isolated = false): Promise<string> {
+    params.signal?.throwIfAborted();
     this.logger.log(
       `Building service ${params.serviceName} with tag ${params.tag} (buildkit ${addr})`,
     );
@@ -137,11 +151,11 @@ export class BuildKitBuilder implements BuildBackend {
         params.registryAuth.dockerConfigJson,
         'base64',
       ).toString('utf-8');
-      await fs.writeFile(dockerConfigPath, dockerConfigJson, 'utf-8');
+      await fs.writeFile(dockerConfigPath, dockerConfigJson, { encoding: 'utf-8', mode: 0o600 });
 
       const buildContext = params.service.build?.context ?? '.';
       const dockerfile = params.service.build?.dockerfile ?? 'Dockerfile';
-      const contextPath = path.resolve(params.workspacePath, buildContext);
+      let contextPath = path.resolve(params.workspacePath, buildContext);
       const normalizedContext = path
         .normalize(buildContext)
         .replace(/^\.[\\/]?/, '');
@@ -157,6 +171,30 @@ export class BuildKitBuilder implements BuildBackend {
         relativeDockerfile = normalizedDockerfile.slice(
           normalizedContext.length + 1,
         );
+      }
+
+      if (isolated) {
+        const workspaceRoot = await fs.realpath(params.workspacePath);
+        const contextRoot = await fs.realpath(contextPath);
+        const inside = (root: string, candidate: string): boolean => {
+          const relative = path.relative(root, candidate);
+          return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+        };
+        if (!inside(workspaceRoot, contextRoot)) throw new Error('Build context is outside the checkout');
+        const dockerfilePath = await fs.realpath(path.resolve(contextRoot, relativeDockerfile));
+        if (!inside(contextRoot, dockerfilePath)) throw new Error('Dockerfile is outside the build context');
+        // Never send clone metadata (including authenticated remotes/reflogs).
+        // A snapshot also keeps a Dockerfile-specific ignore file from opting it in.
+        const snapshot = path.join(tempDir, 'context');
+        await fs.cp(contextRoot, snapshot, {
+          recursive: true, dereference: false,
+          filter: (source) => {
+            params.signal?.throwIfAborted();
+            return path.basename(source) !== '.git';
+          },
+        });
+        params.signal?.throwIfAborted();
+        contextPath = snapshot;
       }
 
       const fullImageTag = `${params.imageRef}:${params.tag}`;
@@ -192,7 +230,7 @@ export class BuildKitBuilder implements BuildBackend {
       }
 
       const cacheRepo = resolveBuildkitCacheRepo(
-        process.env.EVE_BUILDKIT_CACHE_REPO,
+        isolated ? resolveIsolatedCacheRepo(process.env.EVE_BUILDKIT_CACHE_REPO, params) : process.env.EVE_BUILDKIT_CACHE_REPO,
         params.registryAuth.host,
         params.registryConfig.eveProjectId,
       );
@@ -239,6 +277,7 @@ export class BuildKitBuilder implements BuildBackend {
       const outputLines: string[] = [];
       const { exitCode } = await this.spawnBuildctl(args, {
         cwd: params.workspacePath,
+        signal: params.signal,
         env: {
           DOCKER_CONFIG: tempDir,
         },
@@ -258,6 +297,7 @@ export class BuildKitBuilder implements BuildBackend {
         );
       }
 
+      params.signal?.throwIfAborted();
       const digest = await this.extractDigest(metadataPath, outputLines);
       this.logger.log(`Service ${params.serviceName} pushed with digest: ${digest}`);
       params.onLog?.(`Digest: ${digest}`);
@@ -267,7 +307,7 @@ export class BuildKitBuilder implements BuildBackend {
         try {
           await fs.rm(tempDir, { recursive: true, force: true });
         } catch (err) {
-          this.logger.warn(`Failed to clean up temp directory ${tempDir}: ${err}`);
+          throw new Error(`buildkit_auth_cleanup_failed: ${tempDir}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -284,6 +324,7 @@ export class BuildKitBuilder implements BuildBackend {
   private async spawnBuildctl(
     args: string[],
     opts: {
+      signal?: AbortSignal;
       cwd?: string;
       env?: Record<string, string>;
       onLine?: (line: string) => void;
@@ -292,11 +333,14 @@ export class BuildKitBuilder implements BuildBackend {
     // Allowlisted env plus the per-build DOCKER_CONFIG; no service credentials.
     const env = serviceHelperEnv(opts.env);
 
+    opts.signal?.throwIfAborted();
     const proc = spawn('buildctl', args, {
       cwd: opts.cwd,
       env,
+      detached: process.platform !== 'win32',
     });
 
+    const releaseCancellation = bindProcessCancellation(proc, opts.signal);
     const onLine = opts.onLine;
     const stdoutBuffer = this.createLineBuffer(onLine);
     const stderrBuffer = this.createLineBuffer(onLine);
@@ -304,15 +348,18 @@ export class BuildKitBuilder implements BuildBackend {
     proc.stdout?.on('data', (chunk) => stdoutBuffer.push(chunk.toString()));
     proc.stderr?.on('data', (chunk) => stderrBuffer.push(chunk.toString()));
 
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      proc.on('error', reject);
-      proc.on('close', (code) => resolve(code ?? 1));
-    });
-
-    stdoutBuffer.flush();
-    stderrBuffer.flush();
-
-    return { exitCode };
+    try {
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        proc.on('error', reject);
+        proc.on('close', (code) => resolve(code ?? 1));
+      });
+      opts.signal?.throwIfAborted();
+      return { exitCode };
+    } finally {
+      await releaseCancellation();
+      stdoutBuffer.flush();
+      stderrBuffer.flush();
+    }
   }
 
   private createLineBuffer(onLine?: (line: string) => void) {

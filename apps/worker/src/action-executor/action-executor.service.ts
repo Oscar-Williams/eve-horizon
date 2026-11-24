@@ -56,7 +56,7 @@ import {
   toK8sName,
   readPositiveTimeoutSeconds,
 } from '@eve/shared';
-import { serviceGitEnv } from '@eve/shared';
+import { serviceGitEnv, watchJobCancellation } from '@eve/shared';
 import * as yaml from 'yaml';
 import { tokenScopeForJob } from '../execution/job-token-scope.js';
 import { DeployerService } from '../deployer/deployer.service';
@@ -318,7 +318,7 @@ export class ActionExecutorService {
     try {
       switch (resolvedActionType) {
         case 'build':
-          actionOutput = await this.handleBuild(attemptId, job.project_id, mergedInput);
+          actionOutput = await this.handleBuild(attemptId, job.project_id, mergedInput, jobId);
           break;
         case 'release':
           actionOutput = await this.handleRelease(attemptId, job.project_id, mergedInput);
@@ -423,6 +423,7 @@ export class ActionExecutorService {
     attemptId: string,
     projectId: string,
     input: ActionInput,
+    jobId: string,
   ): Promise<Record<string, unknown>> {
     const project = await this.projects.findById(projectId);
     if (!project?.repo_url) {
@@ -514,8 +515,7 @@ export class ActionExecutorService {
       created_by: null,
     });
 
-    const inK8s = process.env.EVE_RUNTIME === 'k8s' || Boolean(process.env.KUBERNETES_SERVICE_HOST);
-    const backend = (process.env.EVE_BUILD_BACKEND ?? (inK8s ? 'buildkit' : 'buildx')).toLowerCase();
+    const backend = this.imageBuilder.backendName;
 
     const buildRun = await this.builds.createRun({
       id: generateBuildRunId(),
@@ -585,8 +585,13 @@ export class ActionExecutorService {
 
     let workspace: string | null = null;
     const imageDigests: Record<string, string> = {};
+    const cancellation = await watchJobCancellation(async () => {
+      const [job, run] = await Promise.all([this.jobs.findById(jobId), this.builds.findRunById(buildRun.id)]);
+      return job?.phase === 'cancelled' || run?.status === 'cancelled' ? 'cancelled' : job?.phase;
+    });
 
     try {
+      cancellation.signal.throwIfAborted();
       workspace = await this.prepareWorkspace(project.repo_url, input.git_sha, projectId, (msg) => {
         void this.appendLog(attemptId, 'status', {
           message: msg, phase: 'workspace', timestamp: new Date().toISOString(),
@@ -596,7 +601,9 @@ export class ActionExecutorService {
       // Auto-sync manifest from cloned repo so workflow triggers stay current
       await this.autoSyncManifestFromWorkspace(workspace, projectId, input.git_sha, input.manifest_hash, attemptId);
 
+      cancellation.signal.throwIfAborted();
       const result = await this.imageBuilder.buildAll({
+        signal: cancellation.signal,
         manifest: {} as any, // Not used by buildAll (it re-parses from YAML)
         manifestYaml: manifest.manifest_yaml,
         gitSha: input.git_sha,
@@ -613,6 +620,8 @@ export class ActionExecutorService {
       }
       await flushLogs();
 
+      await cancellation.check();
+      cancellation.signal.throwIfAborted();
       Object.assign(imageDigests, result.imageDigests);
 
       await this.appendLog(attemptId, 'output', {
@@ -655,7 +664,7 @@ export class ActionExecutorService {
       const message = error instanceof Error ? error.message : String(error);
       const errorCode = classifyBuildError(message);
       await this.builds.updateRun(buildRun.id, {
-        status: 'failed',
+        status: cancellation.signal.aborted ? 'cancelled' : 'failed',
         error_message: message,
         error_code: errorCode,
         completed_at: new Date(),
@@ -677,6 +686,7 @@ export class ActionExecutorService {
       });
       throw error;
     } finally {
+      cancellation.stop();
       if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -703,7 +713,8 @@ export class ActionExecutorService {
       }
 
       const latestRun = await this.builds.findLatestRunByBuildId(spec.id);
-      if (!latestRun || latestRun.status !== 'succeeded') {
+      if (!latestRun || latestRun.status !== 'succeeded' ||
+          (this.imageBuilder.backendName === 'sandbox' && latestRun.backend !== 'sandbox')) {
         continue;
       }
 
