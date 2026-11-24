@@ -18,6 +18,7 @@ import {
   BUILD_BACKEND,
   BuildBackend,
 } from './image-builder.interface.js';
+import { decideSecurityRule, type Db } from '@eve/db';
 import { RegistryAuthService } from './registry-auth.service.js';
 import { serviceGitEnv } from '@eve/shared';
 
@@ -30,13 +31,17 @@ export class ImageBuilderService {
   constructor(
     private readonly registryAuth: RegistryAuthService,
     @Inject(BUILD_BACKEND) private readonly builder: BuildBackend,
+    @Inject('DB') private readonly db: Db,
   ) {}
+
+  get backendName(): BuildBackend['kind'] { return this.builder.kind; }
 
   /**
    * Build and push all buildable services from the manifest.
    * Returns a map of service name to pushed image digest.
    */
   async buildAll(params: BuildAllParams): Promise<BuildResult> {
+    params.signal?.throwIfAborted();
     const log = params.onLog;
     // 1. Parse manifest and get buildable services
     const manifest = yaml.parse(params.manifestYaml) as Manifest;
@@ -91,6 +96,17 @@ export class ImageBuilderService {
       return { imageDigests: {} };
     }
 
+    // Check the instance rule before handing credentials to a build backend.
+    if (this.builder.kind !== 'sandbox') {
+      const profile = await decideSecurityRule(this.db, 'builds.isolated', {
+        governing: 'instance', projectId: params.projectId,
+        actorType: 'worker', actorId: params.projectId,
+        detail: { backend: this.builder.kind },
+      });
+      if (profile === 'strict') throw new Error('builds.isolated: EVE_BUILD_BACKEND=sandbox is required');
+    }
+    params.signal?.throwIfAborted();
+
     // 3. Resolve registry auth
     const { auth: registryAuthData, config: registryConfigData } =
       await this.registryAuth.resolve(params.projectId, params.manifestYaml);
@@ -110,6 +126,7 @@ export class ImageBuilderService {
     const imageDigests: Record<string, string> = {};
 
     for (const [serviceName, service] of servicesToBuild) {
+      params.signal?.throwIfAborted();
       this.logger.log(`Building service: ${serviceName}`);
       log?.(`Starting build for ${serviceName}`);
 
@@ -126,6 +143,8 @@ export class ImageBuilderService {
       );
 
       const buildParams: BuildServiceParams = {
+        projectId: params.projectId,
+        signal: params.signal,
         serviceName,
         service,
         registryConfig: registryConfigData,
@@ -162,6 +181,7 @@ export class ImageBuilderService {
     );
     log?.(`Successfully built ${Object.keys(imageDigests).length} service(s)`);
 
+    params.signal?.throwIfAborted();
     // 7. Collect and return digests
     return { imageDigests };
   }

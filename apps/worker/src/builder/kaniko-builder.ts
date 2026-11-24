@@ -22,6 +22,7 @@ const BUILD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 @Injectable()
 export class KanikoBuilder implements BuildBackend {
+  readonly kind = 'kaniko' as const;
   private readonly logger = new Logger(KanikoBuilder.name);
 
   constructor(private readonly k8sService: K8sService) {}
