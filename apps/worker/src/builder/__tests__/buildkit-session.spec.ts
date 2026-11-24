@@ -8,6 +8,18 @@ let dir: string;
 let params: BuildServiceParams;
 const digest = `sha256:${'a'.repeat(64)}`;
 
+// Resolve the test executable explicitly: Linux deliberately removes writable
+// directories from serviceHelperEnv's PATH. Keep the real subprocess and env.
+const fixture = vi.hoisted(() => ({ buildctl: '' }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (command: string, args: readonly string[], options: import('node:child_process').SpawnOptionsWithoutStdio) =>
+      actual.spawn(command === 'buildctl' ? fixture.buildctl : command, args, options),
+  };
+});
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'buildkit-session-test-'));
   params = { projectId: 'proj_shop', serviceName: 'web', service: { build: { context: '.' } },
@@ -15,9 +27,9 @@ beforeEach(async () => {
     registryConfig: { host: 'registry.example.com' }, gitSha: 'abc', workspacePath: dir,
     imageRef: 'registry.example.com/shop/web', tag: 'test' };
   await writeFile(join(dir, 'Dockerfile'), 'FROM scratch\n');
-  vi.stubEnv('PATH', `${dir}:${process.env.PATH}`);
+  fixture.buildctl = join(dir, 'buildctl');
   vi.stubEnv('EVE_INTERNAL_API_KEY', 'must-not-reach-client');
-  await writeFile(join(dir, 'buildctl'), `#!/usr/bin/env node
+  await writeFile(fixture.buildctl, `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const context = args.find(a => a.startsWith('context=')).slice(8);
