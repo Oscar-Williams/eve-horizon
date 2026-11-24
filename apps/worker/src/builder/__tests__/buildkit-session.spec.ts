@@ -23,6 +23,7 @@ const args = process.argv.slice(2);
 const context = args.find(a => a.startsWith('context=')).slice(8);
 fs.writeFileSync('session.json', JSON.stringify({ args, configDir: process.env.DOCKER_CONFIG,
   gitMetadataPresent: fs.existsSync(context + '/.git'),
+  dockerfileLink: fs.existsSync(context + '/Dockerfile.alias') ? fs.readlinkSync(context + '/Dockerfile.alias') : null,
   context,
   mode: fs.statSync(process.env.DOCKER_CONFIG + '/config.json').mode & 511,
   config: JSON.parse(fs.readFileSync(process.env.DOCKER_CONFIG + '/config.json')),
@@ -59,6 +60,14 @@ describe('BuildKit client session', () => {
     expect(session.gitMetadataPresent).toBe(false);
     expect(session.context).not.toBe(dir);
     await expect(stat(session.context)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves a relative Dockerfile symlink when moving the context snapshot', async () => {
+    await symlink('Dockerfile', join(dir, 'Dockerfile.alias'));
+    params.service.build = { context: '.', dockerfile: 'Dockerfile.alias' };
+    await new BuildKitBuilder().buildServiceAt(params, 'tcp://10.10.0.2:1234', true);
+    const session = await assertSessionCleaned();
+    expect(session.dockerfileLink).toBe('Dockerfile');
   });
 
   it('refuses a build context outside the checkout', async () => {

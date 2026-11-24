@@ -77,7 +77,8 @@ fallback from BuildKit to Kaniko.
 `buildctl` on the worker against that claim's verified pod IP, then deletes
 the claim with foreground cleanup. The worker clones the repository and
 sends a temporary context snapshot through the BuildKit session. The snapshot
-excludes `.git` directories, and its context and Dockerfile must resolve
+excludes `.git` directories and preserves relative symlinks. Its context
+and Dockerfile must resolve
 inside the checkout and context respectively. Registry auth stays
 in a mode-0600 temporary Docker config on the worker and is removed after
 success, failure or cancellation; no git or registry Secret is mounted in

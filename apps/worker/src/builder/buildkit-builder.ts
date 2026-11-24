@@ -187,7 +187,7 @@ export class BuildKitBuilder implements BuildBackend {
         // A snapshot also keeps a Dockerfile-specific ignore file from opting it in.
         const snapshot = path.join(tempDir, 'context');
         await fs.cp(contextRoot, snapshot, {
-          recursive: true, dereference: false,
+          recursive: true, dereference: false, verbatimSymlinks: true,
           filter: (source) => {
             params.signal?.throwIfAborted();
             return path.basename(source) !== '.git';
