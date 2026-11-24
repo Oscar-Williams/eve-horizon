@@ -281,6 +281,15 @@ RUN for d in .node_modules .node_libraries .kube; do \
       && chmod 0444 "/home/node/$d/.eve-root-owned"; \
     done
 
+# kubectl's in-cluster kubeconfig (see the file): with the worker's
+# --request-timeout, kubectl does not use in-cluster credentials by itself.
+# Root-owned and read-only, because job code
+# runs as the worker's user and must not be able to repoint it.
+COPY docker/worker/in-cluster.kubeconfig /etc/eve/kube/in-cluster.kubeconfig
+RUN chown -R root:root /etc/eve/kube \
+    && chmod 0755 /etc/eve/kube \
+    && chmod 0444 /etc/eve/kube/in-cluster.kubeconfig
+
 # Configure git identity for automated commits (eve-worker skills install)
 RUN git config --system user.email "eve-worker@eve-horizon.local" \
     && git config --system user.name "Eve Worker"

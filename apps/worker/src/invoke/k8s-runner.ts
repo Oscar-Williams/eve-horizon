@@ -8,6 +8,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
+import { existsSync } from 'node:fs';
 import {
   buildRunnerPod,
   serviceHelperEnv,
@@ -23,11 +24,53 @@ export type RunnerResourceOverrides = RunnerResources;
 
 type ExecResult = { stdout: string; stderr: string; exitCode: number };
 
+/**
+ * The worker image's kubeconfig for use inside a cluster
+ * (docker/worker/in-cluster.kubeconfig): root-owned and read-only, naming only
+ * the mounted service-account token and CA. Without a kubeconfig file, kubectl
+ * uses in-cluster credentials only when its merged config equals the built-in
+ * default; any override such as `--request-timeout` makes it differ, so
+ * kubectl dialled localhost:8080 and every runner pod, template and builder
+ * call failed. A pinned kubeconfig does not depend on that rule, and kubectl
+ * never reads ~/.kube/config.
+ */
+export const IN_CLUSTER_KUBECONFIG = '/etc/eve/kube/in-cluster.kubeconfig';
+
+const SERVICE_HOST = /^[A-Za-z0-9.:-]+$/;
+const SERVICE_PORT = /^[0-9]{1,5}$/;
+
+/**
+ * kubectl's arguments and environment. An explicit KUBECONFIG (local
+ * development, tests) wins. Inside a cluster with the image's kubeconfig
+ * present, kubectl gets that file and the API server from
+ * KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT, as in-cluster clients
+ * use them. Neither carries a credential: the token is read from its file.
+ */
+export function kubectlInvocation(
+  args: string[],
+  source: NodeJS.ProcessEnv = process.env,
+  fileExists: (path: string) => boolean = existsSync,
+): { args: string[]; env: NodeJS.ProcessEnv } {
+  // kubectl needs no service credential; the manifest on stdin carries none either.
+  // KUBERC=off: no ~/.kube/kuberc can add default flags to kubectl's commands.
+  const env = serviceHelperEnv({ KUBERC: 'off' }, source);
+  const flags = ['--request-timeout=10s'];
+  if (!source.KUBECONFIG && fileExists(IN_CLUSTER_KUBECONFIG)) {
+    const host = source.KUBERNETES_SERVICE_HOST?.trim() ?? '';
+    const port = source.KUBERNETES_SERVICE_PORT?.trim() ?? '';
+    if (SERVICE_HOST.test(host) && SERVICE_PORT.test(port)) {
+      env.KUBECONFIG = IN_CLUSTER_KUBECONFIG;
+      flags.push(`--server=https://${host.includes(':') ? `[${host}]` : host}:${port}`);
+    }
+  }
+  return { args: [...flags, ...args], env };
+}
+
 export function execKubectl(args: string[], input?: string, signal?: AbortSignal): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('kubectl', ['--request-timeout=10s', ...args], {
-      // kubectl needs no service credential; the manifest on stdin carries none either.
-      env: serviceHelperEnv(),
+    const invocation = kubectlInvocation(args);
+    const child = spawn('kubectl', invocation.args, {
+      env: invocation.env,
       signal,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
