@@ -55,11 +55,13 @@ services = YAML.load_file(files['service']).dig('jobs', 'build', 'strategy', 'ma
 gate = YAML.load_file(files['service']).dig('jobs', 'native-gate', 'steps').to_s
 abort "#{files['service']}: native gate does not load the migrate artifact" unless gate.include?('service-migrate')
 abort 'gate.sh does not check the migrate image' unless File.read('scripts/release/gate.sh').include?('release_check_migrate_image')
+abort 'gate.sh does not check the runner preload' unless File.read('scripts/release/gate.sh').include?('release_check_worker_nodump "$worker_ref"')
 ci = YAML.load_file('.github/workflows/image-build-check.yml')
 abort 'build-only CI has publish permission' if ci.fetch('permissions').values.include?('write')
 checked = ci.fetch('jobs').fetch('build').fetch('strategy').fetch('matrix').fetch('include').map { |entry| entry['service'] }
 abort "build-only CI misses service images: #{(services - checked).join(', ')}" unless (services - checked).empty?
 abort 'build-only CI does not check the migrate image' unless ci.fetch('jobs').fetch('build').fetch('steps').to_s.include?('release_check_migrate_image')
+abort 'build-only CI does not check the runner preload' unless ci.fetch('jobs').fetch('build').fetch('steps').to_s.include?('release_check_worker_nodump eve-horizon/worker:check')
 abort 'build-only CI missing native browser smoke' unless ci.fetch('jobs').key?('browser-smoke')
 abort 'build-only CI does not run the release script tests' unless ci.fetch('jobs').fetch('release-scripts', {}).fetch('steps', []).to_s.include?('scripts/release/check.sh')
 abort 'build-only CI missing toolchain coverage' unless ci.fetch('jobs').fetch('toolchain-build').fetch('strategy').fetch('matrix').fetch('name').size == 6

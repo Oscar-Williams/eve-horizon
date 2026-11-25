@@ -45,6 +45,34 @@ release_check_migrate_image() {
   [[ $output == *'DATABASE_URL environment variable is required'* ]] || release_die "migrate image did not start: $output"
   echo "qualified migrate image $ref user=$user"
 }
+# Runner pods start tini, the entrypoint shell and node with the worker image's
+# non-dumpable preload (docker/worker/eve-nodump.c), because gVisor cannot load
+# execute-only binaries. With it, each process's /proc/<pid>/environ is owned by
+# root; without it, by the process's user. Both runs are checked, so a probe
+# that cannot tell them apart fails too.
+release_check_worker_nodump() {
+  local ref=$1 preloaded plain err
+  # shellcheck disable=SC2016 # expanded by the container's shell
+  local probe='stat -c %u /proc/1/environ /proc/$$/environ && exec /usr/local/bin/node -e "console.log(require(\"fs\").statSync(\"/proc/self/environ\").uid)"'
+  local limit=()
+  command -v timeout >/dev/null && limit=(timeout 120)
+  # Only stdout is compared: a pull note or a daemon warning on stderr must not
+  # fail a good image. --init=false keeps tini as PID 1 whatever the daemon's
+  # default.
+  err=$(mktemp)
+  preloaded=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 --init=false \
+    -e LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>"$err") \
+    || release_die "worker image did not run with the runner preload: $preloaded $(cat "$err")"
+  plain=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 --init=false \
+    --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>"$err") \
+    || release_die "worker image did not run: $plain $(cat "$err")"
+  rm -f "$err"
+  [[ $(printf '%s' "$preloaded" | tr '\n' ' ') == '0 0 0' ]] \
+    || release_die "runner preload did not make tini, bash and node non-dumpable: $preloaded"
+  [[ $(printf '%s' "$plain" | tr '\n' ' ') == '1000 1000 1000' ]] \
+    || release_die "cannot tell a dumpable process from a non-dumpable one: $plain"
+  echo "qualified worker image $ref: runner preload makes tini, bash and node non-dumpable"
+}
 release_check_tag_absent() {
   local ref=$1 output
   if output=$(docker buildx imagetools inspect "$ref" 2>&1); then

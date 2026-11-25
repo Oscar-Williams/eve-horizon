@@ -25,6 +25,27 @@ describe('worker image', () => {
     expect(runtimeStages.match(/CMD \["\/usr\/local\/libexec\/eve-node", "--disable-sigusr1", "dist\/main\.js"\]/g)?.length).toBe(2);
   });
 
+  // Runner pods run under gVisor, which cannot load an execute-only binary.
+  // They start /usr/bin/tini and /usr/local/bin/node with this library preloaded.
+  it('builds the non-dumpable preload for runner pods and installs it root-owned and read-only', () => {
+    const stage = dockerfile.slice(dockerfile.indexOf('FROM ${NODE_BASE_IMAGE} AS nodump'), dockerfile.indexOf('FROM node-image AS runtime-setup'));
+    expect(stage).toContain('COPY docker/worker/eve-nodump.c /src/eve-nodump.c');
+    expect(stage).toMatch(/gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o \/out\/eve-nodump\.so \/src\/eve-nodump\.c/);
+    const setup = dockerfile.slice(dockerfile.indexOf('FROM node-image AS runtime-setup'), dockerfile.indexOf('FROM runtime-setup AS base'));
+    expect(setup).toContain('COPY --from=nodump /out/eve-nodump.so /usr/local/lib/eve/eve-nodump.so');
+    expect(setup).toMatch(/chown -R root:root \/usr\/local\/lib\/eve/);
+    expect(setup).toMatch(/chmod 0444 \/usr\/local\/lib\/eve\/eve-nodump\.so/);
+    // The compiler never reaches a runtime stage.
+    expect(runtimeStages.slice(runtimeStages.indexOf('FROM node-image AS runtime-setup'))).not.toMatch(/install[^\n]*\bgcc\b/);
+  });
+
+  it('the preload marks the process non-dumpable as it loads, and exits if it cannot', () => {
+    const source = readFileSync(join(ROOT, 'docker', 'worker', 'eve-nodump.c'), 'utf8');
+    expect(source).toMatch(/__attribute__\(\(constructor\)\)/);
+    expect(source).toContain('prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 || prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0');
+    expect(source).toContain('_exit(126)');
+  });
+
   it('keeps the service code and Node/Kubernetes config lookups out of job reach', () => {
     const base = dockerfile.slice(dockerfile.indexOf('FROM runtime-setup AS base'), dockerfile.indexOf('FROM base AS media'));
     expect(base).not.toMatch(/COPY --from=build --chown=node:node/);
@@ -44,8 +65,24 @@ describe('worker entrypoint', () => {
   it('sources toolchain env.sh only in single-use runner pods, after its own commands', () => {
     const gate = entrypoint.indexOf('if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then');
     expect(gate).toBeGreaterThan(entrypoint.indexOf('orphan-reaper start'));
-    expect(entrypoint.match(/\. "\$\{tc_dir\}env\.sh"/g)?.length).toBe(1);
-    expect(entrypoint.indexOf('. "${tc_dir}env.sh"')).toBeGreaterThan(gate);
+    // One sourcing site, inside source_runner_toolchains, which only the runner gate calls.
+    expect(entrypoint.match(/\. "\$\{__eve_tc\}env\.sh"/g)?.length).toBe(1);
+    const fn = entrypoint.indexOf('source_runner_toolchains() {');
+    expect(fn).toBeGreaterThan(-1);
+    expect(entrypoint.indexOf('. "${__eve_tc}env.sh"')).toBeGreaterThan(fn);
+    expect(entrypoint.match(/^\s*source_runner_toolchains \/opt\/eve\/toolchains$/gm)?.length).toBe(1);
+    expect(entrypoint.indexOf('  source_runner_toolchains /opt/eve/toolchains')).toBeGreaterThan(gate);
+  });
+
+  // docker/worker/entrypoint.test.sh sources the entrypoint's functions and
+  // runs them: nothing installed at start, and a runner that keeps its own
+  // loader settings (library path, audit, preload, Node options and module
+  // path) whatever a toolchain env.sh sets. It skips itself on bash < 4.4.
+  it('passes its shell test: nothing installed at start, the runner keeps its loader settings', () => {
+    expect(entrypoint).toContain('RUNNER_LOADER_VARS=(LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH)');
+    const out = execFileSync('bash', [join(ROOT, 'docker', 'worker', 'entrypoint.test.sh')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    // CI is Linux with a current bash: there the test must run, not skip.
+    if (process.platform === 'linux') expect(out).toMatch(/PASS: .*runner loader settings kept/);
   });
 
   it('installs nothing at start: a missing harness variant is only reported', () => {

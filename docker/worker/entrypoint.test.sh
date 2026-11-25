@@ -62,4 +62,44 @@ if grep -nE '(^|[^[:alnum:]_-])npx([^[:alnum:]_-]|$)|cc-mirror +quick|npm +(inst
   fail "the entrypoint can still install a package at start"
 fi
 
-echo "PASS: entrypoint installs nothing at start and reports a missing variant"
+# 4. Runner pods: a toolchain env.sh sets paths and homes, never the runner's
+# loader settings (library path, audit, preload, Node options or module path).
+declare -F source_runner_toolchains >/dev/null || fail "the entrypoint has no source_runner_toolchains"
+mkdir -p "$tmp/tc/media" "$tmp/tc/java"
+cat > "$tmp/tc/media/env.sh" <<'ENV'
+export PATH="/tc/media/bin:${PATH}"
+export LD_LIBRARY_PATH="/tc/media/lib:${LD_LIBRARY_PATH:-}"
+export LD_PRELOAD=/tc/media/planted.so
+export LD_AUDIT=/tc/media/audit.so
+export NODE_OPTIONS="--require /tc/media/planted.js"
+export NODE_PATH=/tc/media/node
+ENV
+printf 'export JAVA_HOME=/tc/java\n' > "$tmp/tc/java/env.sh"
+(
+  export LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so
+  unset LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH
+  EVE_TOOLCHAIN_PATHS=/tc/media/bin source_runner_toolchains "$tmp/tc"
+  env | grep -qx 'LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so' || fail "the runner preload was not kept: ${LD_PRELOAD:-unset}"
+  for name in LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH; do
+    [[ ! -v $name ]] || fail "$name from env.sh reached the runner: ${!name}"
+  done
+  [[ $JAVA_HOME == /tc/java ]] || fail "JAVA_HOME from env.sh was lost"
+  [[ $PATH == /tc/media/bin:* ]] || fail "the toolchain PATH was lost: $PATH"
+) || exit 1
+(
+  # A loader setting the runner already had comes back as it was, and the
+  # toolchain PATH comes from EVE_TOOLCHAIN_PATHS even when no env.sh sets it.
+  export LD_LIBRARY_PATH=/runner/lib
+  EVE_TOOLCHAIN_PATHS=/tc/declared/bin source_runner_toolchains "$tmp/tc"
+  [[ $LD_LIBRARY_PATH == /runner/lib ]] || fail "the runner's own LD_LIBRARY_PATH was not restored: $LD_LIBRARY_PATH"
+  [[ :$PATH: == *:/tc/declared/bin:* ]] || fail "EVE_TOOLCHAIN_PATHS was not applied: $PATH"
+) || exit 1
+(
+  unset LD_PRELOAD
+  export NODE_OPTIONS=--disable-sigusr1
+  source_runner_toolchains "$tmp/tc"
+  [[ ! -v LD_PRELOAD ]] || fail "a preload from env.sh reached a runner that had none: $LD_PRELOAD"
+  [[ $NODE_OPTIONS == --disable-sigusr1 ]] || fail "the runner's own NODE_OPTIONS was not kept: $NODE_OPTIONS"
+) || exit 1
+
+echo "PASS: entrypoint installs nothing at start and reports a missing variant; runner loader settings kept"

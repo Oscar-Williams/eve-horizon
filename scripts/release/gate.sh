@@ -40,6 +40,7 @@ elif [[ $kind == toolchain ]]; then
 else
   release_die "unknown gate kind $kind"
 fi
+release_check_worker_nodump "$worker_ref"
 EVE_BROWSER_PYTHON_IMAGE="$python_ref" \
 EVE_BROWSER_BROWSER_IMAGE="$browser_ref" \
 EVE_BROWSER_WORKER_IMAGE="$worker_ref" \

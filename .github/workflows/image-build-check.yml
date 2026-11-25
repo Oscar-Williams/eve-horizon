@@ -94,7 +94,7 @@ jobs:
           file: ./${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           push: false
-          load: ${{ matrix.service == 'migrate' }}
+          load: ${{ matrix.service == 'migrate' || matrix.service == 'worker' }}
           tags: eve-horizon/${{ matrix.service }}:check
           build-args: |
             EVE_BUILD_VERSION=0.0.0-check
@@ -108,6 +108,11 @@ jobs:
       - name: Numeric non-root user and a clean start (migrate)
         if: matrix.service == 'migrate'
         run: bash -c 'source scripts/release/common.sh && release_check_migrate_image eve-horizon/migrate:check'
+
+      # Same check the release gate runs on the frozen worker artifact.
+      - name: Runner pods' non-dumpable preload (worker)
+        if: matrix.service == 'worker'
+        run: bash -c 'source scripts/release/common.sh && release_check_worker_nodump eve-horizon/worker:check'
 
   # The release scripts' own tests: image references, tag validation, frozen
   # artifacts, ancestry and the publisher topology. Docker is mocked.

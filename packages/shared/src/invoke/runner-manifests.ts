@@ -13,7 +13,9 @@
  * - an org filesystem only when the job asks for one, read-only unless it
  *   writes;
  * - a runner that refuses to start unless its process is non-dumpable, so
- *   job processes (same UID) cannot read its environment.
+ *   job processes (same UID) cannot read its environment. Runner pods get
+ *   that from a preloaded library (`RUNNER_NODUMP_LIBRARY`) rather than the
+ *   image's execute-only binaries, which gVisor cannot load.
  *
  * Pod labels P2-3's egress policies select on are documented in
  * docs/system/job-execution.md ("Runner pod labels").
@@ -22,8 +24,22 @@
 import { RUNNER_INBOUND_KEY_SHA256_ENV, RUNNER_POOL_KEY_SHA256_ENV, RUNNER_PORT } from './runner-protocol.js';
 import { resolveRunnerPodIsolation, type RunnerPodIsolation } from './runner-pod.js';
 
-/** The runner entrypoint, started through the image's tini + entrypoint script (`exec "$@"`). */
-export const RUNNER_CONTAINER_ARGS = ['/usr/local/libexec/eve-node', '--disable-sigusr1', 'dist/runner/main.js'];
+/*
+ * How a runner pod starts: tini, the image's entrypoint script, then the
+ * runner (`exec "$@"`), all from the image's ordinary, readable binaries.
+ *
+ * The long-lived services start from execute-only copies
+ * (`/usr/local/libexec/eve-tini`, `eve-node`), which the kernel runs
+ * non-dumpable. gVisor, which sandboxes runner pods, cannot load an
+ * execute-only binary, so each of these processes instead loads
+ * `RUNNER_NODUMP_LIBRARY` (LD_PRELOAD), which marks it non-dumpable as it
+ * starts and exits if it cannot. The runner still checks the result and
+ * refuses to start unprotected (EVE_REQUIRE_ENVIRON_PROTECTION). Job
+ * processes never load the library: their environments are allowlists.
+ */
+export const RUNNER_CONTAINER_COMMAND = ['/usr/bin/tini', '--', '/usr/local/bin/eve-worker-entrypoint'];
+export const RUNNER_CONTAINER_ARGS = ['/usr/local/bin/node', '--disable-sigusr1', 'dist/runner/main.js'];
+export const RUNNER_NODUMP_LIBRARY = '/usr/local/lib/eve/eve-nodump.so';
 
 export const RUNNER_UID = 1000;
 
@@ -93,6 +109,7 @@ export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> 
     { name: 'EVE_TOOLCHAIN_ROOT', value: '/opt/eve/toolchains' },
     { name: 'EVE_TOOLCHAIN_INIT_MOUNTED', value: 'true' },
     { name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' },
+    { name: 'LD_PRELOAD', value: RUNNER_NODUMP_LIBRARY },
   ];
   if (opts.inboundKeySha256) env.push({ name: RUNNER_INBOUND_KEY_SHA256_ENV, value: opts.inboundKeySha256 });
   if (opts.poolKeySha256) env.push({ name: RUNNER_POOL_KEY_SHA256_ENV, value: opts.poolKeySha256 });
@@ -170,6 +187,7 @@ export function buildRunnerPodSpec(opts: RunnerPodOptions): Record<string, any> 
       name: 'runner',
       image: opts.image,
       imagePullPolicy: policy,
+      command: RUNNER_CONTAINER_COMMAND,
       args: RUNNER_CONTAINER_ARGS,
       env,
       securityContext: {

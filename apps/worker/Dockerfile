@@ -182,6 +182,22 @@ RUN pnpm --filter @eve/shared build \
     && pnpm --filter @eve/worker build
 
 # =============================================================================
+# Stage: nodump
+# Purpose: eve-nodump.so, which runner pods preload into their own processes
+#          (docker/worker/eve-nodump.c). Built on the runtime's base image so it
+#          links against the same C library; the compiler stays in this stage.
+# =============================================================================
+FROM ${NODE_BASE_IMAGE} AS nodump
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/worker/eve-nodump.c /src/eve-nodump.c
+RUN mkdir -p /out \
+    && gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o /out/eve-nodump.so /src/eve-nodump.c
+
+# =============================================================================
 # Stage: runtime-setup
 # Purpose: Common runtime setup shared by all toolchain variants
 #          Includes global npm packages, directories, git config, entrypoints
@@ -289,6 +305,14 @@ COPY docker/worker/in-cluster.kubeconfig /etc/eve/kube/in-cluster.kubeconfig
 RUN chown -R root:root /etc/eve/kube \
     && chmod 0755 /etc/eve/kube \
     && chmod 0444 /etc/eve/kube/in-cluster.kubeconfig
+
+# The library runner pods preload (LD_PRELOAD) to make tini, the entrypoint and
+# the runner non-dumpable, in place of the execute-only copies above, which
+# gVisor cannot load. Root-owned and read-only, so job code cannot replace it.
+COPY --from=nodump /out/eve-nodump.so /usr/local/lib/eve/eve-nodump.so
+RUN chown -R root:root /usr/local/lib/eve \
+    && chmod 0755 /usr/local/lib/eve \
+    && chmod 0444 /usr/local/lib/eve/eve-nodump.so
 
 # Configure git identity for automated commits (eve-worker skills install)
 RUN git config --system user.email "eve-worker@eve-horizon.local" \

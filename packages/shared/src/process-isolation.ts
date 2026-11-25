@@ -11,7 +11,12 @@ import * as path from 'node:path';
  * 1. read another's `/proc/<pid>/environ` and memory, unless the target is
  *    non-dumpable. The images start each service from an execute-only copy of
  *    node (`/usr/local/libexec/eve-node`); the kernel marks a process that
- *    executes a binary its user cannot read non-dumpable.
+ *    executes a binary its user cannot read non-dumpable. Runner pods run
+ *    under gVisor, which cannot load an execute-only binary, so they start the
+ *    readable binaries with `LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so`,
+ *    which calls prctl(PR_SET_DUMPABLE, 0) as each process starts
+ *    (docker/worker/eve-nodump.c). Either way the check below reads the
+ *    result, not the method.
  * 2. send it SIGUSR1, which opens the Node inspector on 127.0.0.1:9229 and lets
  *    the sender evaluate code inside the service. The images pass
  *    `--disable-sigusr1`.
@@ -32,30 +37,35 @@ export type EnvironExposure =
   | { status: 'exposed'; uid: number }
   /** Running as root: children inherit root unless they drop privileges. */
   | { status: 'root' }
+  /** Linux, but the environ's owner could not be read: protection is not confirmed. */
+  | { status: 'unknown' }
   /** No Linux procfs (macOS dev, Windows). */
   | { status: 'unsupported' };
 
 export interface EnvironExposureProbe {
   platform: NodeJS.Platform;
   getuid: () => number;
-  environOwner: () => number;
+  /** The owner of /proc/<pid>/environ: this process's, or PID 1's. */
+  environOwner: (pid?: 'self' | 1) => number;
+  getpid?: () => number;
 }
 
 const defaultProbe: EnvironExposureProbe = {
   platform: process.platform,
   getuid: () => process.getuid?.() ?? -1,
-  environOwner: () => statSync('/proc/self/environ').uid,
+  environOwner: (pid = 'self') => statSync(`/proc/${pid}/environ`).uid,
+  getpid: () => process.pid,
 };
 
-export function inspectEnvironExposure(probe: EnvironExposureProbe = defaultProbe): EnvironExposure {
+export function inspectEnvironExposure(probe: EnvironExposureProbe = defaultProbe, pid: 'self' | 1 = 'self'): EnvironExposure {
   if (probe.platform !== 'linux') return { status: 'unsupported' };
   const uid = probe.getuid();
   if (uid === 0) return { status: 'root' };
   let owner: number;
   try {
-    owner = probe.environOwner();
+    owner = probe.environOwner(pid);
   } catch {
-    return { status: 'unsupported' };
+    return { status: 'unknown' };
   }
   return owner === uid ? { status: 'exposed', uid } : { status: 'protected' };
 }
@@ -96,6 +106,17 @@ export function inspectInspectorExposure(probe: InspectorProbe = defaultInspecto
 export interface ProcessIsolationReport {
   environ: EnvironExposure;
   inspector: string[];
+  /** PID 1's exposure, when the caller asked for it (`init`). */
+  init?: EnvironExposure;
+}
+
+export interface ProcessIsolationOptions {
+  /**
+   * Also require PID 1, the container's init, to be non-dumpable when this
+   * process is not PID 1 itself. Runner pods: tini holds the pod's environment
+   * for the life of the pod, and job code runs as the same UID.
+   */
+  init?: boolean;
 }
 
 /**
@@ -108,10 +129,15 @@ export function checkProcessIsolation(
   serviceLabel: string,
   env: NodeJS.ProcessEnv = process.env,
   probes: { environ?: EnvironExposureProbe; inspector?: InspectorProbe } = {},
+  options: ProcessIsolationOptions = {},
 ): ProcessIsolationReport {
-  const environ = inspectEnvironExposure(probes.environ);
+  const probe = probes.environ ?? defaultProbe;
+  const environ = inspectEnvironExposure(probe);
   const inspectorProblems = environ.status === 'unsupported' ? [] : inspectInspectorExposure(probes.inspector);
   const required = env.EVE_REQUIRE_ENVIRON_PROTECTION?.trim().toLowerCase() === 'true';
+  const init = options.init && environ.status !== 'unsupported' && (probe.getpid?.() ?? process.pid) !== 1
+    ? inspectEnvironExposure(probe, 1)
+    : undefined;
 
   const problems: string[] = [];
   if (environ.status === 'root') problems.push('runs as root, so job processes it starts run as root too');
@@ -119,23 +145,33 @@ export function checkProcessIsolation(
     problems.push(`is dumpable, so any process running as UID ${environ.uid} (including job processes) can read `
       + 'its environment and memory through /proc');
   }
+  if (environ.status === 'unknown') {
+    problems.push('cannot read the owner of /proc/self/environ, so whether job processes can read its environment '
+      + 'is unknown');
+  }
+  if (init?.status === 'exposed') {
+    problems.push(`runs under a dumpable PID 1, so any process running as UID ${init.uid} can read the init's `
+      + 'environment through /proc/1');
+  }
+  if (init?.status === 'unknown') problems.push('cannot read the owner of /proc/1/environ, so PID 1 is not confirmed non-dumpable');
   problems.push(...inspectorProblems);
 
   if (problems.length === 0) {
     if (environ.status === 'protected') {
-      logger.log(`${serviceLabel}: process is non-dumpable with SIGUSR1 disabled; job processes cannot read `
-        + 'its environment or attach to it');
+      logger.log(`${serviceLabel}: process${init ? ' and PID 1 are' : ' is'} non-dumpable with SIGUSR1 disabled; `
+        + 'job processes cannot read its environment or attach to it');
     }
-    return { environ, inspector: inspectorProblems };
+    return { environ, inspector: inspectorProblems, ...(init ? { init } : {}) };
   }
 
   const message = `${serviceLabel}: process ${problems.join('; ')}. Start it as a non-root user with `
-    + '`/usr/local/libexec/eve-node --disable-sigusr1 dist/main.js` (the image default).';
+    + '`/usr/local/libexec/eve-node --disable-sigusr1 dist/main.js` (the image default), or in a runner pod '
+    + 'with `LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so` and `--disable-sigusr1`.';
   if (required) {
     throw new Error(`${message} Refusing to start because EVE_REQUIRE_ENVIRON_PROTECTION=true.`);
   }
   logger.warn(message);
-  return { environ, inspector: inspectorProblems };
+  return { environ, inspector: inspectorProblems, ...(init ? { init } : {}) };
 }
 
 // ---------------------------------------------------------------------------

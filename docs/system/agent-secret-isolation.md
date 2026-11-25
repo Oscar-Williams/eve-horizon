@@ -105,6 +105,14 @@ entries become root-owned and same-UID processes can no longer read its
 environment, file descriptors or memory. Harnesses and scripts keep the normal
 `/usr/local/bin/node`.
 
+Runner pods run under gVisor, which cannot load an execute-only binary. They
+start the readable `/usr/bin/tini` and `/usr/local/bin/node` with
+`LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so` (root-owned, read-only), whose
+constructor calls `prctl(PR_SET_DUMPABLE, 0)` in each process and exits if
+that fails. The effect is the same: root-owned `/proc/<pid>` entries.
+`execve` makes a process dumpable again, so the library acts in every process
+it loads into; job processes do not load it.
+
 Same-UID job code has three other routes, each closed in the image or code:
 
 - **Debugger.** SIGUSR1 opens Node's inspector on `127.0.0.1:9229`, and

@@ -232,6 +232,8 @@ export {
   buildRunnerPodSpec,
   DEFAULT_ORG_FS_CLAIM,
   RUNNER_CONTAINER_ARGS,
+  RUNNER_CONTAINER_COMMAND,
+  RUNNER_NODUMP_LIBRARY,
   RUNNER_UID,
   type RunnerPodOptions,
   type RunnerResources,
