@@ -28,7 +28,10 @@ Each environment namespace gets, by its project's profile:
 
 `eve-egress` selects every pod in the namespace and allows:
 
-- DNS to `kube-dns` in `kube-system`, on 53 (UDP and TCP);
+- DNS to `kube-dns` or `node-local-dns` pods in `kube-system`, on 53 (UDP
+  and TCP). On GKE Dataplane V2, NodeLocal DNSCache's `node-local-dns`
+  pods answer queries sent to the kube-dns Service address, so a rule
+  naming kube-dns alone drops every lookup;
 - the namespace itself;
 - `eve-api` pods in the platform namespace, on the API's public port
   (`4701`) only, never the internal port;
@@ -361,8 +364,8 @@ eve system settings set network.private_cidrs "198.18.0.0/15"
   under `strict`.
 - A managed database host name is resolved when the policy is written; if
   its address changes, `strict` blocks it until the next deploy or reconcile.
-- DNS is allowed to `kube-dns` pods only; a node-local DNS cache on a
-  link-local address is not covered.
+- DNS is allowed to `kube-dns` and `node-local-dns` pods. A node-local
+  DNS cache on the host network at a link-local address is not covered.
 - Ingress to tenant namespaces is the rule `network.ingress_isolation`
   (see [ingress isolation](#ingress-isolation)).
 

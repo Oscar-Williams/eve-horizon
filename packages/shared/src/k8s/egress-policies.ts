@@ -152,9 +152,21 @@ const NAMESPACE_NAME = 'kubernetes.io/metadata.name';
 const tcp = (port: number): NetworkPolicyPort => ({ protocol: 'TCP', port });
 const namespaceSelector = (namespace: string): LabelSelector => ({ matchLabels: { [NAMESPACE_NAME]: namespace } });
 
+/**
+ * The cluster's DNS pods in `kube-system`: kube-dns, and NodeLocal DNSCache's
+ * node-local-dns. On GKE Dataplane V2 node-local-dns runs as ordinary pods
+ * that answer queries sent to the kube-dns Service address, so a rule naming
+ * kube-dns alone drops every lookup. Where it is not installed, the second
+ * value matches nothing.
+ */
+const DNS_POD_APPS = ['kube-dns', 'node-local-dns'];
+
 function dnsRule(): EgressRule {
   return {
-    to: [{ namespaceSelector: namespaceSelector('kube-system'), podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }],
+    to: [{
+      namespaceSelector: namespaceSelector('kube-system'),
+      podSelector: { matchExpressions: [{ key: 'k8s-app', operator: 'In', values: [...DNS_POD_APPS] }] },
+    }],
     ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
   };
 }
