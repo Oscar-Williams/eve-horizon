@@ -105,6 +105,46 @@ report_missing_variants() {
   done
 }
 
+# Runner pods only: toolchains and app CLIs copied in by init containers. A
+# runner pod runs one job and never restarts (restartPolicy: Never), so these
+# files are read before any job code has run. In the long-lived worker,
+# /opt/eve/toolchains is a job-writable cache and is never sourced here; jobs
+# get toolchain env from ensureToolchains instead.
+#
+# The runner keeps its own loader settings: an env.sh sets paths and homes
+# (PATH, JAVA_HOME, RUSTUP_HOME), never how the runner's processes load code.
+# A library search path, audit library, preload or Node option set there would
+# name the job-writable toolchain directories, so code a job later wrote there
+# could load into the non-dumpable runner. Jobs get each toolchain's full
+# environment from the worker (ensureToolchains), not from this process.
+RUNNER_LOADER_VARS=(LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH)
+source_runner_toolchains() {
+  local __eve_root=$1 __eve_tc __eve_name
+  local -A __eve_kept=()
+  if [ -n "${EVE_TOOLCHAIN_PATHS:-}" ]; then
+    export PATH="${EVE_TOOLCHAIN_PATHS}:${PATH}"
+  fi
+  if [ -n "${EVE_APP_CLI_PATHS:-}" ]; then
+    export PATH="${EVE_APP_CLI_PATHS}:${PATH}"
+  fi
+  for __eve_name in "${RUNNER_LOADER_VARS[@]}"; do
+    if [[ -v $__eve_name ]]; then __eve_kept[$__eve_name]=${!__eve_name}; fi
+  done
+  for __eve_tc in "$__eve_root"/*/; do
+    if [ -f "${__eve_tc}env.sh" ]; then
+      # shellcheck disable=SC1090,SC1091
+      . "${__eve_tc}env.sh"
+    fi
+  done
+  for __eve_name in "${RUNNER_LOADER_VARS[@]}"; do
+    if [[ -v __eve_kept[$__eve_name] ]]; then
+      export "$__eve_name=${__eve_kept[$__eve_name]}"
+    else
+      unset "$__eve_name"
+    fi
+  done
+}
+
 # docker/worker/entrypoint.test.sh sources this file for its functions only.
 if [[ "${EVE_ENTRYPOINT_FUNCTIONS_ONLY:-}" == "1" ]]; then
   return 0
@@ -141,37 +181,10 @@ fi
 # Hand over to the service with the original PATH.
 export PATH="$SERVICE_JOB_PATH"
 
-# Runner pods only: toolchains and app CLIs copied in by init containers. A
-# runner pod runs one job and never restarts (restartPolicy: Never), so these
-# files are read before any job code has run. In the long-lived worker,
-# /opt/eve/toolchains is a job-writable cache and is never sourced here; jobs
-# get toolchain env from ensureToolchains instead.
+# Runner pods only: toolchains and app CLIs copied in by init containers
+# (source_runner_toolchains, above).
 if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then
-  if [ -n "${EVE_TOOLCHAIN_PATHS:-}" ]; then
-    export PATH="${EVE_TOOLCHAIN_PATHS}:${PATH}"
-  fi
-  if [ -n "${EVE_APP_CLI_PATHS:-}" ]; then
-    export PATH="${EVE_APP_CLI_PATHS}:${PATH}"
-  fi
-  # Sets JAVA_HOME, RUSTUP_HOME, etc.
-  runner_ld_preload="${LD_PRELOAD-}"
-  for tc_dir in /opt/eve/toolchains/*/; do
-    if [ -f "${tc_dir}env.sh" ]; then
-      . "${tc_dir}env.sh"
-    fi
-  done
-  # The runner never takes a library search path, audit library or preload
-  # from them: those would name the job-writable toolchain directories and let
-  # job code load into the non-dumpable runner. Job processes get a
-  # toolchain's library environment from the worker (ensureToolchains), not
-  # from this process, so nothing they need is lost.
-  unset LD_LIBRARY_PATH LD_AUDIT
-  if [[ -n "$runner_ld_preload" ]]; then
-    export LD_PRELOAD="$runner_ld_preload"
-  else
-    unset LD_PRELOAD
-  fi
-  unset runner_ld_preload
+  source_runner_toolchains /opt/eve/toolchains
 fi
 
 exec "$@"

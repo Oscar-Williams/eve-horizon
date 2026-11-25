@@ -89,6 +89,8 @@ describe('runner pod builder', () => {
     const preload = { name: 'LD_PRELOAD', value: RUNNER_NODUMP_LIBRARY };
     expect(RUNNER_NODUMP_LIBRARY).toBe('/usr/local/lib/eve/eve-nodump.so');
     expect(pod().container.env).toContainEqual(preload);
+    // The runner checks PID 1 is non-dumpable: it must be the pod's own tini, not a shared pause.
+    expect(pod().manifest.spec).not.toHaveProperty('shareProcessNamespace');
     // Kubernetes takes the last of duplicate names: there must be one.
     expect(pod().container.env.filter((e: { name: string }) => e.name === 'LD_PRELOAD')).toHaveLength(1);
     expect(pod({ orgFs: { readOnly: true }, toolchains: ['python'] }).container.env).toContainEqual(preload);

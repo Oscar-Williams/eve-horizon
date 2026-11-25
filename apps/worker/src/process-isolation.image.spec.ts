@@ -65,23 +65,23 @@ describe('worker entrypoint', () => {
   it('sources toolchain env.sh only in single-use runner pods, after its own commands', () => {
     const gate = entrypoint.indexOf('if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then');
     expect(gate).toBeGreaterThan(entrypoint.indexOf('orphan-reaper start'));
-    expect(entrypoint.match(/\. "\$\{tc_dir\}env\.sh"/g)?.length).toBe(1);
-    expect(entrypoint.indexOf('. "${tc_dir}env.sh"')).toBeGreaterThan(gate);
+    // One sourcing site, inside source_runner_toolchains, which only the runner gate calls.
+    expect(entrypoint.match(/\. "\$\{__eve_tc\}env\.sh"/g)?.length).toBe(1);
+    const fn = entrypoint.indexOf('source_runner_toolchains() {');
+    expect(fn).toBeGreaterThan(-1);
+    expect(entrypoint.indexOf('. "${__eve_tc}env.sh"')).toBeGreaterThan(fn);
+    expect(entrypoint.match(/^\s*source_runner_toolchains \/opt\/eve\/toolchains$/gm)?.length).toBe(1);
+    expect(entrypoint.indexOf('  source_runner_toolchains /opt/eve/toolchains')).toBeGreaterThan(gate);
   });
 
-  it('keeps library search paths and preloads from toolchain env.sh out of the runner', () => {
-    const gate = entrypoint.indexOf('if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then');
-    const sourced = entrypoint.indexOf('. "${tc_dir}env.sh"');
-    const saved = entrypoint.indexOf('runner_ld_preload="${LD_PRELOAD-}"');
-    const cleared = entrypoint.indexOf('unset LD_LIBRARY_PATH LD_AUDIT');
-    const restored = entrypoint.indexOf('export LD_PRELOAD="$runner_ld_preload"');
-    const handover = entrypoint.indexOf('exec "$@"');
-    expect(gate).toBeGreaterThan(-1);
-    expect(saved).toBeGreaterThan(gate);
-    expect(sourced).toBeGreaterThan(saved);
-    expect(cleared).toBeGreaterThan(sourced);
-    expect(restored).toBeGreaterThan(cleared);
-    expect(handover).toBeGreaterThan(restored);
+  // docker/worker/entrypoint.test.sh sources the entrypoint's functions and
+  // runs them: nothing installed at start, and a runner that keeps its own
+  // loader settings (library path, audit, preload, Node options and module
+  // path) whatever a toolchain env.sh sets. It skips itself on bash < 4.4.
+  it('passes its shell test: nothing installed at start, the runner keeps its loader settings', () => {
+    expect(entrypoint).toContain('RUNNER_LOADER_VARS=(LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH)');
+    const out = execFileSync('bash', [join(ROOT, 'docker', 'worker', 'entrypoint.test.sh')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(out).toMatch(/PASS: .*runner loader settings kept|^$/);
   });
 
   it('installs nothing at start: a missing harness variant is only reported', () => {

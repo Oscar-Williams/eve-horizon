@@ -51,9 +51,11 @@ if [[ $* == 'image inspect --format {{.Config.User}} '* ]]; then
 fi
 if [[ $* == 'run --rm --network none --user 1000:1000 '* ]]; then
   preload=no
+  [[ $* == *' --init=false '* ]] || exit 96
   [[ $* == *'-e LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so '* ]] && preload=yes
   case "${MOCK_NODUMP:-}" in
     works) [[ $preload == yes ]] && printf '0\n0\n0\n' || printf '1000\n1000\n1000\n'; exit 0 ;;
+    noisy) echo 'WARNING: daemon note on stderr' >&2; [[ $preload == yes ]] && printf '0\n0\n0\n' || printf '1000\n1000\n1000\n'; exit 0 ;;
     ignored) printf '1000\n1000\n1000\n'; exit 0 ;;
     blind) printf '0\n0\n0\n'; exit 0 ;;
     partial) [[ $preload == yes ]] && printf '0\n0\n1000\n' || printf '1000\n1000\n1000\n'; exit 0 ;;
@@ -92,7 +94,9 @@ for run in missing_module succeeds; do
 done
 # Runner pods rely on the worker image's non-dumpable preload; the check must
 # see it work and see the difference without it.
-env PATH="$tmp:$PATH" MOCK_NODUMP=works bash -c 'source scripts/release/common.sh; release_check_worker_nodump ghcr.io/eve-horizon/eve-horizon/worker:1.2.3'
+for nodump in works noisy; do
+  env PATH="$tmp:$PATH" MOCK_NODUMP="$nodump" bash -c 'source scripts/release/common.sh; release_check_worker_nodump ghcr.io/eve-horizon/eve-horizon/worker:1.2.3'
+done
 for nodump in ignored blind partial crash; do
   expect_fail env PATH="$tmp:$PATH" MOCK_NODUMP="$nodump" bash -c 'source scripts/release/common.sh; release_check_worker_nodump ghcr.io/eve-horizon/eve-horizon/worker:1.2.3'
 done

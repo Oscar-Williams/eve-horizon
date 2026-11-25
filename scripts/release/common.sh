@@ -51,17 +51,22 @@ release_check_migrate_image() {
 # root; without it, by the process's user. Both runs are checked, so a probe
 # that cannot tell them apart fails too.
 release_check_worker_nodump() {
-  local ref=$1 preloaded plain
+  local ref=$1 preloaded plain err
   # shellcheck disable=SC2016 # expanded by the container's shell
   local probe='stat -c %u /proc/1/environ /proc/$$/environ && exec /usr/local/bin/node -e "console.log(require(\"fs\").statSync(\"/proc/self/environ\").uid)"'
   local limit=()
   command -v timeout >/dev/null && limit=(timeout 120)
-  preloaded=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 \
-    -e LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>&1) \
-    || release_die "worker image did not run with the runner preload: $preloaded"
-  plain=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 \
-    --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>&1) \
-    || release_die "worker image did not run: $plain"
+  # Only stdout is compared: a pull note or a daemon warning on stderr must not
+  # fail a good image. --init=false keeps tini as PID 1 whatever the daemon's
+  # default.
+  err=$(mktemp)
+  preloaded=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 --init=false \
+    -e LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>"$err") \
+    || release_die "worker image did not run with the runner preload: $preloaded $(cat "$err")"
+  plain=$(${limit[@]+"${limit[@]}"} docker run --rm --network none --user 1000:1000 --init=false \
+    --entrypoint /usr/bin/tini "$ref" -- /bin/bash -c "$probe" 2>"$err") \
+    || release_die "worker image did not run: $plain $(cat "$err")"
+  rm -f "$err"
   [[ $(printf '%s' "$preloaded" | tr '\n' ' ') == '0 0 0' ]] \
     || release_die "runner preload did not make tini, bash and node non-dumpable: $preloaded"
   [[ $(printf '%s' "$plain" | tr '\n' ' ') == '1000 1000 1000' ]] \
