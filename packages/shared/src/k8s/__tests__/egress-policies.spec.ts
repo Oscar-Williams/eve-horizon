@@ -156,7 +156,7 @@ describe('env egress policies', () => {
     expect(policy.spec.egress).toContainEqual({ to: [{ podSelector: {} }] });
   });
 
-  it('gives env pods, project runner pods and the static runner deny the same DNS rule, and DNS nowhere else', () => {
+  it('gives env pods, project runner pods and the static runner deny the same rule for port 53, and eve-egress-metadata none', () => {
     for (const policy of strictSets()) {
       const dns = policy.spec.egress.filter((rule) => rule.ports?.some((port) => port.port === 53));
       if (policy.metadata.name === ENV_EGRESS_METADATA_POLICY) {
