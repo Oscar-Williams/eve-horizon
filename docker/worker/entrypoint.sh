@@ -154,11 +154,24 @@ if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then
     export PATH="${EVE_APP_CLI_PATHS}:${PATH}"
   fi
   # Sets JAVA_HOME, RUSTUP_HOME, etc.
+  runner_ld_preload="${LD_PRELOAD-}"
   for tc_dir in /opt/eve/toolchains/*/; do
     if [ -f "${tc_dir}env.sh" ]; then
       . "${tc_dir}env.sh"
     fi
   done
+  # The runner never takes a library search path, audit library or preload
+  # from them: those would name the job-writable toolchain directories and let
+  # job code load into the non-dumpable runner. Job processes get a
+  # toolchain's library environment from the worker (ensureToolchains), not
+  # from this process, so nothing they need is lost.
+  unset LD_LIBRARY_PATH LD_AUDIT
+  if [[ -n "$runner_ld_preload" ]]; then
+    export LD_PRELOAD="$runner_ld_preload"
+  else
+    unset LD_PRELOAD
+  fi
+  unset runner_ld_preload
 fi
 
 exec "$@"

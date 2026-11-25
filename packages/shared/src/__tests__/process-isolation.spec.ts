@@ -57,8 +57,11 @@ describe('inspectEnvironExposure', () => {
   it('skips platforms without procfs', () => {
     expect(inspectEnvironExposure({ platform: 'darwin', getuid: () => 501, environOwner: () => 501 }))
       .toEqual({ status: 'unsupported' });
+  });
+
+  it('reports Linux with an unreadable environ as unknown, not unsupported', () => {
     expect(inspectEnvironExposure(linux(1000, () => { throw new Error('ENOENT'); })))
-      .toEqual({ status: 'unsupported' });
+      .toEqual({ status: 'unknown' });
   });
 });
 
@@ -113,6 +116,54 @@ describe('checkProcessIsolation', () => {
       .toThrow(/SIGUSR1/);
     expect(() => checkProcessIsolation(logger(), 'WORKER', strict, { environ: linux(1000, 0), inspector: hardened }))
       .not.toThrow();
+  });
+
+  it('refuses to start, when required, if it cannot confirm protection', () => {
+    const strict = { EVE_REQUIRE_ENVIRON_PROTECTION: 'true' };
+    const unreadable = linux(1000, () => { throw new Error('EACCES'); });
+    expect(() => checkProcessIsolation(logger(), 'RUNNER', strict, { environ: unreadable, inspector: hardened }))
+      .toThrow(/cannot read the owner of \/proc\/self\/environ.*Refusing to start/);
+    const l = logger();
+    checkProcessIsolation(l, 'WORKER', {}, { environ: unreadable, inspector: hardened });
+    expect(l.warn).toHaveBeenCalledWith(expect.stringContaining('is unknown'));
+  });
+
+  describe('with init (runner pods: tini as PID 1 holds the pod environment)', () => {
+    const strict = { EVE_REQUIRE_ENVIRON_PROTECTION: 'true' };
+    const owners = (self: number, init: number | 'unreadable', pid = 7): EnvironExposureProbe => ({
+      platform: 'linux',
+      getuid: () => 1000,
+      getpid: () => pid,
+      environOwner: (which = 'self') => {
+        if (which === 'self') return self;
+        if (init === 'unreadable') throw new Error('EACCES');
+        return init;
+      },
+    });
+
+    it('passes when this process and PID 1 are both non-dumpable', () => {
+      const l = logger();
+      const report = checkProcessIsolation(l, 'RUNNER', strict, { environ: owners(0, 0), inspector: hardened }, { init: true });
+      expect(report.init).toEqual({ status: 'protected' });
+      expect(l.log).toHaveBeenCalledWith(expect.stringContaining('process and PID 1 are non-dumpable'));
+    });
+
+    it('refuses when PID 1 is dumpable, though this process is not', () => {
+      expect(() => checkProcessIsolation(logger(), 'RUNNER', strict, { environ: owners(0, 1000), inspector: hardened }, { init: true }))
+        .toThrow(/dumpable PID 1.*Refusing to start/);
+    });
+
+    it('refuses when PID 1 cannot be checked', () => {
+      expect(() => checkProcessIsolation(logger(), 'RUNNER', strict, { environ: owners(0, 'unreadable'), inspector: hardened }, { init: true }))
+        .toThrow(/\/proc\/1\/environ/);
+    });
+
+    it('checks only itself when it is PID 1, and ignores PID 1 without init', () => {
+      expect(checkProcessIsolation(logger(), 'RUNNER', strict, { environ: owners(0, 1000, 1), inspector: hardened }, { init: true }).init)
+        .toBeUndefined();
+      expect(() => checkProcessIsolation(logger(), 'WORKER', strict, { environ: owners(0, 1000), inspector: hardened }))
+        .not.toThrow();
+    });
   });
 
   it('does not block local development on platforms without procfs', () => {

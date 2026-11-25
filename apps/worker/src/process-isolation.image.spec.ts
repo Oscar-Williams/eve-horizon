@@ -69,6 +69,21 @@ describe('worker entrypoint', () => {
     expect(entrypoint.indexOf('. "${tc_dir}env.sh"')).toBeGreaterThan(gate);
   });
 
+  it('keeps library search paths and preloads from toolchain env.sh out of the runner', () => {
+    const gate = entrypoint.indexOf('if [[ "${EVE_RUNNER_SELF_TERMINATE:-}" == "1" ]]; then');
+    const sourced = entrypoint.indexOf('. "${tc_dir}env.sh"');
+    const saved = entrypoint.indexOf('runner_ld_preload="${LD_PRELOAD-}"');
+    const cleared = entrypoint.indexOf('unset LD_LIBRARY_PATH LD_AUDIT');
+    const restored = entrypoint.indexOf('export LD_PRELOAD="$runner_ld_preload"');
+    const handover = entrypoint.indexOf('exec "$@"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(saved).toBeGreaterThan(gate);
+    expect(sourced).toBeGreaterThan(saved);
+    expect(cleared).toBeGreaterThan(sourced);
+    expect(restored).toBeGreaterThan(cleared);
+    expect(handover).toBeGreaterThan(restored);
+  });
+
   it('installs nothing at start: a missing harness variant is only reported', () => {
     // The entrypoint holds every worker secret, so it never fetches code over
     // the network; variants are built into the image (a failed build fails it).

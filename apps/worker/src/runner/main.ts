@@ -12,8 +12,9 @@ import { createRunnerApp } from './runner.app.js';
 async function bootstrap() {
   const port = process.env.WORKER_PORT ? parseInt(process.env.WORKER_PORT, 10) : RUNNER_PORT;
   const logger = (await initServiceTelemetry('runner')) as LoggerService;
-  // The harness runs as this process's UID; it must not read the runner's memory.
-  checkProcessIsolation(logger, 'RUNNER');
+  // The harness runs as this process's UID; it must not read the runner's
+  // memory, nor the environment of the pod's init (tini, PID 1).
+  checkProcessIsolation(logger, 'RUNNER', process.env, {}, { init: true });
   const app = await createRunnerApp({ logger });
   const server = app.getHttpServer();
   const timeoutMs = parseInt(process.env.EVE_WORKER_REQUEST_TIMEOUT_MS || '3600000', 10);

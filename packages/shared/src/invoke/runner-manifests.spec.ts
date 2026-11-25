@@ -89,6 +89,8 @@ describe('runner pod builder', () => {
     const preload = { name: 'LD_PRELOAD', value: RUNNER_NODUMP_LIBRARY };
     expect(RUNNER_NODUMP_LIBRARY).toBe('/usr/local/lib/eve/eve-nodump.so');
     expect(pod().container.env).toContainEqual(preload);
+    // Kubernetes takes the last of duplicate names: there must be one.
+    expect(pod().container.env.filter((e: { name: string }) => e.name === 'LD_PRELOAD')).toHaveLength(1);
     expect(pod({ orgFs: { readOnly: true }, toolchains: ['python'] }).container.env).toContainEqual(preload);
     const templates = renderRunnerTemplates({ namespace: 'eve-runners', image: 'w', warmPools: {} }) as Array<Record<string, any>>;
     const sandboxTemplates = templates.filter((o) => o.kind === 'SandboxTemplate');

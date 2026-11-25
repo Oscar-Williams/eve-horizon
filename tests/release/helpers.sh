@@ -49,6 +49,18 @@ if [[ $* == 'image inspect --format {{.Config.User}} '* ]]; then
   printf '%s\n' "${MOCK_USER:-}"
   exit 0
 fi
+if [[ $* == 'run --rm --network none --user 1000:1000 '* ]]; then
+  preload=no
+  [[ $* == *'-e LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so '* ]] && preload=yes
+  case "${MOCK_NODUMP:-}" in
+    works) [[ $preload == yes ]] && printf '0\n0\n0\n' || printf '1000\n1000\n1000\n'; exit 0 ;;
+    ignored) printf '1000\n1000\n1000\n'; exit 0 ;;
+    blind) printf '0\n0\n0\n'; exit 0 ;;
+    partial) [[ $preload == yes ]] && printf '0\n0\n1000\n' || printf '1000\n1000\n1000\n'; exit 0 ;;
+    crash) echo 'eve-nodump: cannot mark this process non-dumpable; exiting' >&2; exit 126 ;;
+  esac
+  exit 97
+fi
 if [[ $* == 'run --rm --network none '* ]]; then
   case "${MOCK_RUN:-}" in
     starts) echo 'ERROR: DATABASE_URL environment variable is required' >&2; exit 1 ;;
@@ -77,6 +89,12 @@ for user in '' root node 0 0:0 00 1000:node node:1000; do
 done
 for run in missing_module succeeds; do
   expect_fail env PATH="$tmp:$PATH" MOCK_USER=1000:1000 MOCK_RUN="$run" bash -c 'source scripts/release/common.sh; release_check_migrate_image ghcr.io/eve-horizon/eve-horizon/migrate:1.2.3'
+done
+# Runner pods rely on the worker image's non-dumpable preload; the check must
+# see it work and see the difference without it.
+env PATH="$tmp:$PATH" MOCK_NODUMP=works bash -c 'source scripts/release/common.sh; release_check_worker_nodump ghcr.io/eve-horizon/eve-horizon/worker:1.2.3'
+for nodump in ignored blind partial crash; do
+  expect_fail env PATH="$tmp:$PATH" MOCK_NODUMP="$nodump" bash -c 'source scripts/release/common.sh; release_check_worker_nodump ghcr.io/eve-horizon/eve-horizon/worker:1.2.3'
 done
 
 mkdir -p "$tmp/artifact"
