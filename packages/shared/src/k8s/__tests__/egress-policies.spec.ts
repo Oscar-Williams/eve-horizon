@@ -33,6 +33,19 @@ const PROJECT = 'proj_01jabcdefghjkmnpqrstvwxyz0';
 type Rule = EgressNetworkPolicy['spec']['egress'][number];
 type Peer = NonNullable<Rule['to']>[number];
 
+/**
+ * Cluster DNS on 53: kube-dns, and node-local-dns, which NodeLocal DNSCache
+ * runs as ordinary pods on GKE Dataplane V2 (queries to the kube-dns Service
+ * address are answered there, so a rule naming kube-dns alone drops them).
+ */
+const DNS_RULE: Rule = {
+  to: [{
+    namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+    podSelector: { matchExpressions: [{ key: 'k8s-app', operator: 'In', values: ['kube-dns', 'node-local-dns'] }] },
+  }],
+  ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
+};
+
 function byName(policies: EgressNetworkPolicy[], name: string): EgressNetworkPolicy {
   const policy = policies.find((p) => p.metadata.name === name);
   if (!policy) throw new Error(`no policy ${name} in ${policies.map((p) => p.metadata.name).join(', ')}`);
@@ -136,17 +149,22 @@ describe('env egress policies', () => {
     }]);
   });
 
-  it('allows DNS to kube-dns and the namespace itself', () => {
+  it('allows DNS to kube-dns or node-local-dns, and the namespace itself', () => {
     const policy = byName(envEgressPolicies(NS, 'strict', {}, settings), ENV_EGRESS_POLICY);
     expect(policy.spec.podSelector).toEqual({});
-    expect(policy.spec.egress).toContainEqual({
-      to: [{
-        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
-        podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-      }],
-      ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
-    });
+    expect(policy.spec.egress).toContainEqual(DNS_RULE);
     expect(policy.spec.egress).toContainEqual({ to: [{ podSelector: {} }] });
+  });
+
+  it('gives env pods, project runner pods and the static runner deny the same DNS rule, and DNS nowhere else', () => {
+    for (const policy of strictSets()) {
+      const dns = policy.spec.egress.filter((rule) => rule.ports?.some((port) => port.port === 53));
+      if (policy.metadata.name === ENV_EGRESS_METADATA_POLICY) {
+        expect(dns).toEqual([]);
+        continue;
+      }
+      expect(dns).toEqual([DNS_RULE]);
+    }
   });
 
   it('adds a managed database as a /32 on its port, and app-link producers on theirs', () => {
@@ -229,13 +247,7 @@ describe('runner deny', () => {
     expect(runners.spec.podSelector).toEqual({ matchLabels: { [RUNNER_LABEL]: 'true' } });
     expect(runners.spec.policyTypes).toEqual(['Egress']);
     expect(runners.spec.egress).toEqual([
-      {
-        to: [{
-          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
-          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-        }],
-        ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
-      },
+      DNS_RULE,
       {
         to: [{
           namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'eve' } },
