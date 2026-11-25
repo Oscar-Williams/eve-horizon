@@ -81,7 +81,8 @@ describe('worker entrypoint', () => {
   it('passes its shell test: nothing installed at start, the runner keeps its loader settings', () => {
     expect(entrypoint).toContain('RUNNER_LOADER_VARS=(LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH)');
     const out = execFileSync('bash', [join(ROOT, 'docker', 'worker', 'entrypoint.test.sh')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    expect(out).toMatch(/PASS: .*runner loader settings kept|^$/);
+    // CI is Linux with a current bash: there the test must run, not skip.
+    if (process.platform === 'linux') expect(out).toMatch(/PASS: .*runner loader settings kept/);
   });
 
   it('installs nothing at start: a missing harness variant is only reported', () => {

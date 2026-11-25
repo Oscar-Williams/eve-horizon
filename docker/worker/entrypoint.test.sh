@@ -87,6 +87,14 @@ printf 'export JAVA_HOME=/tc/java\n' > "$tmp/tc/java/env.sh"
   [[ $PATH == /tc/media/bin:* ]] || fail "the toolchain PATH was lost: $PATH"
 ) || exit 1
 (
+  # A loader setting the runner already had comes back as it was, and the
+  # toolchain PATH comes from EVE_TOOLCHAIN_PATHS even when no env.sh sets it.
+  export LD_LIBRARY_PATH=/runner/lib
+  EVE_TOOLCHAIN_PATHS=/tc/declared/bin source_runner_toolchains "$tmp/tc"
+  [[ $LD_LIBRARY_PATH == /runner/lib ]] || fail "the runner's own LD_LIBRARY_PATH was not restored: $LD_LIBRARY_PATH"
+  [[ :$PATH: == *:/tc/declared/bin:* ]] || fail "EVE_TOOLCHAIN_PATHS was not applied: $PATH"
+) || exit 1
+(
   unset LD_PRELOAD
   export NODE_OPTIONS=--disable-sigusr1
   source_runner_toolchains "$tmp/tc"

@@ -117,6 +117,8 @@ report_missing_variants() {
 # name the job-writable toolchain directories, so code a job later wrote there
 # could load into the non-dumpable runner. Jobs get each toolchain's full
 # environment from the worker (ensureToolchains), not from this process.
+# An env.sh is sourced inside this function: it must only export, never use
+# `local` or the function's own __eve_* names.
 RUNNER_LOADER_VARS=(LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH)
 source_runner_toolchains() {
   local __eve_root=$1 __eve_tc __eve_name
