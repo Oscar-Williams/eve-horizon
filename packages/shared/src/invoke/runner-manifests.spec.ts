@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { buildRunnerPod, RUNNER_CONTAINER_ARGS } from './runner-manifests.js';
+import { buildRunnerPod, RUNNER_CONTAINER_ARGS, RUNNER_CONTAINER_COMMAND, RUNNER_NODUMP_LIBRARY } from './runner-manifests.js';
 import { createRunnerInboundKey, runnerInboundKeyMatches } from './runner-protocol.js';
 import { resolveRunnerPodIsolation } from './runner-pod.js';
 import { renderRunnerTemplates } from './runner-sandbox.js';
@@ -75,8 +75,35 @@ describe('runner pod builder', () => {
 
   it('starts the runner entrypoint, not the worker app', () => {
     const { container } = pod();
+    expect(container.command).toEqual(RUNNER_CONTAINER_COMMAND);
     expect(container.args).toEqual(RUNNER_CONTAINER_ARGS);
     expect(RUNNER_CONTAINER_ARGS.join(' ')).toContain('dist/runner/main.js');
+  });
+
+  // gVisor cannot load the image's execute-only binaries, so runner pods start
+  // readable ones and preload the library that makes each process non-dumpable.
+  it('starts readable binaries with the non-dumpable preload, in pods and warm-pool templates', () => {
+    expect(RUNNER_CONTAINER_COMMAND).toEqual(['/usr/bin/tini', '--', '/usr/local/bin/eve-worker-entrypoint']);
+    expect(RUNNER_CONTAINER_ARGS).toEqual(['/usr/local/bin/node', '--disable-sigusr1', 'dist/runner/main.js']);
+    expect([...RUNNER_CONTAINER_COMMAND, ...RUNNER_CONTAINER_ARGS].join(' ')).not.toContain('/usr/local/libexec/');
+    const preload = { name: 'LD_PRELOAD', value: RUNNER_NODUMP_LIBRARY };
+    expect(RUNNER_NODUMP_LIBRARY).toBe('/usr/local/lib/eve/eve-nodump.so');
+    expect(pod().container.env).toContainEqual(preload);
+    expect(pod({ orgFs: { readOnly: true }, toolchains: ['python'] }).container.env).toContainEqual(preload);
+    const templates = renderRunnerTemplates({ namespace: 'eve-runners', image: 'w', warmPools: {} }) as Array<Record<string, any>>;
+    const sandboxTemplates = templates.filter((o) => o.kind === 'SandboxTemplate');
+    expect(sandboxTemplates.length).toBeGreaterThan(0);
+    for (const template of sandboxTemplates) {
+      const container = template.spec.podTemplate.spec.containers[0];
+      expect(container.command).toEqual(RUNNER_CONTAINER_COMMAND);
+      expect(container.args).toEqual(RUNNER_CONTAINER_ARGS);
+      expect(container.env).toContainEqual(preload);
+      expect(container.env).toContainEqual({ name: 'EVE_REQUIRE_ENVIRON_PROTECTION', value: 'true' });
+    }
+    // Only the runner container preloads it; init containers copy files and hold nothing.
+    const inits = pod({ toolchains: ['python'] }).manifest.spec.initContainers as Array<Record<string, unknown>>;
+    expect(inits).toHaveLength(1);
+    for (const init of inits) expect(JSON.stringify(init)).not.toContain('LD_PRELOAD');
   });
 
   it('runs restricted, with no service account token', () => {

@@ -25,6 +25,27 @@ describe('worker image', () => {
     expect(runtimeStages.match(/CMD \["\/usr\/local\/libexec\/eve-node", "--disable-sigusr1", "dist\/main\.js"\]/g)?.length).toBe(2);
   });
 
+  // Runner pods run under gVisor, which cannot load an execute-only binary.
+  // They start /usr/bin/tini and /usr/local/bin/node with this library preloaded.
+  it('builds the non-dumpable preload for runner pods and installs it root-owned and read-only', () => {
+    const stage = dockerfile.slice(dockerfile.indexOf('FROM ${NODE_BASE_IMAGE} AS nodump'), dockerfile.indexOf('FROM node-image AS runtime-setup'));
+    expect(stage).toContain('COPY docker/worker/eve-nodump.c /src/eve-nodump.c');
+    expect(stage).toMatch(/gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o \/out\/eve-nodump\.so \/src\/eve-nodump\.c/);
+    const setup = dockerfile.slice(dockerfile.indexOf('FROM node-image AS runtime-setup'), dockerfile.indexOf('FROM runtime-setup AS base'));
+    expect(setup).toContain('COPY --from=nodump /out/eve-nodump.so /usr/local/lib/eve/eve-nodump.so');
+    expect(setup).toMatch(/chown -R root:root \/usr\/local\/lib\/eve/);
+    expect(setup).toMatch(/chmod 0444 \/usr\/local\/lib\/eve\/eve-nodump\.so/);
+    // The compiler never reaches a runtime stage.
+    expect(runtimeStages.slice(runtimeStages.indexOf('FROM node-image AS runtime-setup'))).not.toMatch(/install[^\n]*\bgcc\b/);
+  });
+
+  it('the preload marks the process non-dumpable as it loads, and exits if it cannot', () => {
+    const source = readFileSync(join(ROOT, 'docker', 'worker', 'eve-nodump.c'), 'utf8');
+    expect(source).toMatch(/__attribute__\(\(constructor\)\)/);
+    expect(source).toContain('prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 || prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0');
+    expect(source).toContain('_exit(126)');
+  });
+
   it('keeps the service code and Node/Kubernetes config lookups out of job reach', () => {
     const base = dockerfile.slice(dockerfile.indexOf('FROM runtime-setup AS base'), dockerfile.indexOf('FROM base AS media'));
     expect(base).not.toMatch(/COPY --from=build --chown=node:node/);

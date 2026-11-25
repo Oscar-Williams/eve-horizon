@@ -28,8 +28,16 @@ orchestrator ── POST /invoke ──▶ worker (outer)
 ## The runner entrypoint
 
 The runner image is the worker image; the pod starts
-`/usr/local/libexec/eve-node --disable-sigusr1 dist/runner/main.js` through
-the image's `tini` and entrypoint script. `RunnerModule`
+`/usr/local/bin/node --disable-sigusr1 dist/runner/main.js` through
+`/usr/bin/tini` and the image's entrypoint script, with
+`LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so`. The long-lived worker starts
+from execute-only copies of node and tini, which the kernel runs
+non-dumpable; gVisor cannot load an execute-only binary, so runner pods start
+the readable binaries and the preloaded library marks each of the three
+processes non-dumpable as it starts (`docker/worker/eve-nodump.c`), exiting
+if it cannot. The runner checks the result before it takes a job
+(`EVE_REQUIRE_ENVIRON_PROTECTION=true`). Job processes never load the
+library: their environments are allowlists. `RunnerModule`
 (`apps/worker/src/runner/`) loads no database module and none of the
 deployer, builder, reaper or pipeline modules. It serves two routes:
 

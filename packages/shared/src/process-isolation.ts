@@ -11,7 +11,12 @@ import * as path from 'node:path';
  * 1. read another's `/proc/<pid>/environ` and memory, unless the target is
  *    non-dumpable. The images start each service from an execute-only copy of
  *    node (`/usr/local/libexec/eve-node`); the kernel marks a process that
- *    executes a binary its user cannot read non-dumpable.
+ *    executes a binary its user cannot read non-dumpable. Runner pods run
+ *    under gVisor, which cannot load an execute-only binary, so they start the
+ *    readable binaries with `LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so`,
+ *    which calls prctl(PR_SET_DUMPABLE, 0) as each process starts
+ *    (docker/worker/eve-nodump.c). Either way the check below reads the
+ *    result, not the method.
  * 2. send it SIGUSR1, which opens the Node inspector on 127.0.0.1:9229 and lets
  *    the sender evaluate code inside the service. The images pass
  *    `--disable-sigusr1`.
@@ -130,7 +135,8 @@ export function checkProcessIsolation(
   }
 
   const message = `${serviceLabel}: process ${problems.join('; ')}. Start it as a non-root user with `
-    + '`/usr/local/libexec/eve-node --disable-sigusr1 dist/main.js` (the image default).';
+    + '`/usr/local/libexec/eve-node --disable-sigusr1 dist/main.js` (the image default), or in a runner pod '
+    + 'with `LD_PRELOAD=/usr/local/lib/eve/eve-nodump.so` and `--disable-sigusr1`.';
   if (required) {
     throw new Error(`${message} Refusing to start because EVE_REQUIRE_ENVIRON_PROTECTION=true.`);
   }
